@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>booru.local</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d0d0f; --bg2: #141417; --bg3: #1c1c21;
+  --border: #2a2a32; --text: #c8c8d4; --text-dim: #666678;
+  --accent: #7c6af7; --danger: #f87272;
+  --mono: 'JetBrains Mono','Courier New',monospace;
+  --safe-top: env(safe-area-inset-top,0px);
+}
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--mono); min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem; padding-top: calc(1rem + var(--safe-top));
+}
+.card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 2rem; width: 100%; max-width: 340px;
+}
+.logo { font-size: 1.3rem; color: var(--accent); margin-bottom: 1.5rem; letter-spacing: -.5px; }
+.logo span { color: var(--text-dim); }
+input[type=password] {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); padding: .6rem .8rem; border-radius: 6px;
+  font-family: var(--mono); font-size: 1rem; outline: none; margin-bottom: .8rem;
+}
+input[type=password]:focus { border-color: var(--accent); }
+button {
+  width: 100%; background: var(--accent); border: none; color: #fff;
+  padding: .6rem; border-radius: 6px; font-family: var(--mono);
+  font-size: 1rem; cursor: pointer;
+}
+button:active { background: #6a58e8; }
+.error { color: var(--danger); font-size: .82rem; margin-bottom: .7rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">booru<span>.local</span></div>
+  {% if error %}<div class="error">wrong password</div>{% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
+    <button type="submit">enter</button>
+  </form>
+</div>
+</body>
+</html>

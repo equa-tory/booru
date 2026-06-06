@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="booru">
+<meta name="theme-color" content="#0d0d0f">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/static/icons/icon-152.png">
+<link rel="apple-touch-icon" sizes="120x120" href="/static/icons/icon-120.png">
+<link rel="icon" href="/static/icons/favicon.ico" type="image/x-icon">
+<title>{% block title %}booru{% endblock %}</title>
+<script>
+  (function(){
+    var s=document.createElement('script');s.src='/static/js/htmx.min.js';
+    s.onerror=function(){var f=document.createElement('script');f.src='https://unpkg.com/htmx.org@1.9.12';document.head.appendChild(f);};
+    document.head.appendChild(s);
+    if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/js/sw.js');
+  })();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@300;400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Block text selection everywhere except inputs */
+* { -webkit-user-select: none; user-select: none; }
+input, textarea, [contenteditable], #file-path-box { -webkit-user-select: text; user-select: text; }
+
+:root {
+  --bg: #0d0d0f; --bg2: #141417; --bg3: #1c1c21;
+  --border: #2a2a32;
+  --text: #c8c8d4; --text-dim: #666678; --text-bright: #ebebf5;
+  --accent: #7c6af7; --accent-dim: #3d3580;
+  --tag-general: #8ab4f8; --tag-character: #f8a8b4;
+  --tag-artist: #ffd580; --tag-meta: #98d8a8; --tag-ai: #c8a8f8;
+  --danger: #f87272;
+  --mono: 'JetBrains Mono','Courier New',monospace;
+  --sans: 'Inter',system-ui,sans-serif;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --header-h: 52px;
+  --mobile-nav-h: 56px;
+}
+
+html { font-size: 14px; -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--bg); color: var(--text); font-family: var(--sans);
+  min-height: 100vh; display: flex; flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--text-bright); }
+
+/* ── Header (desktop) ─────────────────────────────────── */
+header {
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 0 1.2rem; padding-top: var(--safe-top);
+  height: calc(var(--header-h) + var(--safe-top));
+  display: flex; align-items: center; gap: 1.5rem;
+  position: sticky; top: 0; z-index: 100;
+}
+.logo { font-family: var(--mono); font-size: 1.1rem; color: var(--accent); letter-spacing: -.5px; flex-shrink: 0; }
+.logo span { color: var(--text-dim); }
+.header-actions { display: flex; gap: .6rem; align-items: center; margin-left: auto; }
+/* hide desktop actions on mobile */
+@media (max-width: 640px) { .header-desktop { display: none !important; } }
+
+/* ── Buttons ──────────────────────────────────────────── */
+.btn {
+  padding: .35rem .8rem; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg3);
+  color: var(--text); cursor: pointer;
+  font-family: var(--mono); font-size: .8rem;
+  transition: all .15s; display: inline-flex; align-items: center; gap: .4rem;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+}
+.btn:hover, .btn:active { background: var(--accent-dim); border-color: var(--accent); color: var(--text-bright); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover, .btn.primary:active { background: #6a58e8; }
+.btn.danger { border-color: var(--danger); color: var(--danger); }
+.btn.danger:hover, .btn.danger:active { background: var(--danger); color: #fff; }
+.btn:disabled { opacity: .4; cursor: default; }
+
+/* ── Layout ───────────────────────────────────────────── */
+.layout { display: flex; flex: 1; }
+main { flex: 1; padding: 1rem 1rem; overflow-x: hidden; }
+
+/* ── Sidebar (desktop) ────────────────────────────────── */
+aside {
+  width: 230px; min-width: 230px; background: var(--bg2);
+  border-right: 1px solid var(--border); padding: 1rem;
+  overflow-y: auto; height: calc(100vh - var(--header-h) - var(--safe-top));
+  position: sticky; top: calc(var(--header-h) + var(--safe-top));
+}
+@media (max-width: 640px) { aside { display: none; } }
+
+.sidebar-section { margin-bottom: 1.5rem; }
+.sidebar-title { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: .6rem; }
+.tag-list { display: flex; flex-direction: column; gap: 1px; }
+.tag-item { display: flex; align-items: center; padding: 3px 0; gap: .25rem; }
+.tag-link { font-size: .82rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .1s; }
+.tag-link.general { color: var(--tag-general); }
+.tag-link.character { color: var(--tag-character); }
+.tag-link.artist { color: var(--tag-artist); }
+.tag-link.meta { color: var(--tag-meta); }
+.tag-link.ai { color: var(--tag-ai); }
+.tag-link:hover { filter: brightness(1.3); }
+.tag-count { font-size: .72rem; color: var(--text-dim); font-family: var(--mono); }
+.tag-add-btn { color: var(--text-dim); font-size: 1rem; cursor: pointer; padding: 0 .2rem; flex-shrink: 0; font-family: var(--mono); transition: color .1s; -webkit-tap-highlight-color: transparent; }
+.tag-add-btn:hover { color: var(--accent); }
+.tag-fav-btn { color: var(--border); font-size: .85rem; cursor: pointer; flex-shrink: 0; -webkit-tap-highlight-color: transparent; transition: color .15s; line-height: 1; padding: 0 .1rem; }
+.tag-fav-btn:hover, .tag-fav-btn.active { color: #f87272; }
+
+/* ── Active tag pills ─────────────────────────────────── */
+.active-tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; }
+.active-tag {
+  background: var(--accent-dim); border: 1px solid var(--accent);
+  color: var(--text-bright); padding: .2rem .6rem; border-radius: 3px;
+  font-size: .8rem; font-family: var(--mono);
+  display: flex; align-items: center; gap: .4rem;
+}
+.active-tag .remove { color: var(--danger); cursor: pointer; font-size: 1rem; line-height: 1; }
+
+/* ── Photo grid ───────────────────────────────────────── */
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 3px; }
+@media (max-width: 640px) { .photo-grid { grid-template-columns: repeat(3, 1fr); gap: 2px; } }
+@media (max-width: 380px)  { .photo-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.photo-card { aspect-ratio: 1; overflow: hidden; background: var(--bg3); position: relative; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+@media (hover: hover) { .photo-card:hover { transform: scale(1.02); z-index: 1; } }
+.photo-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-card .overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,.7) 0%, transparent 55%);
+  display: flex; align-items: flex-end; padding: .35rem;
+  /* always visible on touch, hover-only on desktop */
+  opacity: 0; transition: opacity .2s;
+}
+@media (hover: none) { .photo-card .overlay { opacity: 1; } }
+@media (hover: hover) { .photo-card:hover .overlay { opacity: 1; } }
+.photo-card .tag-count-badge { font-size: .68rem; color: #fff; font-family: var(--mono); }
+
+.load-more { text-align: center; padding: 2rem; grid-column: 1/-1; }
+
+/* ── Toast ────────────────────────────────────────────── */
+#toast {
+  position: fixed; bottom: calc(var(--mobile-nav-h) + var(--safe-bottom) + .5rem); right: 1rem;
+  background: var(--bg3); border: 1px solid var(--border);
+  padding: .6rem 1rem; border-radius: 8px;
+  font-family: var(--mono); font-size: .8rem;
+  transition: opacity .3s; opacity: 0; pointer-events: none; z-index: 999;
+}
+@media (min-width: 641px) { #toast { bottom: 1.5rem; right: 1.5rem; } }
+#toast.show { opacity: 1; }
+#toast.ok  { border-color: var(--tag-meta); color: var(--tag-meta); }
+#toast.err { border-color: var(--danger); color: var(--danger); }
+
+/* ── Upload modal ─────────────────────────────────────── */
+.modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.8); z-index: 200; align-items: flex-end; justify-content: center; }
+.modal-backdrop.open { display: flex; }
+@media (min-width: 641px) { .modal-backdrop { align-items: center; } }
+.modal {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 16px 16px 0 0; padding: 1.5rem;
+  width: 100%; max-width: 520px;
+  padding-bottom: calc(1.5rem + var(--safe-bottom));
+}
+@media (min-width: 641px) { .modal { border-radius: 12px; padding-bottom: 1.5rem; } }
+.modal-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 1.2rem; }
+.modal h2 { font-family: var(--mono); font-size: 1rem; margin-bottom: 1rem; color: var(--text-bright); }
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: 8px;
+  padding: 1.5rem; text-align: center; cursor: pointer;
+  transition: border-color .15s, background .15s; margin-bottom: 1rem;
+}
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(124,106,247,.05); }
+.drop-zone p { color: var(--text-dim); font-size: .85rem; }
+.drop-zone strong { color: var(--accent); }
+#file-input { display: none; }
+.modal-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+.progress-bar { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: .5rem; display: none; }
+.progress-bar-inner { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
+
+/* ── Mobile bottom nav ────────────────────────────────── */
+.mobile-nav {
+  display: none;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 110;
+  background: rgba(20,20,23,.92); backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-top: 1px solid var(--border);
+  padding: .5rem 0;
+  padding-bottom: calc(.5rem + var(--safe-bottom));
+  display: none; flex-direction: row; align-items: stretch;
+}
+@media (max-width: 640px) { .mobile-nav { display: flex; } }
+
+.mob-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 3px; padding: .3rem .5rem;
+  font-family: var(--mono); font-size: .6rem; color: var(--text-dim);
+  cursor: pointer; border: none; background: none;
+  -webkit-tap-highlight-color: transparent; transition: color .15s;
+}
+.mob-btn:active { color: var(--accent); }
+.mob-btn .icon { font-size: 1.3rem; line-height: 1; }
+.mob-btn.accent { color: var(--accent); }
+
+/* ── Mobile tag sheet ─────────────────────────────────── */
+.sheet-backdrop {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 150; align-items: flex-end;
+}
+.sheet-backdrop.open { display: flex; }
+.tag-sheet {
+  background: var(--bg2); border-radius: 20px 20px 0 0;
+  width: 100%; max-height: 80vh;
+  display: flex; flex-direction: column;
+  padding-bottom: calc(.5rem + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+}
+.sheet-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: .8rem auto .5rem; flex-shrink: 0; }
+.sheet-search-row { padding: .5rem 1rem; flex-shrink: 0; }
+.sheet-search {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); padding: .5rem .8rem; border-radius: 8px;
+  font-size: 1rem; font-family: var(--mono); outline: none;
+}
+.sheet-search:focus { border-color: var(--accent); }
+.sheet-tag-list { overflow-y: auto; flex: 1; padding: .25rem 0; }
+.sheet-tag-item {
+  display: flex; align-items: center; padding: .55rem 1rem; gap: .5rem;
+  border-bottom: 1px solid rgba(255,255,255,.03);
+  -webkit-tap-highlight-color: transparent;
+}
+.sheet-tag-name { flex: 1; font-size: .95rem; }
+.sheet-tag-name.general  { color: var(--tag-general); }
+.sheet-tag-name.character{ color: var(--tag-character); }
+.sheet-tag-name.artist   { color: var(--tag-artist); }
+.sheet-tag-name.meta     { color: var(--tag-meta); }
+.sheet-tag-name.ai       { color: var(--tag-ai); }
+.sheet-tag-count { font-size: .75rem; color: var(--text-dim); font-family: var(--mono); }
+.sheet-tag-add { color: var(--text-dim); font-size: 1.2rem; padding: .2rem .4rem; -webkit-tap-highlight-color: transparent; }
+
+/* ── Misc ─────────────────────────────────────────────── */
+.sidebar-input {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); padding: .35rem .5rem; border-radius: 4px;
+  font-size: .82rem; font-family: var(--mono); outline: none; margin-bottom: .5rem;
+}
+.sidebar-input:focus { border-color: var(--accent); }
+.slider-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; }
+.slider-row label { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
+input[type=range].size-slider {
+  flex: 1; cursor: pointer; height: 20px; /* bigger touch target */
+  -webkit-appearance: none; appearance: none;
+  background: transparent; outline: none;
+}
+input[type=range].size-slider::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct,50%), var(--bg3) var(--pct,50%), var(--bg3) 100%);
+}
+input[type=range].size-slider::-moz-range-track {
+  height: 3px; border-radius: 2px; background: var(--bg3);
+}
+input[type=range].size-slider::-moz-range-progress {
+  height: 3px; background: var(--accent);
+}
+input[type=range].size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--accent);
+  margin-top: -6.5px; cursor: pointer;
+}
+input[type=range].size-slider::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+
+/* pad content above mobile nav */
+@media (max-width: 640px) {
+  main { padding-bottom: calc(var(--mobile-nav-h) + var(--safe-bottom) + .5rem); }
+}
+
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator { display: inline; }
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<header>
+  <a href="/" class="logo">booru<span>.local</span></a>
+  <div class="header-actions header-desktop">
+    <a class="btn" href="/duplicates/">⧉ dupes</a>
+    <button class="btn" onclick="openUploadModal()">⬆ upload</button>
+    <button class="btn" id="scan-btn" onclick="doScan()">⟳ scan inbox</button>
+    <button class="btn" id="ai-all-btn" onclick="aiTagAll()">✦ ai tag all</button>
+    <button class="btn header-desktop" onclick="goRandom()">&#9684; random</button>
+    <button class="btn header-desktop" id="organize-btn" onclick="organizeMerged()">&#128193; fix folders</button>
+    <a class="btn header-desktop" href="/logout/" style="color:var(--text-dim);">logout</a>
+  </div>
+</header>
+
+<div class="layout">
+  {% block sidebar %}{% endblock %}
+  <main>{% block content %}{% endblock %}</main>
+</div>
+
+<!-- Mobile bottom nav -->
+<nav class="mobile-nav" id="mobile-nav">
+  <button class="mob-btn" onclick="openUploadModal()"><span class="icon">&#11014;</span><span>upload</span></button>
+  <button class="mob-btn" id="mob-scan" onclick="doScan()"><span class="icon">&#10227;</span><span>scan</span></button>
+  <button class="mob-btn" onclick="openTagSheet()"><span class="icon">&#8864;</span><span>tags</span></button>
+  <button class="mob-btn" onclick="goRandom()"><span class="icon">&#9684;</span><span>random</span></button>
+  <button class="mob-btn" onclick="openMobMenu()"><span class="icon">&#8943;</span><span>more</span></button>
+</nav>
+
+<!-- Mobile more sheet -->
+<div class="sheet-backdrop" id="mob-menu-backdrop" onclick="closeMobMenu()">
+  <div class="tag-sheet" id="mob-menu-sheet" onclick="event.stopPropagation()" style="padding:1rem;">
+    <div class="sheet-handle"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;padding:.5rem 0;">
+      <button class="btn" onclick="aiTagAll();closeMobMenu()">&#10022; ai tag all</button>
+      <a class="btn" href="/duplicates/" style="text-align:center;">&#9673; dupes</a>
+      <a class="btn" href="/logout/" style="text-align:center;color:var(--text-dim);">logout</a>
+      <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select posts</button>
+    </div>
+    <!-- Preview size -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">preview size</div>
+      <div style="display:flex;align-items:center;gap:.5rem;">
+        <span style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);">S</span>
+        <input type="range" class="size-slider" id="mob-size-slider" min="2" max="6" value="3" step="1" oninput="setGridSize(this.value,'mobile')" style="flex:1;">
+        <span style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);">L</span>
+      </div>
+    </div>
+    <!-- Sort -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">sort</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.3rem;" id="mob-sort-btns"></div>
+    </div>
+    <!-- Filter -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">filter</div>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem;">
+        <button class="fav-filter-btn" id="mob-fav-filter" onclick="toggleFav(this)">&#9829; favs</button>
+        <button class="fav-filter-btn" id="mob-multi-filter" onclick="toggleMultiOnly(this)">&#9783; multi</button>
+        <button class="fav-filter-btn" id="mob-single-filter" onclick="toggleSingleOnly(this)">&#9632; single</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.2rem 0;">at least:</div>
+      <div style="display:flex;gap:.3rem;flex-wrap:wrap;" id="mob-star-filters"></div>
+      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.4rem 0 .2rem;">exactly:</div>
+      <div style="display:flex;gap:.3rem;flex-wrap:wrap;align-items:center;" id="mob-exact-filters"></div>
+    </div>
+    <!-- Browse mode -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">browse mode</div>
+      <div style="display:flex;gap:.4rem;">
+        <button class="mode-btn" id="mob-mode-pages" onclick="setMode('pages')">pages</button>
+        <button class="mode-btn" id="mob-mode-scroll" onclick="setMode('scroll')">infinite</button>
+      </div>
+    </div>
+    <!-- Zoom mode -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">pinch zoom (site)</div>
+      <div style="display:flex;gap:.4rem;">
+        <button class="mode-btn" id="mob-zoom-block" onclick="setZoomMode('block')">block page zoom</button>
+        <button class="mode-btn" id="mob-zoom-allow" onclick="setZoomMode('allow')">allow page zoom</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:.6rem;color:var(--text-dim);margin-top:.3rem;">block = image pinch-zoom only; allow = browser zoom whole page</div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload modal (bottom sheet on mobile) -->
+<div class="modal-backdrop" id="upload-modal">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>upload photos</h2>
+    <!-- iOS: multiple + accept lets you pick from Photos app or Files -->
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <p>tap to pick from <strong>Photos</strong> or <strong>Files</strong></p>
+      <p style="margin-top:.4rem;font-size:.75rem;">jpg · png · gif · webp · heic · tiff · mp4 · mov · webm · m4v</p>
+    </div>
+    <input type="file" id="file-input" multiple accept="image/*,image/heic,image/heif,video/*,.m4v,.m4a,.mov,.webm,.mp4,.mkv">
+    <div style="display:flex;flex-direction:column;gap:.5rem;margin:.6rem 0;">
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.85rem;cursor:pointer;">
+        <input type="checkbox" id="upload-as-one" style="accent-color:var(--accent);width:16px;height:16px;">
+        <span>group as <strong>one post</strong> (multi-image)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.85rem;cursor:pointer;">
+        <input type="checkbox" id="upload-ai-tag" style="accent-color:var(--accent);width:16px;height:16px;">
+        <span>run <strong>AI tagging</strong> after upload</span>
+      </label>
+    </div>
+    <div id="upload-status" style="font-size:.8rem;color:var(--text-dim);min-height:1.2rem;"></div>
+    <div class="progress-bar" id="progress-bar"><div class="progress-bar-inner" id="progress-inner"></div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeUploadModal()">cancel</button>
+      <button class="btn primary" id="upload-btn" onclick="doUpload()" disabled>upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mobile tag sheet -->
+<div class="sheet-backdrop" id="tag-sheet-backdrop" onclick="closeTagSheet()">
+  <div class="tag-sheet" id="tag-sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <div class="sheet-search-row">
+      <input class="sheet-search" id="sheet-search" type="search" placeholder="search tags…" oninput="filterSheetTags(this.value)">
+    </div>
+    <div class="sheet-tag-list" id="sheet-tag-list">
+      <!-- filled by JS -->
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+function getCsrf() { return document.querySelector('meta[name="csrf-token"]').content; }
+
+function updateSliderFill(sl) {
+  if (!sl) return;
+  const min = parseFloat(sl.min) || 0;
+  const max = parseFloat(sl.max) || 100;
+  const val = parseFloat(sl.value);
+  const pct = ((val - min) / (max - min) * 100).toFixed(1) + '%';
+  sl.style.setProperty('--pct', pct);
+}
+// Auto-update all sliders on input
+document.addEventListener('input', e => {
+  if (e.target.matches('.size-slider')) updateSliderFill(e.target);
+});
+// Init all sliders fill on load
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.size-slider').forEach(updateSliderFill);
+});
+
+function toast(msg, type='ok') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show ' + type;
+  setTimeout(() => t.className = '', 3500);
+}
+
+/* ── Scan ────────────────────────────────────────────── */
+async function doScan() {
+  const btns = ['scan-btn','mob-scan'];
+  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
+  const r = await fetch('/api/scan/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+  const d = await r.json();
+  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
+  let msg = `+${d.added} added`;
+  if (d.removed > 0) msg += `, -${d.removed} removed`;
+  msg += ` (${d.total} total)`;
+  toast(msg);
+  if (d.added > 0 || d.removed > 0) setTimeout(() => location.reload(), 1000);
+}
+
+/* ── AI tag all ──────────────────────────────────────── */
+function goRandom() {
+  const p = new URLSearchParams(window.location.search);
+  window.location.href = '/random/?' + p.toString();
+}
+
+async function organizeMerged() {
+  if (!confirm('Move all multi-image posts into their own folders under inbox/_/ ?\nThis relocates files on disk.')) return;
+  const btn = document.getElementById('organize-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'working...'; }
+  try {
+    const r = await fetch('/api/organize-merged/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+    const d = await r.json();
+    toast(d.ok ? `organized ${d.moved} post folder(s)` : (d.error||'error'), d.ok?'':'err');
+  } catch(e) { toast('error organizing','err'); }
+  if (btn) { btn.disabled = false; btn.textContent = '📁 fix folders'; }
+}
+
+
+async function aiTagAll() {
+  const btns = ['ai-all-btn','mob-ai'];
+  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
+  const r = await fetch('/api/ai-tag-all/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+  const d = await r.json();
+  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
+  toast(`tagged ${d.count} photo(s)`);
+  if (d.count > 0) setTimeout(() => location.reload(), 1200);
+}
+
+/* ── Upload modal ────────────────────────────────────── */
+let selectedFiles = [];
+function openUploadModal() { document.getElementById('upload-modal').classList.add('open'); }
+function closeUploadModal() {
+  document.getElementById('upload-modal').classList.remove('open');
+  selectedFiles = [];
+  document.getElementById('upload-status').textContent = '';
+  document.getElementById('upload-btn').disabled = true;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const dz = document.getElementById('drop-zone');
+  const fi = document.getElementById('file-input');
+  if (!fi) return;
+
+  fi.addEventListener('change', () => { selectedFiles = Array.from(fi.files); updateUploadStatus(); });
+  if (dz) {
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault(); dz.classList.remove('drag-over');
+      selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+      updateUploadStatus();
+    });
+  }
+  document.getElementById('upload-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('upload-modal')) closeUploadModal();
+  });
+});
+
+function updateUploadStatus() {
+  const s = document.getElementById('upload-status');
+  const btn = document.getElementById('upload-btn');
+  if (!selectedFiles.length) { s.textContent = ''; btn.disabled = true; return; }
+  s.textContent = `${selectedFiles.length} file(s) selected`;
+  btn.disabled = false;
+}
+
+async function doUpload() {
+  if (!selectedFiles.length) return;
+  document.getElementById('upload-btn').disabled = true;
+  const pb = document.getElementById('progress-bar');
+  const pi = document.getElementById('progress-inner');
+  pb.style.display = 'block';
+  const asOne  = document.getElementById('upload-as-one')?.checked ? '1' : '0';
+  const aiTag  = document.getElementById('upload-ai-tag')?.checked ? '1' : '0';
+
+  // if grouping as one post, send all at once (no chunking)
+  if (asOne === '1') {
+    const fd = new FormData();
+    selectedFiles.forEach(f => fd.append('photos', f));
+    fd.append('as_one_post', '1');
+    fd.append('ai_tag', aiTag);
+    document.getElementById('upload-status').textContent = `uploading ${selectedFiles.length} files as one post…`;
+    await fetch('/api/upload/', {method:'POST', body: fd, headers:{'X-CSRFToken': getCsrf()}});
+    pi.style.width = '100%';
+  } else {
+    // batch upload as individual posts
+    const CHUNK = 5;
+    let done = 0;
+    for (let i = 0; i < selectedFiles.length; i += CHUNK) {
+      const slice = selectedFiles.slice(i, i + CHUNK);
+      const fd = new FormData();
+      slice.forEach(f => fd.append('photos', f));
+      fd.append('as_one_post', '0');
+      fd.append('ai_tag', aiTag);
+      await fetch('/api/upload/', {method:'POST', body: fd, headers:{'X-CSRFToken': getCsrf()}});
+      done += slice.length;
+      pi.style.width = (done / selectedFiles.length * 100) + '%';
+      document.getElementById('upload-status').textContent = `uploaded ${done}/${selectedFiles.length}…`;
+    }
+  }
+  closeUploadModal(); pb.style.display='none'; pi.style.width='0';
+  toast(`uploaded ${selectedFiles.length} file(s)${aiTag==='1' ? ' + AI tagging' : ''}`);
+  setTimeout(() => location.reload(), 800);
+}
+
+/* ── Mobile tag sheet ────────────────────────────────── */
+let _sheetTags = [];
+async function openTagSheet() {
+  if (!_sheetTags.length) {
+    const r = await fetch('/api/tag-search/?q=');
+    // reuse tag-search with empty q to get all — actually fetch index tags
+    const r2 = await fetch('/api/tags/');
+    _sheetTags = (await r2.json()).tags;
+  }
+  renderSheetTags(_sheetTags);
+  document.getElementById('tag-sheet-backdrop').classList.add('open');
+  document.getElementById('sheet-search').focus();
+}
+function closeTagSheet() { document.getElementById('tag-sheet-backdrop').classList.remove('open'); }
+
+function renderSheetTags(tags) {
+  const el = document.getElementById('sheet-tag-list');
+  el.innerHTML = tags.map(t => `
+    <div class="sheet-tag-item" data-name="${t.name}">
+      <span class="tag-fav-btn ${t.fav ? 'active' : ''}"
+            onclick="sheetToggleFav('${t.name}', this)">&#9829;</span>
+      <a class="sheet-tag-name ${t.category}" href="/?tag=${encodeURIComponent(t.name)}">${t.name}</a>
+      <span class="sheet-tag-count">${t.count}</span>
+      <span class="sheet-tag-add" onclick="addTagMobile('${t.name}')" title="add to search">+</span>
+    </div>`).join('');
+}
+
+async function sheetToggleFav(name, btn) {
+  const r = await fetch(`/api/tag/${encodeURIComponent(name)}/fav/`, {
+    method: 'POST', headers: {'X-CSRFToken': getCsrf()}
+  });
+  const d = await r.json();
+  btn.classList.toggle('active', d.fav);
+  // also update cached tag data
+  const t = _sheetTags.find(t => t.name === name);
+  if (t) t.fav = d.fav;
+}
+
+function openMobMenu() {
+  // sync state from current URL
+  const p = new URLSearchParams(window.location.search);
+  // sort buttons — single source of truth: window.SORT_OPTIONS (set by the
+  // gallery page from the server's sort_options) so PC + phone never drift.
+  const sorts = (window.SORT_OPTIONS && window.SORT_OPTIONS.length)
+    ? window.SORT_OPTIONS
+    : [['new','newest'],['old','oldest'],['rating','rating'],['fav','favs'],['random','random']];
+  const sortEl = document.getElementById('mob-sort-btns');
+  if (sortEl) {
+    const cur = p.get('sort') || 'new';
+    sortEl.innerHTML = sorts.map(([v,l]) =>
+      `<button class="mode-btn ${cur===v?'active':''}" onclick="setSort('${v}');closeMobMenu()">${l}</button>`
+    ).join('');
+  }
+  // star filters (at least)
+  const starEl = document.getElementById('mob-star-filters');
+  const curStar = p.get('min_rating') || '';
+  if (starEl) starEl.innerHTML = [1,2,3,4,5].map(n =>
+    `<button class="star-filter-btn ${curStar==n?'active':''}" data-stars="${n}" onclick="setRatingFilter(this);closeMobMenu()">${n}&#9733;+</button>`
+  ).join('');
+  // exact-rating filters (exactly) — kept in sync with the desktop sidebar
+  const exactEl = document.getElementById('mob-exact-filters');
+  const curExact = p.get('rating') || '';
+  if (exactEl) {
+    let h = [1,2,3,4,5].map(n =>
+      `<button class="star-filter-btn ${curExact==n?'active':''}" data-stars="${n}" onclick="setExactRating(this);closeMobMenu()">${n}&#9733;</button>`
+    ).join('');
+    if (curStar || curExact) h += `<button class="star-filter-btn" onclick="clearRatingFilter();closeMobMenu()">clear</button>`;
+    exactEl.innerHTML = h;
+  }
+  // fav filter
+  const favEl = document.getElementById('mob-fav-filter');
+  if (favEl) favEl.classList.toggle('active', p.get('fav')==='1');
+  const multiEl = document.getElementById('mob-multi-filter');
+  if (multiEl) multiEl.classList.toggle('active', p.get('multi_only')==='1');
+  const singleEl = document.getElementById('mob-single-filter');
+  if (singleEl) singleEl.classList.toggle('active', p.get('single_only')==='1');
+  // mode buttons
+  const scroll = p.get('scroll')==='1';
+  document.getElementById('mob-mode-pages')?.classList.toggle('active', !scroll);
+  document.getElementById('mob-mode-scroll')?.classList.toggle('active', scroll);
+  // size slider
+  const saved = localStorage.getItem('gridSize');
+  const sl = document.getElementById('mob-size-slider');
+  if (sl && saved) sl.value = saved;
+  // zoom mode buttons
+  const zMode = localStorage.getItem('zoomMode') || 'block';
+  document.getElementById('mob-zoom-block')?.classList.toggle('active', zMode === 'block');
+  document.getElementById('mob-zoom-allow')?.classList.toggle('active', zMode === 'allow');
+  document.getElementById('mob-menu-backdrop').classList.add('open');
+  setTimeout(() => { const sl=document.getElementById('mob-size-slider'); if(sl&&typeof updateSliderFill!=='undefined') updateSliderFill(sl); }, 50);
+}
+function closeMobMenu() { document.getElementById('mob-menu-backdrop').classList.remove('open'); }
+
+function setZoomMode(mode) {
+  localStorage.setItem('zoomMode', mode);
+  applyZoomMode(mode);
+  const blockBtn = document.getElementById('mob-zoom-block');
+  const allowBtn = document.getElementById('mob-zoom-allow');
+  if (blockBtn) blockBtn.classList.toggle('active', mode === 'block');
+  if (allowBtn) allowBtn.classList.toggle('active', mode === 'allow');
+}
+
+function applyZoomMode(mode) {
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (!meta) return;
+  if (mode === 'allow') {
+    meta.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+  } else {
+    meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover';
+  }
+}
+
+// Apply saved zoom mode on load
+(function() {
+  const saved = localStorage.getItem('zoomMode') || 'block';
+  applyZoomMode(saved);
+})();
+
+function filterSheetTags(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
+    el.style.display = el.dataset.name.includes(q) ? '' : 'none';
+  });
+}
+
+function addTagMobile(name) {
+  const current = new URLSearchParams(window.location.search);
+  const tags = current.getAll('tag');
+  if (!tags.includes(name)) tags.push(name);
+  window.location.href = '/?' + tags.map(t => 'tag='+encodeURIComponent(t)).join('&');
+}
+</script>
+
+{% block extra_js %}{% endblock %}
+</body>
+</html>

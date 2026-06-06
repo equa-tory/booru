@@ -1,0 +1,1335 @@
+{% extends "gallery/base.html" %}
+{% load gallery_extras %}
+{% block title %}{% if post.title %}{{ post.title }}{% else %}post #{{ post.pk }}{% endif %} — booru.local{% endblock %}
+
+{% block extra_head %}
+<style>
+.detail-wrap { display:flex; height:calc(100vh - var(--header-h) - var(--safe-top)); overflow:hidden; }
+@media (max-width:640px) { .detail-wrap { flex-direction:column; } }
+
+/* Image panel */
+.img-panel { flex:1; background:#000; position:relative; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+
+/* PAGED */
+.view-paged .img-main { flex:1; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden; min-height:0; overscroll-behavior:none; touch-action:none; }
+.view-paged .img-main video { pointer-events:auto !important; touch-action:auto !important; max-width:100%; max-height:100%; outline:none; }
+.view-paged .img-main img { max-width:100%; max-height:100%; object-fit:contain; display:block; user-select:none; -webkit-user-drag:none; pointer-events:none; }
+
+/* ── Filmstrip ─────────────────────────────────────────────── */
+/* PC: normal flex child, always visible below img-main */
+.filmstrip {
+  flex-shrink:0; height:78px;
+  background:rgba(0,0,0,.9);
+  display:flex; align-items:center; gap:4px;
+  padding:4px 8px;
+  overflow-x:auto; overflow-y:hidden;
+  scrollbar-width:thin; scrollbar-color:var(--border) transparent;
+}
+.filmstrip::-webkit-scrollbar { height:3px; }
+.filmstrip::-webkit-scrollbar-thumb { background:var(--border); }
+.filmstrip-item { position:relative; flex-shrink:0; cursor:pointer; border-radius:4px; overflow:hidden; border:2px solid transparent; transition:border-color .15s; -webkit-tap-highlight-color:transparent; }
+.filmstrip-item.active { border-color:var(--accent); }
+.filmstrip-item img { height:66px; width:66px; object-fit:cover; display:block; opacity:.55; transition:opacity .15s; }
+.filmstrip-item.active img, .filmstrip-item:hover img { opacity:1; }
+.filmstrip-play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+.filmstrip-play span { background:rgba(0,0,0,.6); border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-size:.55rem; color:#fff; }
+.filmstrip-drag-hint { flex-shrink:0; font-family:var(--mono); font-size:.6rem; color:var(--text-dim); padding:0 .4rem; white-space:nowrap; }
+
+/* ── Mobile: filmstrip + controls fixed above bottom nav, hidden by default ── */
+@media (max-width:640px) {
+  .filmstrip {
+    position:fixed;
+    bottom:calc(var(--mobile-nav-h) + var(--safe-bottom));
+    left:0; right:0;
+    height:84px;
+    z-index:115;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .2s;
+  }
+  .filmstrip-item img { height:72px; width:72px; }
+  #filmstrip-controls {
+    position:fixed;
+    bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 84px);
+    left:0; right:0;
+    z-index:115;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .2s;
+  }
+  /* JS adds .filmstrip-visible to img-panel when arrows are shown */
+  .img-panel.filmstrip-visible .filmstrip,
+  .img-panel.filmstrip-visible #filmstrip-controls { opacity:1; pointer-events:auto; }
+}
+
+/* SCROLL */
+.view-paged .scroll-container { display:none; }
+.view-scroll .img-main  { display:none; }
+.view-scroll .filmstrip { display:none; }
+/* On mobile the filmstrip is a fixed overlay — allow it in scroll mode when toggled */
+@media (max-width:640px) {
+  .view-scroll .filmstrip { display:flex; }
+  .view-scroll #filmstrip-controls { display:flex; }
+}
+.view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y pinch-zoom; }
+.scroll-img { max-width:100%; display:block; border-radius:2px; }
+
+/* Topbar */
+.img-topbar { position:absolute; top:.6rem; left:.6rem; right:.6rem; display:flex; align-items:center; justify-content:space-between; z-index:10; pointer-events:none; gap:.4rem; flex-wrap:nowrap; }
+.img-topbar > * { pointer-events:all; }
+.nav-counter { font-family:var(--mono); font-size:.75rem; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.1); padding:.2rem .55rem; border-radius:4px; color:var(--text-dim); white-space:nowrap; }
+/* img-counter: on PC absolute inside img-main area, on mobile fixed above filmstrip */
+.img-counter {
+  font-family:var(--mono); font-size:.72rem;
+  background:rgba(0,0,0,.6); padding:.2rem .5rem; border-radius:4px;
+  color:var(--text-dim); z-index:10;
+  /* PC: sit at top-right of filmstrip row */
+  align-self:center; margin-left:auto; flex-shrink:0;
+}
+@media (max-width:640px) {
+  .img-counter {
+    position:fixed;
+    bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 88px);
+    right:.5rem;
+    /* only show when filmstrip is visible */
+    opacity:0; transition:opacity .2s;
+  }
+  .img-panel.filmstrip-visible .img-counter { opacity:1; }
+}
+.view-scroll .img-counter { display:none; }
+.mode-toggle {
+  font-family:var(--mono); font-size:.78rem;
+  background:rgba(0,0,0,.75); border:1px solid rgba(255,255,255,.2);
+  color:var(--text); padding:.3rem .8rem; border-radius:20px;
+  cursor:pointer; -webkit-tap-highlight-color:transparent;
+  white-space:nowrap;
+}
+.mode-toggle:active { color:var(--text-bright); border-color:var(--accent); }
+
+/* ── Mode toggle button position ─────────────────────────────── */
+/* PC: in topbar at top center — no changes needed                 */
+/* Mobile: fixed button, always visible                            */
+/*                                                                 */
+/* TO MOVE TO TOP on mobile: change --mode-btn-bottom to 'auto'   */
+/*   and add top:calc(var(--header-h) + var(--safe-top) + .6rem)  */
+/* TO KEEP AT BOTTOM (default): --mode-btn-bottom stays as-is     */
+
+#mode-toggle-fixed { display:none; }
+
+@media (max-width:640px) {
+  #mode-toggle { display:none !important; } /* hide topbar version on mobile */
+
+  /* ↓↓ CHANGE POSITION HERE ↓↓ */
+  #mode-toggle-fixed {
+    display:block;
+    position:fixed;
+    /* BOTTOM position (default): */
+    bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .5rem);
+    /* TOP position (alternative — uncomment and comment out bottom above): */
+    /* top:calc(var(--header-h) + var(--safe-top) + .5rem); bottom:auto; */
+    left:50%; transform:translateX(-50%);
+    z-index:116;
+    font-family:var(--mono); font-size:.8rem;
+    background:rgba(0,0,0,.82); border:1px solid rgba(255,255,255,.28);
+    color:#fff; padding:.4rem 1.1rem; border-radius:20px;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+    white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.4);
+  }
+}
+
+/* Nav arrows */
+.nav-arrow { position:absolute; top:50%; transform:translateY(-50%); z-index:8; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.1); color:#fff; font-size:1.5rem; width:44px; height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px; text-decoration:none; transition:background .15s, opacity .2s; opacity:0; -webkit-tap-highlight-color:transparent; }
+/* paged mode: show on hover (PC) or when the overlay is toggled (mobile tap) */
+@media (hover:hover) { .view-paged:hover .nav-arrow { opacity:1; } }
+.view-paged.arrows-visible .nav-arrow { opacity:1; }
+/* scroll mode: always visible on PC (devices with a real hover/pointer) */
+@media (hover:hover) { .view-scroll .nav-arrow { opacity:.85; } }
+@media (hover:hover) { .view-scroll:hover .nav-arrow { opacity:1; } }
+/* mobile mode toggle handled by #mode-toggle-fixed which is always visible */
+.nav-arrow:active { background:rgba(124,106,247,.7); }
+.nav-arrow.disabled { opacity:0 !important; pointer-events:none; }
+.nav-arrow.left  { left:.4rem; }
+.nav-arrow.right { right:.4rem; }
+@keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
+.swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
+
+/* Pinch-zoom overlay for images (mobile) */
+.zoom-active { cursor:zoom-in; }
+
+/* Info panel */
+.info-panel { width:280px; min-width:280px; background:var(--bg2); border-left:1px solid var(--border); padding:1rem; overflow-y:auto; }
+@media (max-width:640px) {
+  .info-panel { position:fixed; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom)); left:0; right:0; width:100%; max-height:60vh; border-left:none; border-top:1px solid var(--border); border-radius:16px 16px 0 0; transform:translateY(100%); transition:transform .3s cubic-bezier(.4,0,.2,1), visibility 0s .3s; z-index:120; box-shadow:0 -4px 24px rgba(0,0,0,.4); touch-action:pan-y; overscroll-behavior:contain; visibility:hidden; }
+  .info-panel.open { transform:translateY(0); transition:transform .3s cubic-bezier(.4,0,.2,1), visibility 0s 0s; visibility:visible; }
+}
+.info-handle { width:48px; height:6px; background:var(--border); border-radius:3px; margin:.7rem auto .8rem; display:none; cursor:pointer; }
+@media (max-width:640px) { .info-handle { display:block; } }
+
+.info-section { margin-bottom:1.4rem; }
+.info-label { font-family:var(--mono); font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:.4rem; }
+.meta-row { display:flex; justify-content:space-between; font-size:.8rem; padding:2px 0; }
+.meta-key { color:var(--text-dim); }
+.meta-val { color:var(--text); font-family:var(--mono); font-size:.75rem; max-width:165px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.star-row { display:flex; gap:.25rem; align-items:center; }
+.star-btn { font-size:2.3rem; background:none; border:none; cursor:pointer; color:var(--text-dim); padding:0; line-height:1; -webkit-tap-highlight-color:transparent; }
+.star-btn.active { color:#ffd580; }
+.star-btn:active { color:#ffd580; }
+.fav-btn { font-size:2.3rem; background:none; border:none; cursor:pointer; color:var(--text-dim); padding:.1rem .3rem; line-height:1; -webkit-tap-highlight-color:transparent; margin-left:.3rem; }
+.fav-btn.active { color:#f87272; }
+
+.tag-chips { display:flex; flex-direction:column; gap:2px; }
+.tag-chip { display:flex; align-items:center; padding:4px 0; border-bottom:1px solid rgba(255,255,255,.04); gap:.3rem; }
+.tag-chip-name { font-size:.85rem; flex:1; }
+.tag-chip-name.general  { color:var(--tag-general); }
+.tag-chip-name.character{ color:var(--tag-character); }
+.tag-chip-name.artist   { color:var(--tag-artist); }
+.tag-chip-name.meta     { color:var(--tag-meta); }
+.tag-chip-name.ai       { color:var(--tag-ai); }
+.tag-remove { color:var(--text-dim); cursor:pointer; font-size:1.1rem; padding:0 .2rem; min-width:24px; text-align:center; -webkit-tap-highlight-color:transparent; }
+.tag-remove:active { color:var(--danger); }
+
+.add-tag-row { display:flex; gap:.4rem; margin-top:.6rem; }
+.add-tag-row input { flex:1; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .5rem; border-radius:6px; font-size:.9rem; font-family:var(--mono); outline:none; }
+.add-tag-row input:focus { border-color:var(--accent); }
+.cat-select { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); padding:.3rem; border-radius:6px; font-size:.75rem; outline:none; }
+#tag-suggestions { position:absolute; background:var(--bg3); border:1px solid var(--border); border-radius:6px; z-index:200; max-height:180px; overflow-y:auto; font-size:.85rem; font-family:var(--mono); min-width:180px; box-shadow:0 4px 16px rgba(0,0,0,.5); }
+#tag-suggestions div { padding:.45rem .7rem; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+#tag-suggestions div:active { background:var(--accent-dim); color:var(--text-bright); }
+
+.delete-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.4rem; }
+
+/* Floating mobile buttons */
+.mob-float-btns { display:none; position:fixed; left:1rem; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 14.6rem); z-index:500; display:none; flex-direction:column; gap:.5rem; align-items:flex-end; }
+@media (max-width:640px) { .mob-float-btns { display:flex; } }
+.mob-float-btn { background:var(--bg2); border:1px solid var(--border); border-radius:50%; width:46px; height:46px; font-size:1.1rem; color:var(--text); cursor:pointer; box-shadow:0 2px 16px rgba(0,0,0,.5); -webkit-tap-highlight-color:transparent; display:flex; align-items:center; justify-content:center; }
+.mob-float-btn.accent { background:var(--accent); border-color:var(--accent); color:#fff; }
+.mob-float-btn.fav-active { color:#f87272; border-color:#f87272; }
+
+/* Mobile rating/like popover (opens above the ♥ float button) */
+/*.mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); margin-bottom:.1rem; } */
+.mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); position:absolute; bottom:calc(100% + .4rem); left:0; width:max-content; }
+.mob-rate-pop.open { display:flex; left:1rem; }
+.mob-rate-stars { display:flex; gap:.1rem; }
+.mob-rate-star { font-size:1.8rem; background:none; border:none; color:var(--text-dim); cursor:pointer; padding:.05rem; line-height:1; -webkit-tap-highlight-color:transparent; }
+.mob-rate-star.active { color:#ffd580; }
+.mob-rate-row2 { display:flex; gap:.4rem; align-items:center; }
+.mob-rate-fav { font-size:1.4rem; background:var(--bg3); border:1px solid var(--border); border-radius:10px; color:var(--text-dim); cursor:pointer; padding:.25rem 0; -webkit-tap-highlight-color:transparent; flex:1; }
+.mob-rate-fav.active { color:#f87272; border-color:#f87272; }
+.mob-rate-clear { font-family:var(--mono); font-size:.75rem; background:var(--bg3); border:1px solid var(--border); border-radius:10px; color:var(--text-dim); cursor:pointer; padding:.35rem .7rem; -webkit-tap-highlight-color:transparent; }
+
+/* Resize slider in info panel */
+.slider-row { display:flex; align-items:center; gap:.5rem; }
+.slider-row label { font-family:var(--mono); font-size:.7rem; color:var(--text-dim); white-space:nowrap; }
+input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:pointer; height:3px; }
+
+/* desktop only */
+@media (max-width:640px) { .desktop-only { display:none !important; } }
+/* mobile only */
+@media (min-width:641px) { .mobile-only { display:none !important; } }
+/* filmstrip selection */
+.filmstrip-item.film-selectable { cursor:pointer; }
+.filmstrip-item.film-selectable::after { content:''; position:absolute; inset:0; background:rgba(0,0,0,.3); }
+.filmstrip-item.film-selected::after { content:'\2713'; position:absolute; inset:0; background:rgba(124,106,247,.5); display:flex; align-items:center; justify-content:center; font-size:1.2rem; color:#fff; }
+</style>
+{% endblock %}
+
+{% block sidebar %}{% endblock %}
+
+{% block content %}
+{% with tag_qs=q_tags|join:"&tag=" %}
+<div class="detail-wrap" id="detail-wrap" style="margin:-1rem -1rem;">
+
+  <div class="img-panel view-paged" id="img-panel">
+    <div class="img-topbar" id="img-topbar">
+      <a href="javascript:goBack()" class="btn" style="font-size:.75rem;">&#8592; back</a>
+      {% if images|length > 1 %}
+      <button class="mode-toggle" id="mode-toggle" onclick="toggleViewMode()">&#9783; scroll</button>
+      {% endif %}
+      <span class="nav-counter" id="nav-counter">...</span>
+    </div>
+
+    <!-- Prev/next post arrows — direct children of the panel so they show in
+         both paged and scroll modes (scroll arrows are PC-only via CSS). -->
+    <a class="nav-arrow left"  id="arrow-prev" href="#" onclick="navTo('prev');return false;">&#8249;</a>
+    <a class="nav-arrow right" id="arrow-next" href="#" onclick="navTo('next');return false;">&#8250;</a>
+
+    <!-- PAGED: single image -->
+    <div class="img-main" id="img-main">
+      <div id="media-container" style="max-width:100%;max-height:100%;display:flex;align-items:center;justify-content:center;">
+        {% if images %}{% if images.0.is_video %}
+        <video id="main-video" src="{{ images.0.media_url }}" controls loop playsinline
+               {% if images.0.thumb_url %}poster="{{ images.0.thumb_url }}"{% endif %}
+               style="max-width:100%;max-height:100%;outline:none;background:#000;"></video>
+        {% elif images.0.is_pdf %}
+        <!-- PDF: show thumb + icon in paged mode; JS replaces with iframe/buttons on Safari/desktop -->
+        <div id="pdf-container-0" data-pdf-url="{{ images.0.media_url }}"
+             style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.8rem;position:relative;">
+          {% if images.0.thumb_url %}
+          <img src="{{ images.0.thumb_url }}" style="max-width:180px;max-height:180px;object-fit:contain;opacity:.7;border-radius:4px;">
+          {% endif %}
+          <div style="font-size:1.5rem;">&#128196; PDF</div>
+        </div>
+        {% else %}
+        <img id="main-img" src="{{ images.0.media_url }}" alt="{{ post.title }}"
+             style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">
+        {% endif %}{% endif %}
+      </div>
+    </div>
+
+    {% if images|length > 1 %}
+    <!-- Controls bar: reorder + select buttons, above filmstrip, not scrollable -->
+    <div id="filmstrip-controls" style="display:flex;align-items:center;justify-content:center;gap:.6rem;padding:.35rem .8rem;background:rgba(0,0,0,.75);flex-shrink:0;border-top:1px solid rgba(255,255,255,.08);">
+      <button id="filmstrip-reorder-btn" onclick="event.stopPropagation();toggleReorderMode()" style="font-family:var(--mono);font-size:.78rem;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:.4rem .9rem;cursor:pointer;white-space:nowrap;min-height:38px;">&#8597; reorder</button>
+      <button id="filmstrip-sel-btn" onclick="event.stopPropagation();toggleFilmSel()" style="font-family:var(--mono);font-size:.78rem;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:.4rem .9rem;cursor:pointer;white-space:nowrap;min-height:38px;">&#9745; select</button>
+    </div>
+    <!-- Filmstrip: thumbnails only -->
+    <div class="filmstrip" id="filmstrip">
+      {% for img in images %}
+      <div class="filmstrip-item {% if forloop.first %}active{% endif %}"
+           data-idx="{{ forloop.counter0 }}" data-photo-id="{{ img.pk }}"
+           onclick="event.stopPropagation();reorderMode ? filmstripTapReorder(this) : (filmSelMode ? filmToggleItem(this) : selectImage({{ forloop.counter0 }}, this))"
+           draggable="true">
+        <img src="{{ img.thumb_url }}" loading="lazy">
+        {% if img.is_video %}<div class="filmstrip-play"><span>&#9654;</span></div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <div class="img-counter" id="img-counter">1 / {{ images|length }}</div>
+    <!-- Filmstrip selection action bar -->
+    <div id="filmstrip-sel-bar" style="display:none;position:fixed;bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 132px);left:0;right:0;z-index:116;background:rgba(0,0,0,.85);border-top:1px solid var(--accent);padding:.5rem .6rem;align-items:center;gap:.4rem;flex-wrap:wrap;">
+      <span id="filmstrip-sel-count" style="font-family:var(--mono);font-size:.75rem;color:var(--accent);flex:1;">0 selected</span>
+      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSelAll()">all</button>
+      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSelNone()">none</button>
+      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSplitSelected()">split out</button>
+      <button class="btn danger" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmDeleteSelected(false)">remove</button>
+      <button class="btn danger" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmDeleteSelected(true)">&#128465;</button>
+    </div>
+    {% endif %}
+
+    <!-- SCROLL: all stacked -->
+    <div class="scroll-container" id="scroll-container">
+      {% for img in images %}
+      {% if img.is_video %}
+      <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline
+             {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
+             style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
+      {% else %}
+      <img class="scroll-img" src="{{ img.media_url }}" loading="lazy">
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Info panel -->
+  <div class="info-panel" id="info-panel">
+    <div class="info-handle" id="info-handle"></div>
+
+    <div class="info-section">
+      <div class="info-label">post</div>
+      {% if post.title %}<div class="meta-row"><span class="meta-key">title</span><span class="meta-val" title="{{ post.title }}">{{ post.title }}</span></div>{% endif %}
+      <div class="meta-row"><span class="meta-key">images</span><span class="meta-val">{{ images|length }}</span></div>
+      <div class="meta-row"><span class="meta-key">added</span><span class="meta-val">{{ post.added_at|date:"Y-m-d" }}</span></div>
+      <button class="btn" id="gallery-page-btn" onclick="goToGalleryPage()" style="width:100%;justify-content:center;margin-top:.6rem;font-size:.78rem;">&#8862; open gallery</button>
+    </div>
+
+    <!-- Rating (below actions) -->
+    <div class="info-section">
+      <div class="info-label">rating</div>
+      <div class="star-row">
+        {% for n in "12345" %}
+        <button class="star-btn {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="setRating({{ n }})">&#9733;</button>
+        {% endfor %}
+        <button class="fav-btn {% if post.fav %}active{% endif %}" id="fav-btn" onclick="toggleFav()">&#9829;</button>
+        {% if post.rating %}<button class="btn" style="font-size:.7rem;padding:.1rem .4rem;margin-left:.3rem;" onclick="setRating(0)">clear</button>{% endif %}
+      </div>
+    </div>
+
+
+    <!-- Resize slider -->
+    <div class="info-section" id="resize-section">
+      <div class="info-label">image width</div>
+      <!-- Desktop: px-based 300-1200 -->
+      <div class="slider-row desktop-only">
+        <label>S</label>
+        <input type="range" class="size-slider" id="scroll-size-slider-desktop" min="300" max="1200" value="900" step="50" oninput="setScrollImgSize(this.value + 'px', 'desktop')">
+        <label>L</label>
+      </div>
+      <!-- Mobile: 0=50% size, 50=default(100%), 100=200% zoom -->
+      <div class="slider-row mobile-only">
+        <label style="font-size:.65rem;">-</label>
+        <input type="range" class="size-slider" id="scroll-size-slider-mobile" min="0" max="100" value="50" step="2" oninput="setScrollImgSizeMobile(this.value)">
+        <label style="font-size:.65rem;">+</label>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="info-section">
+      <button class="btn" onclick="aiTag()" style="width:100%;justify-content:center;margin-bottom:.4rem;" id="ai-btn">&#10022; ai auto-tag</button>
+
+      {% if images|length > 1 %}
+      <div style="margin-bottom:.5rem;">
+        <div class="info-label" style="margin-bottom:.3rem;">current image</div>
+        <div style="display:flex;gap:.4rem;">
+          <button class="btn" style="flex:1;justify-content:center;font-size:.75rem;" onclick="splitCurrentImage()">&#9000; split to post</button>
+          <button class="btn danger" style="flex:1;justify-content:center;font-size:.75rem;" onclick="deleteCurrentImage(false)">remove</button>
+          <button class="btn danger" style="flex:1;justify-content:center;font-size:.75rem;" onclick="deleteCurrentImage(true)">&#128465;</button>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="info-label" style="margin-bottom:.3rem;">post</div>
+      <div class="delete-row" style="margin-bottom:.5rem;">
+        <button class="btn danger" onclick="doDeletePost(false)" style="flex:1;justify-content:center;">remove from DB</button>
+        <button class="btn danger" onclick="doDeletePost(true)" style="flex:1;justify-content:center;">&#128465; files</button>
+      </div>
+
+      <!-- Merge -->
+      <div class="info-label" style="margin-bottom:.3rem;">merge</div>
+      <div style="display:flex;gap:.4rem;margin-bottom:.5rem;">
+        <input id="merge-target" type="number" placeholder="post ID to merge into..."
+               style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:6px;font-size:.82rem;font-family:var(--mono);outline:none;">
+        <button class="btn" onclick="mergeInto()">merge</button>
+      </div>
+
+      <!-- Not-dupe -->
+      <div id="not-dupe-section" style="display:none;">
+        <div class="info-label" style="margin-bottom:.3rem;">not-duplicate of</div>
+        <div id="not-dupe-list" style="display:flex;flex-direction:column;gap:3px;font-size:.78rem;font-family:var(--mono);"></div>
+      </div>
+
+      <!-- File path -->
+      <div style="margin-top:.5rem;">
+        <div class="info-label" style="margin-bottom:.3rem;">file path</div>
+        <div id="file-path-box" style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.35rem .5rem;word-break:break-all;line-height:1.4;cursor:pointer;" onclick="copyPath(this)" title="click to copy">loading...</div>
+        <div style="font-size:.65rem;color:var(--text-dim);margin-top:2px;font-family:var(--mono);">click to copy</div>
+      </div>
+    </div>
+
+
+    <!-- Tags (below rating) -->
+    <div class="info-section">
+      <div class="info-label">tags <span id="tag-count" style="color:var(--text-dim)">({{ post.tags.count }})</span></div>
+      <div style="position:relative;margin-bottom:.6rem;">
+        <div class="add-tag-row">
+          <input id="new-tag" type="text" placeholder="add tag..." autocomplete="off" oninput="onTagInput()" onkeydown="onTagKey(event)">
+          <select class="cat-select" id="tag-cat">
+            <option value="general">gen</option>
+            <option value="character">char</option>
+            <option value="artist">art</option>
+            <option value="meta">meta</option>
+          </select>
+          <button class="btn primary" onclick="addTag()" style="padding:.35rem .6rem;">+</button>
+        </div>
+        <div id="tag-suggestions" style="display:none;"></div>
+      </div>
+      <div class="tag-chips" id="tag-chips">
+        {% for tag in post.tags.all|sort_by_category %}
+        <div class="tag-chip" data-tag="{{ tag.name }}">
+          <a class="tag-chip-name {{ tag.category }}" href="/?tag={{ tag.name }}">{{ tag.name }}</a>
+          <span class="tag-remove" onclick="removeTag('{{ tag.name }}')">x</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endwith %}
+
+<!-- Mobile floating buttons -->
+<div class="mob-float-btns">
+  <div class="mob-rate-pop" id="mob-rate-pop">
+    <div class="mob-rate-stars" id="mob-rate-stars">
+      {% for n in "12345" %}
+      <button class="mob-rate-star" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
+      {% endfor %}
+    </div>
+    <div class="mob-rate-row2">
+      <button class="mob-rate-fav {% if post.fav %}active{% endif %}" id="mob-rate-fav" onclick="mobFav()">&#9829;</button>
+      <button class="mob-rate-clear" onclick="mobClear()">clear</button>
+    </div>
+  </div>
+  <button class="mob-float-btn {% if post.fav %}fav-active{% endif %}" id="mob-fav-btn" onclick="toggleMobRatePop()">&#9829;</button>
+  <button class="mob-float-btn accent" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
+</div>
+
+{% if images|length > 1 %}
+<!-- Mobile: mode toggle fixed at bottom center, always visible -->
+<button id="mode-toggle-fixed" onclick="toggleViewMode()">&#9783; scroll</button>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const POST_ID  = {{ post.pk }};
+const Q_TAGS   = {{ q_tags|safe }};
+// Full search context preserved in URL for back navigation
+const tagSuffix = Q_TAGS.length ? '?' + Q_TAGS.map(t=>'tag='+encodeURIComponent(t)).join('&') : '';
+
+// BACK_URL: where back button goes — the index page with all filters/page
+const BACK_URL = '{{ back_url|escapejs }}';
+// Full search context (tags + filters + sort) for neighbor navigation
+const SEARCH_QS = '{{ search_qs|escapejs }}';
+const navSuffix = SEARCH_QS ? '?' + SEARCH_QS : '';
+const IMAGES   = [{% for img in images %}{"id":{{ img.pk }},"url":"{{ img.media_url }}","thumb":"{{ img.thumb_url }}","is_video":{{ img.is_video|yesno:"true,false" }},"is_pdf":{{ img.is_pdf|yesno:"true,false" }}}{% if not forloop.last %},{% endif %}{% endfor %}];
+const IS_MULTI = IMAGES.length > 1;
+let currentImgIdx = 0;
+
+/* ── View mode ───────────────────────────────────────────── */
+let viewMode = IS_MULTI ? (localStorage.getItem('viewMode') || 'scroll') : 'paged';
+
+// check if browser zoom is allowed (disable JS zoom in that case)
+function isSafari() {
+  // Safari on iOS and macOS — has WebKit but not Chrome
+  return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+}
+
+function renderPdfContainer(url) {
+  if (isSafari()) {
+    // Safari renders PDFs natively in iframe
+    return `<iframe src="${url}" style="width:100%;height:100%;border:none;flex:1;" allowfullscreen></iframe>`;
+  } else {
+    // Other browsers: show open + download buttons
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:1rem;padding:2rem;">
+      <div style="font-size:3rem;">&#128196;</div>
+      <a href="${url}" target="_blank" class="btn primary" style="font-size:.9rem;">open PDF</a>
+      <a href="${url}" download class="btn" style="font-size:.9rem;">download</a>
+    </div>`;
+  }
+}
+
+function isBrowserZoomAllowed() {
+  return localStorage.getItem('zoomMode') === 'allow';
+}
+
+function applyViewMode(mode) {
+  viewMode = mode;
+  localStorage.setItem('viewMode', mode);
+  localStorage.setItem('pref_viewMode', mode);
+  const panel     = document.getElementById('img-panel');
+  const toggle    = document.getElementById('mode-toggle');
+  const resizeSec = document.getElementById('resize-section');
+  panel.classList.toggle('view-paged',  mode === 'paged');
+  panel.classList.toggle('view-scroll', mode === 'scroll');
+  const label = mode === 'paged' ? '\u2783 scroll' : '\u2637 paged';
+  if (toggle) toggle.textContent = label;
+  const fixedBtn = document.getElementById('mode-toggle-fixed');
+  if (fixedBtn) fixedBtn.textContent = label;
+  const topbar = document.getElementById('img-topbar');
+  if (mode === 'scroll') {
+    topbar.style.position = 'relative';
+    topbar.style.background = 'rgba(0,0,0,.85)';
+    topbar.style.padding = '.5rem .6rem';
+  
+    setTimeout(initScrollZoom, 50);
+  } else {
+    topbar.style.position = 'absolute';
+    topbar.style.background = '';
+    topbar.style.padding = '';
+  
+  }
+}
+function toggleViewMode() {
+  const newMode = viewMode === 'paged' ? 'scroll' : 'paged';
+  applyViewMode(newMode);
+  // persist across devices
+  fetch('/api/pref/set/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({key:'viewMode', value:newMode})
+  }).catch(()=>{});
+}
+function isMobileDetail() { return window.innerWidth <= 640; }
+
+function setScrollImgSizeMobile(val) {
+  // val: 0=50%(tiny), 50=100%(default), 100=200%(zoomed)
+  const v = parseInt(val);
+  let pct;
+  if (v <= 50) {
+    // 0->50%, 50->100%  (linear: 50 + v)
+    pct = 50 + v; // 50 to 100
+  } else {
+    // 50->100%, 100->200%  (linear: v*2)
+    pct = v * 2; // 100 to 200
+  }
+  setScrollImgSize(pct + '%', 'mobile');
+  // sync slider
+  const sl = document.getElementById('scroll-size-slider-mobile');
+  if (sl && sl.value != v) { sl.value = v; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+}
+
+function setScrollImgSize(val, platform) {
+  const cssVal = String(val).endsWith('px') || String(val).endsWith('%') ? val : val + 'px';
+
+  if (platform === 'mobile' || (platform === undefined && isMobileDetail())) {
+    // mobile: percentage = zoom relative to container width
+    document.querySelectorAll('.scroll-img').forEach(el => {
+      el.style.maxWidth = ''; // clear max-width constraint
+      el.style.width = cssVal; // use % directly
+    });
+    const mc = document.getElementById('media-container');
+    if (mc) { mc.style.width = cssVal; mc.style.maxWidth = ''; }
+    localStorage.setItem('scrollImgSize_mobile', cssVal);
+    const sl = document.getElementById('scroll-size-slider-mobile');
+    if (sl) { sl.value = parseInt(cssVal); if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+  } else {
+    // desktop: max-width in px
+    document.querySelectorAll('.scroll-img').forEach(el => { el.style.maxWidth = cssVal; el.style.width = '100%'; });
+    const mc = document.getElementById('media-container');
+    if (mc) { mc.style.maxWidth = cssVal; mc.style.width = '100%'; }
+    localStorage.setItem('scrollImgSize_desktop', cssVal);
+    const sl = document.getElementById('scroll-size-slider-desktop');
+    if (sl) { sl.value = parseInt(cssVal); if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+  }
+}
+
+/* ── Image carousel ─────────────────────────────────────── */
+function selectImage(idx, thumbEl) {
+  currentImgIdx = idx;
+  const item = IMAGES[idx];
+  const container = document.getElementById('media-container');
+  // pause any playing video
+  const oldVid = container.querySelector('video');
+  if (oldVid) oldVid.pause();
+
+  if (item.is_video) {
+    container.innerHTML = `<video id="main-video" src="${item.url}" controls loop playsinline
+      ${item.thumb ? `poster="${item.thumb}"` : ''}
+      style="max-width:100%;max-height:100%;outline:none;background:#000;"></video>`;
+  } else if (item.is_pdf) {
+    container.innerHTML = renderPdfContainer(item.url);
+  } else {
+    container.innerHTML = `<img id="main-img" src="${item.url}"
+      style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">`;
+    initPinchZoom();
+  }
+
+  document.querySelectorAll('.filmstrip-item').forEach((t, i) => t.classList.toggle('active', i === idx));
+  const counter = document.getElementById('img-counter');
+  if (counter) counter.textContent = `${idx+1} / ${IMAGES.length}`;
+  if (thumbEl) { const el = thumbEl.closest ? thumbEl.closest('.filmstrip-item') : thumbEl; el.scrollIntoView({behavior:'smooth', inline:'nearest', block:'nearest'}); }
+  updateArrows();
+  updateFilePath();
+}
+
+function updateArrows() {
+  const atStart = currentImgIdx === 0;
+  const atEnd   = currentImgIdx === IMAGES.length - 1;
+  document.getElementById('arrow-prev').classList.toggle('disabled', atStart && !prevId);
+  document.getElementById('arrow-next').classList.toggle('disabled', atEnd  && !nextId);
+}
+
+function nextImage() { if (currentImgIdx < IMAGES.length-1) selectImage(currentImgIdx+1, document.querySelectorAll('.filmstrip-item')[currentImgIdx+1]); else navTo('next'); }
+function prevImage() {
+  if (currentImgIdx > 0) selectImage(currentImgIdx-1, document.querySelectorAll('.filmstrip-item')[currentImgIdx-1]);
+  else navTo('prev', 'last'); // open at last image
+}
+
+/* ── Pinch-zoom + pan + double-tap ────────────────────────── */
+let zoomScale = 1;
+
+function attachZoom(el, wrapper, lockPointer=true) {
+  if (!el) return;
+  if (isBrowserZoomAllowed()) return;
+  el.style.transformOrigin = 'center center';
+  let scale=1, startDist=0, panX=0, panY=0, panSX=0, panSY=0, panning=false;
+  let wasPinching=false; // track if last gesture was a pinch
+
+  function apply() {
+    el.style.transform = `scale(${scale}) translate(${panX}px,${panY}px)`;
+    zoomScale = scale;
+    // In paged mode we toggle pointer-events so taps fall through to the
+    // nav layer when not zoomed. In scroll mode we must NOT do this: setting
+    // pointer-events:none after zooming back out stops the element from ever
+    // receiving touches again, so you could only zoom once per image.
+    if (lockPointer) el.style.pointerEvents = scale > 1 ? 'auto' : 'none';
+  }
+
+  el.addEventListener('touchstart', e => {
+    if (e.touches.length===2) {
+      wasPinching = true;
+      panning = false;
+      startDist = Math.hypot(
+        e.touches[0].clientX-e.touches[1].clientX,
+        e.touches[0].clientY-e.touches[1].clientY
+      );
+      el.style.touchAction = 'none';
+    } else if (e.touches.length===1) {
+      wasPinching = false;
+      if (scale>1) {
+        panning=true;
+        panSX=e.touches[0].clientX-panX;
+        panSY=e.touches[0].clientY-panY;
+        el.style.touchAction = 'none';
+      }
+    }
+  }, {passive:true});
+
+  el.addEventListener('touchmove', e => {
+    if (e.touches.length===2) {
+      const d=Math.hypot(
+        e.touches[0].clientX-e.touches[1].clientX,
+        e.touches[0].clientY-e.touches[1].clientY
+      );
+      scale = Math.max(1, Math.min(5, scale * d / startDist));
+      startDist = d;
+      apply();
+    } else if (panning && scale>1 && e.touches.length===1) {
+      panX=e.touches[0].clientX-panSX;
+      panY=e.touches[0].clientY-panSY;
+      apply();
+    }
+  }, {passive:true});
+
+  el.addEventListener('touchend', e => {
+    if (e.touches.length===0) {
+      panning = false;
+      wasPinching = false;
+      // NEVER auto-reset scale on finger lift — only double-tap can reset
+      // (clamp below 1 only, to prevent negative scale)
+      if (scale < 1) { scale=1; apply(); }
+    } else if (e.touches.length===1 && wasPinching) {
+      // 2 fingers -> 1: seamlessly switch to pan mode
+      wasPinching = false;
+      panning = true;
+      panSX = e.touches[0].clientX - panX;
+      panSY = e.touches[0].clientY - panY;
+    }
+  }, {passive:true});
+
+  // Double-tap to zoom/reset
+  let lastTap=0;
+  (wrapper||el).addEventListener('touchend', e => {
+    if (e.changedTouches.length!==1) return;
+    const now=Date.now();
+    if (now-lastTap<280) {
+      e.preventDefault();
+      if (scale>1) { scale=1; panX=0; panY=0; }
+      else { scale=2; }
+      zoomScale=scale; apply();
+    }
+    lastTap=now;
+  }, {passive:false});
+}
+
+function initPinchZoom() {
+  const img = document.getElementById('main-img');
+  if (img) attachZoom(img, img.parentElement);
+}
+
+function initScrollZoom() {
+  document.querySelectorAll('.scroll-img:not([data-zoom])').forEach(el => {
+    el.dataset.zoom='1';
+    // lockPointer=false → scroll images keep receiving touch events so they
+    // can be pinch-zoomed repeatedly, not just once.
+    attachZoom(el, el, false);
+  });
+}
+
+function setFilmstripUI(showing) {
+  const floats  = document.querySelector('.mob-float-btns');
+  const modeBtn = document.getElementById('mode-toggle-fixed');
+  const controls = document.getElementById('filmstrip-controls');
+  // hide ♥ and ℹ buttons + mode toggle when filmstrip is shown
+  [floats, modeBtn].forEach(el => {
+    if (!el) return;
+    el.style.opacity       = showing ? '0' : '';
+    el.style.pointerEvents = showing ? 'none' : '';
+  });
+  // controls bar opacity handled by CSS (.filmstrip-visible) on mobile,
+  // but on desktop it's always visible — nothing to do
+}
+
+/* ── Filmstrip item selection ────────────────────────────── */
+let filmSelMode = false;
+let filmSelected = new Set();
+
+function toggleFilmSel() {
+  filmSelMode = !filmSelMode;
+  const bar = document.getElementById('filmstrip-sel-bar');
+  const btn = document.getElementById('filmstrip-sel-btn');
+  bar.style.display = filmSelMode ? 'flex' : 'none';
+  btn.style.color = filmSelMode ? 'var(--accent)' : 'rgba(255,255,255,.6)';
+  btn.style.borderColor = filmSelMode ? 'var(--accent)' : 'rgba(255,255,255,.2)';
+  if (!filmSelMode) { filmSelected.clear(); updateFilmSelCount(); }
+  document.querySelectorAll('.filmstrip-item').forEach(el => {
+    el.classList.toggle('film-selectable', filmSelMode);
+    el.classList.remove('film-selected');
+  });
+}
+
+function filmToggleItem(el) {
+  const id = el.dataset.photoId;
+  if (filmSelected.has(id)) { filmSelected.delete(id); el.classList.remove('film-selected'); }
+  else { filmSelected.add(id); el.classList.add('film-selected'); }
+  updateFilmSelCount();
+}
+function filmSelAll() {
+  document.querySelectorAll('.filmstrip-item').forEach(el => { filmSelected.add(el.dataset.photoId); el.classList.add('film-selected'); });
+  updateFilmSelCount();
+}
+function filmSelNone() {
+  filmSelected.clear();
+  document.querySelectorAll('.filmstrip-item.film-selected').forEach(el => el.classList.remove('film-selected'));
+  updateFilmSelCount();
+}
+function updateFilmSelCount() {
+  document.getElementById('filmstrip-sel-count').textContent = `${filmSelected.size} selected`;
+}
+
+async function filmSplitSelected() {
+  if (!filmSelected.size) { toast('select items first','err'); return; }
+  if (filmSelected.size === IMAGES.length) { toast('leave at least one image in this post','err'); return; }
+  if (!confirm(`Split ${filmSelected.size} selected item(s) out into ONE new post?`)) return;
+  const r = await fetch('/api/images/split-to-one/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({ids: [...filmSelected].map(Number)})
+  });
+  const d = await r.json();
+  if (d.ok) { toast(`split ${d.count} item(s) into post #${d.new_post_id}`); location.reload(); }
+  else toast(d.error||'error','err');
+}
+
+async function filmDeleteSelected(alsoFile) {
+  if (!filmSelected.size) { toast('select items first','err'); return; }
+  if (!confirm(alsoFile ? `Delete ${filmSelected.size} file(s) from disk?` : `Remove ${filmSelected.size} item(s) from post?`)) return;
+  for (const id of filmSelected) {
+    await fetch(`/api/image/${id}/delete/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({delete_file:alsoFile})});
+  }
+  toast(`removed ${filmSelected.size} item(s)`); location.reload();
+}
+
+/* ── Filmstrip drag-to-reorder ──────────────────────────── */
+// Reorder mode: tap "↕ reorder" button → tap item to pick → tap target to drop
+let reorderMode = false, reorderPickedIdx = null;
+
+function toggleReorderMode() {
+  reorderMode = !reorderMode;
+  reorderPickedIdx = null;
+  const btn = document.getElementById('filmstrip-reorder-btn');
+  if (btn) {
+    btn.style.color = reorderMode ? 'var(--accent)' : 'rgba(255,255,255,.6)';
+    btn.style.borderColor = reorderMode ? 'var(--accent)' : 'rgba(255,255,255,.2)';
+    btn.textContent = reorderMode ? '↕ done' : '↕ reorder';
+  }
+  document.querySelectorAll('.filmstrip-item').forEach(el => {
+    el.style.outline = '';
+    el.style.opacity = '';
+  });
+  if (!reorderMode) toast('reorder mode off');
+  else toast('tap item to pick, tap target to place');
+}
+
+async function doReorder(fromIdx, toIdx) {
+  if (fromIdx === toIdx) return;
+  const moved = IMAGES.splice(fromIdx, 1)[0];
+  IMAGES.splice(toIdx, 0, moved);
+  const orderedIds = IMAGES.map(img => img.id);
+  await fetch(`/api/post/${POST_ID}/reorder/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({order: orderedIds})
+  });
+  const strip = document.getElementById('filmstrip');
+  const items = [...strip.querySelectorAll('.filmstrip-item')];
+  const el = items.splice(fromIdx, 1)[0];
+  items.splice(toIdx, 0, el);
+  items.forEach((el2, i) => { el2.dataset.idx = i; strip.appendChild(el2); });
+  toast(`moved to position ${toIdx+1}`);
+  location.reload();
+}
+
+function filmstripTapReorder(itemEl) {
+  const idx = parseInt(itemEl.dataset.idx);
+  if (reorderPickedIdx === null) {
+    // pick this item
+    reorderPickedIdx = idx;
+    document.querySelectorAll('.filmstrip-item').forEach(el => el.style.opacity = '.5');
+    itemEl.style.opacity = '1';
+    itemEl.style.outline = '2px solid var(--accent)';
+    toast('picked — now tap where to place it');
+  } else {
+    // drop here
+    const from = reorderPickedIdx;
+    document.querySelectorAll('.filmstrip-item').forEach(el => { el.style.outline=''; el.style.opacity=''; });
+    reorderPickedIdx = null;
+    doReorder(from, idx);
+  }
+}
+
+// Mouse drag (desktop)
+(function() {
+  let dragSrcIdx = null;
+  document.addEventListener('dragstart', e => {
+    const item = e.target.closest('.filmstrip-item');
+    if (!item) return;
+    dragSrcIdx = parseInt(item.dataset.idx);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  document.addEventListener('dragover', e => {
+    const item = e.target.closest('.filmstrip-item');
+    if (!item) return; e.preventDefault();
+    document.querySelectorAll('.filmstrip-item').forEach(el => el.style.outline='');
+    item.style.outline = '2px solid var(--accent)';
+  });
+  document.addEventListener('dragleave', e => {
+    const item = e.target.closest('.filmstrip-item');
+    if (item) item.style.outline = '';
+  });
+  document.addEventListener('drop', async e => {
+    const item = e.target.closest('.filmstrip-item');
+    document.querySelectorAll('.filmstrip-item').forEach(el => el.style.outline='');
+    if (!item || dragSrcIdx === null) return; e.preventDefault();
+    await doReorder(dragSrcIdx, parseInt(item.dataset.idx));
+    dragSrcIdx = null;
+  });
+})();
+
+/* ── Post neighbors + preloading ────────────────────────── */
+let prevId = null, nextId = null;
+let neighborIndex = 0;          // 0-based position of this post in the filtered list
+const GALLERY_PAGE_SIZE = 40;   // must match Paginator(posts, 40) in views.py
+const preloadCache = [];
+function preloadUrls(urls) {
+  (urls || []).forEach(u => {
+    const img = new Image();
+    img.src = u;
+    preloadCache.push(img); // keep ref so browser caches it
+  });
+}
+async function loadNeighbors() {
+  const r = await fetch(`/api/post/${POST_ID}/neighbors/${navSuffix}`);
+  const d = await r.json();
+  prevId = d.prev; nextId = d.next;
+  neighborIndex = d.index || 0;
+  document.getElementById('nav-counter').textContent = `${d.index+1} / ${d.total}`;
+  updateArrows();
+  // surface which gallery page this post sits on
+  const gp = document.getElementById('gallery-page-btn');
+  if (gp) {
+    const page = Math.floor(neighborIndex / GALLERY_PAGE_SIZE) + 1;
+    gp.textContent = `\u229E open gallery (page ${page})`;
+  }
+  // preload neighbour cover images
+  preloadUrls(d.prev_preload);
+  preloadUrls(d.next_preload);
+}
+function goBack() {
+  if (BACK_URL) window.location.href = BACK_URL;
+  else history.back();
+}
+
+// Open the gallery index at the exact page that contains this post,
+// carrying over the current tags / sort / rating filters.
+function goToGalleryPage() {
+  const page = Math.floor(neighborIndex / GALLERY_PAGE_SIZE) + 1;
+  const qs = SEARCH_QS ? '&' + SEARCH_QS : '';
+  window.location.href = `/?page=${page}${qs}`;
+}
+
+function navTo(dir, pos) {
+  const id = dir==='prev' ? prevId : nextId;
+  if (!id) return;
+  const posSuffix = pos === 'last' ? '#last' : '';
+  window.location.href = `/post/${id}/${navSuffix}${posSuffix}`;
+}
+
+/* ── Keyboard ────────────────────────────────────────────── */
+document.addEventListener('keydown', e => {
+  if (e.target.tagName==='INPUT' || e.target.tagName==='SELECT') return;
+  // don't hijack arrow keys when video is focused
+  const vid = document.getElementById('main-video');
+  if (vid && document.activeElement === vid) return;
+
+  if (viewMode === 'paged') {
+    if (e.key==='ArrowLeft'  || e.key==='a') { e.preventDefault(); prevImage(); }
+    if (e.key==='ArrowRight' || e.key==='d') { e.preventDefault(); nextImage(); }
+  } else {
+    if (e.key==='ArrowLeft'  || e.key==='a') navTo('prev');
+    if (e.key==='ArrowRight' || e.key==='d') navTo('next');
+  }
+  if (e.key==='Escape') { if (infoPanelOpen) toggleInfoPanel(false); else goBack(); }
+  if (e.key==='i') toggleInfoPanel();
+  if (e.key==='v') toggleViewMode();
+});
+
+/* ── Touch gestures ──────────────────────────────────────── */
+(function() {
+  let startX=0, startY=0, startT=0, multiTouch=false;
+
+  function onStart(e) {
+    multiTouch = e.touches.length > 1;
+    if (e.touches.length !== 1) return;
+    startX=e.touches[0].clientX; startY=e.touches[0].clientY; startT=Date.now();
+  }
+  function toggleFilmstripOverlay() {
+    const imgPanel = document.getElementById('img-panel');
+    const showing = imgPanel.classList.toggle('filmstrip-visible');
+    imgPanel.classList.toggle('arrows-visible', showing);
+    setFilmstripUI(showing);
+  }
+
+  function onEnd(e) {
+    if (multiTouch) { multiTouch=false; return; }
+    if (e.changedTouches.length !== 1) return;
+    // let nav arrow taps through without gesture interference
+    const pt = e.changedTouches[0];
+    const topEl = document.elementFromPoint(pt.clientX, pt.clientY);
+    if (topEl && topEl.closest('.nav-arrow')) return;
+    const dx=pt.clientX-startX, dy=pt.clientY-startY;
+    const dt=Date.now()-startT, absDx=Math.abs(dx), absDy=Math.abs(dy);
+
+    const isTap = absDx<12 && absDy<12 && dt<300;
+
+    // When zoomed in: a tap toggles the filmstrip/buttons overlay (no nav)
+    if (zoomScale > 1.05) {
+      if (isTap && IS_MULTI) toggleFilmstripOverlay();
+      return;
+    }
+
+    // if video is playing, don't intercept horizontal swipes (let user seek)
+    const vid = document.getElementById('main-video');
+    const vidPlaying = vid && !vid.paused && !vid.ended;
+
+    if (viewMode === 'paged') {
+      if (dt<500 && dy>60 && absDy>absDx*1.2) { goBack(); return; }
+      if (!vidPlaying && dt<500 && absDx>35 && absDx>absDy*1.2) { if(dx<0)nextImage();else prevImage(); return; }
+      if (isTap) {
+        if (infoPanelOpen) { toggleInfoPanel(false); return; }
+        if (IS_MULTI) toggleFilmstripOverlay();
+      }
+    } else {
+      // SCROLL MODE
+      if (!vidPlaying && dt<500 && absDx>50 && absDx>absDy*1.8) { if(dx<0)navTo('next');else navTo('prev'); return; }
+      const sc = document.getElementById('scroll-container');
+      if (dt<500 && dy>60 && absDy>absDx*1.2 && sc && sc.scrollTop<10) { goBack(); return; }
+      // tap toggles filmstrip/buttons overlay in scroll mode too
+      if (isTap && IS_MULTI) toggleFilmstripOverlay();
+    }
+  }
+
+  const imgMain = document.getElementById('img-main');
+  if (imgMain) { imgMain.addEventListener('touchstart', onStart, {passive:true}); imgMain.addEventListener('touchend', onEnd, {passive:true}); }
+  const sc = document.getElementById('scroll-container');
+  if (sc) { sc.addEventListener('touchstart', onStart, {passive:true}); sc.addEventListener('touchend', onEnd, {passive:true}); }
+})();
+
+if (!sessionStorage.getItem('swipeHinted')) {
+  sessionStorage.setItem('swipeHinted','1');
+  const hint = document.createElement('div');
+  hint.className='swipe-hint';
+  hint.textContent = IS_MULTI ? '<- swipe | v=scroll | dbl-tap zoom ->' : '<- swipe to navigate ->';
+  const target = document.getElementById('img-main');
+  if (target) { target.appendChild(hint); setTimeout(()=>hint.remove(), 3000); }
+}
+
+/* ── Info panel ─────────────────────────────────────────── */
+let infoPanelOpen = false;
+function toggleInfoPanel(force) {
+  infoPanelOpen = force !== undefined ? force : !infoPanelOpen;
+  document.getElementById('info-panel').classList.toggle('open', infoPanelOpen);
+  document.getElementById('mob-info-btn').textContent = infoPanelOpen ? 'x' : 'i';
+}
+// drag handle to close
+(function() {
+  const handle = document.getElementById('info-handle');
+  if (!handle) return;
+  let startY=0, dragging=false;
+  handle.addEventListener('touchstart', e=>{startY=e.touches[0].clientY;dragging=true;},{passive:true});
+  handle.addEventListener('touchmove',  e=>{if(dragging&&e.touches[0].clientY-startY>30){toggleInfoPanel(false);dragging=false;}},{passive:true});
+  handle.addEventListener('click', ()=>toggleInfoPanel(false));
+})();
+
+/* ── Rating ─────────────────────────────────────────────── */
+let currentRating = {{ post.rating }};
+let currentFav    = {{ post.fav|yesno:"true,false" }};
+
+async function setRating(n) {
+  currentRating = (currentRating===n) ? 0 : n;
+  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({rating:currentRating, fav:currentFav})
+  })).json();
+  currentRating = d.rating;
+  document.querySelectorAll('.star-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.v)<=currentRating));
+  syncMobRatePop();
+}
+async function toggleFav() {
+  currentFav = !currentFav;
+  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({rating:currentRating, fav:currentFav})
+  })).json();
+  currentFav = d.fav;
+  document.getElementById('fav-btn')?.classList.toggle('active', currentFav);
+  document.getElementById('mob-fav-btn')?.classList.toggle('fav-active', currentFav);
+  syncMobRatePop();
+}
+
+/* ── Mobile rating/like popover ──────────────────────────── */
+function syncMobRatePop() {
+  document.querySelectorAll('.mob-rate-star').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.v) <= currentRating));
+  document.getElementById('mob-rate-fav')?.classList.toggle('active', currentFav);
+}
+function toggleMobRatePop(force) {
+  const pop = document.getElementById('mob-rate-pop');
+  if (!pop) return;
+  const open = force !== undefined ? force : !pop.classList.contains('open');
+  pop.classList.toggle('open', open);
+  if (open) syncMobRatePop();
+}
+function mobRate(n) { setRating(n); toggleMobRatePop(false); }
+async function mobClear() {
+  currentRating = 0;
+  currentFav    = false;
+  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({rating:0, fav:false})
+  })).json();
+  currentRating = d.rating;
+  currentFav    = d.fav;
+  document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('fav-btn')?.classList.remove('active');
+  document.getElementById('mob-fav-btn')?.classList.remove('fav-active');
+  syncMobRatePop();
+  toggleMobRatePop(false);
+}
+function mobFav()   { toggleFav();  toggleMobRatePop(false); }
+// tap outside the popover (and not on the ♥ button) closes it
+document.addEventListener('click', e => {
+  if (e.target.closest('#mob-rate-pop') || e.target.closest('#mob-fav-btn')) return;
+  toggleMobRatePop(false);
+});
+
+/* ── Delete post ─────────────────────────────────────────── */
+async function doDeletePost(alsoFiles) {
+  if (!confirm(alsoFiles ? 'Delete ALL files of this post?' : 'Remove from library (keep files)?')) return;
+  await fetch(`/api/post/${POST_ID}/delete/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({delete_file:alsoFiles})
+  });
+  if (nextId) window.location.href = `/post/${nextId}/${navSuffix}`;
+  else if (prevId) window.location.href = `/post/${prevId}/${navSuffix}`;
+  else window.location.href = '/' + (tagSuffix ? tagSuffix : '');
+}
+
+/* ── Delete / split single image ─────────────────────────── */
+async function deleteCurrentImage(alsoFile) {
+  if (IMAGES.length<=1) { toast('use delete post to remove the last image','err'); return; }
+  if (!confirm(alsoFile ? 'Delete file?' : 'Remove image from post?')) return;
+  const img = IMAGES[currentImgIdx];
+  const r = await fetch(`/api/image/${img.id}/delete/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({delete_file:alsoFile})
+  });
+  if ((await r.json()).ok) { toast('removed'); location.reload(); }
+}
+async function splitCurrentImage() {
+  if (IMAGES.length<=1) { toast('only one image in post','err'); return; }
+  const img = IMAGES[currentImgIdx];
+  const r = await fetch(`/api/image/${img.id}/split/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: '{}'
+  });
+  const d = await r.json();
+  if (d.ok) { toast(`split to post #${d.new_post_id}`); location.reload(); }
+  else toast(d.error||'error','err');
+}
+
+/* ── Merge ───────────────────────────────────────────────── */
+async function mergeInto() {
+  const targetId = parseInt(document.getElementById('merge-target').value);
+  if (!targetId || isNaN(targetId)) { toast('enter a valid post ID','err'); return; }
+  if (!confirm(`Merge this post (#${POST_ID}) into post #${targetId}?\nThis post will be deleted after merge.`)) return;
+  const r = await fetch('/api/merge/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({target: targetId, sources: [POST_ID]})
+  });
+  const d = await r.json();
+  if (d.ok) { toast(`merged into post #${d.post_id}`); window.location.href = `/post/${d.post_id}/${navSuffix}`; }
+  else toast(d.error||'error','err');
+}
+
+/* ── File path ───────────────────────────────────────────── */
+function updateFilePath() {
+  const box = document.getElementById('file-path-box');
+  if (!box) return;
+  const img = IMAGES[currentImgIdx];
+  if (!img) return;
+  const mediaPath = decodeURIComponent(img.url.replace('/media/', ''));
+  const winPath = '\\\\192.168.1.50\\@\\Media_SRV\\Photo\\' + mediaPath.replace(/\//g, '\\');
+  box.textContent = winPath; box.dataset.path = winPath;
+}
+async function copyPath(el) {
+  const path = el.dataset.path || el.textContent;
+  try {
+    await navigator.clipboard.writeText(path);
+    el.style.borderColor = 'var(--tag-meta)';
+    setTimeout(() => el.style.borderColor = '', 800);
+    toast('path copied');
+  } catch { toast('select text and copy manually'); }
+}
+
+/* ── Not-dupe ────────────────────────────────────────────── */
+async function loadNotDupes() {
+  const r = await fetch(`/api/post/${POST_ID}/not-dupes/`);
+  const d = await r.json();
+  const section = document.getElementById('not-dupe-section');
+  const list    = document.getElementById('not-dupe-list');
+  if (!d.not_dupe_ids.length) { section.style.display='none'; return; }
+  section.style.display = 'block';
+  list.innerHTML = d.not_dupe_ids.map(id => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">
+      <a href="/post/${id}/" style="color:var(--tag-general);">post #${id}</a>
+      <button class="btn" style="font-size:.68rem;padding:.1rem .4rem;" onclick="removeNotDupe(${id},this)">unmark</button>
+    </div>`).join('');
+}
+async function removeNotDupe(otherId, btn) {
+  await fetch('/api/not-dupe/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({a:POST_ID,b:otherId,undo:true})});
+  btn.closest('div').remove();
+  const list = document.getElementById('not-dupe-list');
+  if (!list.children.length) document.getElementById('not-dupe-section').style.display='none';
+}
+
+/* ── Tagging ─────────────────────────────────────────────── */
+async function apiTag(action, tag, category) {
+  const d = await (await fetch(`/api/post/${POST_ID}/tag/`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({action, tag, category})
+  })).json();
+  renderTags(d.tags);
+}
+function renderTags(tags) {
+  const chips = document.getElementById('tag-chips');
+  chips.innerHTML = '';
+  const catOrder = {meta:0, character:1, artist:2, general:3, ai:4};
+  tags.sort((a,b) => {
+    const co = (catOrder[a.category]??5) - (catOrder[b.category]??5);
+    return co !== 0 ? co : a.name.localeCompare(b.name);
+  });
+  for (const t of tags) {
+    const div = document.createElement('div');
+    div.className='tag-chip'; div.dataset.tag=t.name;
+    div.innerHTML = `<a class="tag-chip-name ${t.category}" href="/?tag=${encodeURIComponent(t.name)}">${t.name}</a>`
+                  + `<span class="tag-remove" onclick="removeTag('${t.name}')">x</span>`;
+    chips.appendChild(div);
+  }
+  document.getElementById('tag-count').textContent = `(${tags.length})`;
+}
+function addTag() {
+  const input=document.getElementById('new-tag'), cat=document.getElementById('tag-cat').value, name=input.value.trim();
+  if (!name) return; apiTag('add',name,cat); input.value=''; hideSuggestions();
+}
+function removeTag(name) { apiTag('remove',name,''); }
+async function aiTag() {
+  const btn=document.getElementById('ai-btn'); btn.disabled=true; btn.textContent='tagging...';
+  const d=await(await fetch(`/api/post/${POST_ID}/ai-tag/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}})).json();
+  btn.disabled=false; btn.textContent='ai auto-tag';
+  if(d.ok){toast(`added ${d.tags.length} tag(s)`);location.reload();}
+  else toast('ai error: '+d.error,'err');
+}
+let suggestTimeout;
+async function onTagInput() {
+  clearTimeout(suggestTimeout);
+  const q=document.getElementById('new-tag').value.trim();
+  if(q.length<2){hideSuggestions();return;}
+  suggestTimeout=setTimeout(async()=>{
+    const d=await(await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`)).json();
+    showSuggestions(d.tags);
+  },200);
+}
+function showSuggestions(tags) {
+  const el=document.getElementById('tag-suggestions'); el.innerHTML='';
+  if(!tags.length){el.style.display='none';return;}
+  tags.forEach(t=>{const div=document.createElement('div');div.textContent=t.name;div.ontouchend=div.onclick=()=>{document.getElementById('new-tag').value=t.name;hideSuggestions();};el.appendChild(div);});
+  el.style.display='block';
+}
+function hideSuggestions(){document.getElementById('tag-suggestions').style.display='none';}
+function onTagKey(e){if(e.key==='Enter')addTag();if(e.key==='Escape')hideSuggestions();}
+document.addEventListener('click',e=>{if(!e.target.closest('#new-tag')&&!e.target.closest('#tag-suggestions'))hideSuggestions();});
+
+/* ── Init ────────────────────────────────────────────────── */
+applyViewMode(viewMode);
+loadNeighbors();
+// Init PDF containers (must run after renderPdfContainer is defined)
+document.querySelectorAll('[data-pdf-url]').forEach(div => {
+  div.innerHTML = renderPdfContainer(div.dataset.pdfUrl);
+});
+
+// Load cross-device view mode preference, then re-apply if different
+if (IS_MULTI) {
+  fetch('/api/prefs/').then(r=>r.json()).then(d=>{
+    const serverMode = d.prefs && d.prefs.viewMode;
+    if (serverMode && serverMode !== viewMode) {
+      applyViewMode(serverMode);
+      restoreScrollPosition(); // re-apply scroll restore after mode change
+    }
+  }).catch(()=>{});
+}
+
+// ── Scroll position memory (last 3 posts, scroll mode) ──────
+function saveScrollPosition() {
+  if (viewMode !== 'scroll') return;
+  const sc = document.getElementById('scroll-container');
+  if (!sc) return;
+  let mem = {};
+  try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
+  mem[POST_ID] = { y: sc.scrollTop, t: Date.now() };
+  // keep only last 3 by timestamp
+  const entries = Object.entries(mem).sort((a,b)=>b[1].t-a[1].t).slice(0,3);
+  localStorage.setItem('postScroll', JSON.stringify(Object.fromEntries(entries)));
+}
+function restoreScrollPosition() {
+  if (viewMode !== 'scroll') return;
+  let mem = {};
+  try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
+  const saved = mem[POST_ID];
+  if (saved && Date.now() - saved.t < 3000) { // within 3 seconds
+    const sc = document.getElementById('scroll-container');
+    if (sc) setTimeout(() => sc.scrollTo(0, saved.y), 80);
+  }
+}
+(function() {
+  const sc = document.getElementById('scroll-container');
+  if (sc) {
+    let t = null;
+    sc.addEventListener('scroll', () => {
+      clearTimeout(t);
+      t = setTimeout(saveScrollPosition, 200);
+    }, {passive:true});
+  }
+  window.addEventListener('beforeunload', saveScrollPosition);
+})();
+restoreScrollPosition();
+
+// if navigated here via 'prev' from another post, show last image
+if (window.location.hash === '#last' && IMAGES.length > 1) {
+  const lastIdx = IMAGES.length - 1;
+  if (viewMode === 'scroll') {
+    setTimeout(() => {
+      const imgs = document.querySelectorAll('.scroll-img');
+      if (imgs[lastIdx]) imgs[lastIdx].scrollIntoView({behavior:'instant', block:'end'});
+    }, 100);
+  } else {
+    selectImage(lastIdx, document.querySelectorAll('.filmstrip-item')[lastIdx]);
+  }
+  history.replaceState(null, '', window.location.href.replace('#last', ''));
+}
+loadNotDupes();
+updateFilePath();
+initPinchZoom();
+initScrollZoom();
+// restore image size per platform
+if (isMobileDetail()) {
+  const savedPct = localStorage.getItem('scrollImgSize_mobile') || '100%';
+  const pct = parseInt(savedPct);
+  // reverse map pct -> slider value
+  let sliderVal;
+  if (pct <= 100) sliderVal = pct - 50;      // 50->0, 100->50
+  else sliderVal = pct / 2;                   // 100->50, 200->100
+  setScrollImgSizeMobile(sliderVal);
+} else {
+  const saved = localStorage.getItem('scrollImgSize_desktop') || '900px';
+  setScrollImgSize(saved, 'desktop');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,746 @@
+{% extends "gallery/base.html" %}
+{% load gallery_extras %}
+{% block title %}booru.local{% endblock %}
+
+{% block extra_head %}
+<style>
+/* prevent iOS zoom on input focus */
+input, select, textarea { font-size: 16px !important; }
+/* but keep visual sizes small */
+.sidebar-input, .bulk-input-row input, #merge-target { font-size: 16px !important; }
+
+.slider-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; }
+.slider-row label { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
+input[type=range].size-slider { flex: 1; accent-color: var(--accent); cursor: pointer; height: 3px; }
+
+/* Search autocomplete */
+#search-suggestions div {
+  padding: .35rem .6rem; font-size: .82rem; font-family: var(--mono);
+  cursor: pointer; color: var(--text-dim); border-bottom: 1px solid rgba(255,255,255,.04);
+  display: flex; justify-content: space-between; align-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+#search-suggestions div:last-child { border-bottom: none; }
+#search-suggestions div:hover, #search-suggestions div.active { background: var(--accent-dim); color: var(--text-bright); }
+#search-suggestions div span.sug-count { color: var(--text-dim); font-size: .72rem; }
+#search-suggestions div.active span.sug-count { color: rgba(255,255,255,.5); }
+.search-go-btn {
+  position: absolute; right: .35rem; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: .9rem; padding: .2rem; -webkit-tap-highlight-color: transparent;
+}
+.search-go-btn:hover { color: var(--accent); }
+
+/* Mode / sort buttons */
+.mode-toggle-row { display: flex; gap: .4rem; margin-bottom: .4rem; }
+.mode-btn { flex: 1; text-align: center; padding: .3rem .4rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg3); color: var(--text-dim); cursor: pointer; font-family: var(--mono); font-size: .75rem; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+.mode-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.1); }
+
+/* Rating filter */
+.star-filter { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap; }
+.star-filter-btn { font-size: .8rem; padding: .2rem .5rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg3); color: var(--text-dim); cursor: pointer; font-family: var(--mono); transition: all .15s; -webkit-tap-highlight-color: transparent; }
+.star-filter-btn.active { border-color: #ffd580; color: #ffd580; background: rgba(255,213,128,.12); }
+.fav-filter-btn { font-size: .85rem; padding: .2rem .5rem; border-radius: 4px; border: 1px solid var(--border); background: var(--bg3); color: var(--text-dim); cursor: pointer; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+.fav-filter-btn.active { border-color: #f87272; color: #f87272; background: rgba(248,114,114,.12); }
+
+/* Pagination */
+.pagination { display: flex; align-items: center; justify-content: center; gap: .4rem; padding: 1.2rem 0; flex-wrap: wrap; }
+.page-btn { font-family: var(--mono); font-size: .8rem; padding: .3rem .6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--text-dim); cursor: pointer; text-decoration: none; transition: all .15s; -webkit-tap-highlight-color: transparent; }
+.page-btn:hover, .page-btn:active { border-color: var(--accent); color: var(--accent); }
+.page-btn.current { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.1); cursor: default; }
+.page-btn.disabled { opacity: .3; cursor: default; pointer-events: none; }
+.page-info { font-family: var(--mono); font-size: .75rem; color: var(--text-dim); }
+
+/* Infinite scroll loading */
+#scroll-sentinel { grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-dim); font-family: var(--mono); font-size: .8rem; }
+
+/* Active tag pills */
+.active-tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; }
+.active-tag { background: var(--accent-dim); border: 1px solid var(--accent); color: var(--text-bright); padding: .2rem .6rem; border-radius: 3px; font-size: .8rem; font-family: var(--mono); display: flex; align-items: center; gap: .4rem; }
+.active-tag .remove { color: var(--danger); cursor: pointer; font-size: 1rem; line-height: 1; }
+
+/* Selection mode */
+.selection-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 130; background: var(--bg2); border-top: 1px solid var(--accent); padding: .6rem 1rem; padding-bottom: calc(.6rem + var(--safe-bottom)); flex-direction: column; gap: .5rem; }
+@media (max-width:640px) { .selection-bar { bottom: calc(var(--mobile-nav-h) + var(--safe-bottom)); padding-bottom: .6rem; } }
+.selection-bar.open { display: flex; }
+.selection-top { display: flex; align-items: center; gap: .6rem; }
+.sel-count { font-family: var(--mono); font-size: .85rem; color: var(--accent); flex: 1; }
+.selection-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+.selection-top .btn.active, .selection-actions .btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.12); }
+.photo-card.selectable { cursor: pointer; }
+.photo-card .sel-check { position: absolute; top: .35rem; left: .35rem; z-index: 2; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6); background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; font-size: .7rem; color: #fff; transition: all .15s; }
+body.select-mode .photo-card .sel-check { display: flex; }
+body.select-mode .photo-card.selected .sel-check { background: var(--accent); border-color: var(--accent); }
+body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card-rating { position: absolute; top: .35rem; right: .35rem; z-index: 2; font-size: .65rem; background: rgba(0,0,0,.6); border-radius: 3px; padding: 1px 3px; color: #ffd580; line-height: 1.2; display: none; }
+.photo-card[data-rating]:not([data-rating="0"]) .card-rating { display: block; }
+.card-fav { position: absolute; top: .35rem; right: .35rem; z-index: 2; font-size: .75rem; color: #f87272; display: none; }
+.photo-card[data-fav="true"] .card-fav { display: block; }
+.photo-card[data-fav="true"][data-rating]:not([data-rating="0"]) .card-fav { right: 2.5rem; }
+
+/* Bulk modals */
+.bulk-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px 12px 0 0; padding: 1.2rem; padding-bottom: calc(1.2rem + var(--safe-bottom)); width: 100%; }
+.bulk-modal h3 { font-family: var(--mono); font-size: .9rem; color: var(--text-bright); margin-bottom: .8rem; }
+.bulk-input-row { display: flex; gap: .4rem; }
+.bulk-input-row input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .4rem .6rem; border-radius: 6px; font-family: var(--mono); outline: none; }
+.bulk-input-row input:focus { border-color: var(--accent); }
+</style>
+{% endblock %}
+
+{% block sidebar %}
+<aside>
+  <div class="sidebar-section">
+    <div class="sidebar-title">search</div>
+    <div style="position:relative;">
+      <input id="tag-search" class="sidebar-input" type="text"
+        placeholder="tag1 tag2 ... (enter)"
+        value="{% for t in q_tags %}{{ t }} {% endfor %}"
+        onkeydown="onSearchKey(event)"
+        oninput="onSearchInput(this.value)"
+        autocomplete="off"
+        style="padding-right:1.8rem;">
+      <button class="search-go-btn" onclick="doSearch()" title="search">&#128269;</button>
+      <div id="search-suggestions" style="display:none;position:absolute;left:0;right:0;top:100%;background:var(--bg3);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;z-index:50;max-height:220px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.4);"></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-title">sort</div>
+    <div style="display:flex;flex-wrap:wrap;gap:.3rem;">
+      {% for val, label in sort_options %}
+      <button onclick="setSort('{{ val }}')" class="mode-btn {% if sort_by == val %}active{% endif %}" style="flex:none;font-size:.7rem;">{{ label }}</button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-title">browse mode</div>
+    <div class="mode-toggle-row">
+      <button class="mode-btn {% if not scroll_mode %}active{% endif %}" onclick="setMode('pages')">pages</button>
+      <button class="mode-btn {% if scroll_mode %}active{% endif %}" onclick="setMode('scroll')">infinite</button>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-title">filter</div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem;">
+      <button class="fav-filter-btn {% if fav_only == '1' %}active{% endif %}" onclick="toggleFav(this)">&#9829; favs</button>
+      <button class="fav-filter-btn {% if multi_only == '1' %}active{% endif %}" onclick="toggleMultiOnly(this)">&#9783; multi</button>
+      <button class="fav-filter-btn {% if single_only == '1' %}active{% endif %}" onclick="toggleSingleOnly(this)">&#9632; single</button>
+    </div>
+    <div class="star-filter">
+      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">at least:</span>
+      {% for n in "12345" %}
+      <button class="star-filter-btn {% if min_rating == n %}active{% endif %}" data-stars="{{ n }}" onclick="setRatingFilter(this)">{{ n }}&#9733;+</button>
+      {% endfor %}
+    </div>
+    <div class="star-filter" style="margin-top:.3rem;">
+      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">exactly:</span>
+      {% for n in "12345" %}
+      <button class="star-filter-btn {% if exact_rating == n %}active{% endif %}" data-stars="{{ n }}" onclick="setExactRating(this)">{{ n }}&#9733;</button>
+      {% endfor %}
+      {% if min_rating or exact_rating %}<button class="star-filter-btn" onclick="clearRatingFilter()">clear</button>{% endif %}
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-title">preview size</div>
+    <div class="slider-row">
+      <label>S</label>
+      <input type="range" class="size-slider" id="size-slider" style="width:100%;" min="100" max="500" value="180" step="10" oninput="setGridSize(this.value, 'desktop')">
+      <label>L</label>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;gap:.3rem;">
+      <span>tags ({{ popular_tags|length }}{% if filtering_active %} related{% endif %})</span>
+      <div style="display:flex;gap:.3rem;align-items:center;">
+        <button onclick="setSortTags('{% if sort_tags == "name" %}count{% else %}name{% endif %}')" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">{% if sort_tags == "name" %}#{% else %}az{% endif %}</button>
+        <button onclick="toggleSelectMode()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;" id="sel-toggle">sel</button>
+      </div>
+    </div>
+    <div class="tag-list" id="tag-list">
+      {% for tag in popular_tags %}
+      <div class="tag-item tag-entry" data-name="{{ tag.name }}" data-cat="{{ tag.category }}">
+        <span class="tag-fav-btn {% if tag.fav %}active{% endif %}" onclick="toggleTagFav('{{ tag.name }}', this)">&#9829;</span>
+        <a class="tag-link {{ tag.category }}" href="?tag={{ tag.name }}" title="{{ tag.name }}">{{ tag.name }}</a>
+        <span class="tag-count">{% if filtering_active %}{{ tag.filtered_count }}{% else %}{{ tag.count }}{% endif %}</span>
+        <span class="tag-add-btn" onclick="addTagToSearch('{{ tag.name }}')" title="add">+</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</aside>
+{% endblock %}
+
+{% block content %}
+{% if q_tags or fav_only or min_rating or multi_only %}
+<div class="active-tags">
+  {% if fav_only == '1' %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.15);">&#9829; favs <a href="?" class="remove">x</a></span>{% endif %}
+  {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <a href="?" class="remove">x</a></span>{% endif %}
+  {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <a href="?" class="remove">x</a></span>{% endif %}
+  {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <a href="?" class="remove">x</a></span>{% endif %}
+  {% for t in q_tags %}
+  <span class="active-tag">{{ t }}
+    <a href="?{% for ot in q_tags %}{% if ot != t %}tag={{ ot }}&{% endif %}{% endfor %}{% if min_rating %}min_rating={{ min_rating }}&{% endif %}{% if fav_only %}fav={{ fav_only }}&{% endif %}" class="remove">x</a>
+  </span>
+  {% endfor %}
+  <a href="/" class="btn" style="padding:.15rem .5rem;font-size:.75rem;">clear all</a>
+</div>
+{% endif %}
+
+{% if not scroll_mode and page_obj.paginator.num_pages > 1 %}
+<div class="pagination" style="padding:.5rem 0 .8rem;">
+  {% if page_obj.has_previous %}<a class="page-btn" href="?page={{ page_obj.previous_page_number }}{{ base_qs }}">&#8592; prev</a>
+  {% else %}<span class="page-btn disabled">&#8592; prev</span>{% endif %}
+  {% for p in page_obj.paginator.page_range %}
+    {% if p == page_obj.number %}<span class="page-btn current">{{ p }}</span>
+    {% elif p == 1 or p == page_obj.paginator.num_pages or p >= page_obj.number|add:"-2" and p <= page_obj.number|add:"2" %}<a class="page-btn" href="?page={{ p }}{{ base_qs }}">{{ p }}</a>
+    {% elif p == page_obj.number|add:"-3" or p == page_obj.number|add:"3" %}<span class="page-info">...</span>
+    {% endif %}
+  {% endfor %}
+  {% if page_obj.has_next %}<a class="page-btn" href="?page={{ page_obj.next_page_number }}{{ base_qs }}">next &#8594;</a>
+  {% else %}<span class="page-btn disabled">next &#8594;</span>{% endif %}
+</div>
+{% endif %}
+
+<div class="photo-grid" id="photo-grid">
+  {% include "gallery/_photo_grid.html" %}
+</div>
+
+{% if scroll_mode %}
+<div id="scroll-sentinel">loading...</div>
+{% else %}
+<div class="pagination">
+  {% if page_obj.has_previous %}<a class="page-btn" href="?page={{ page_obj.previous_page_number }}{{ base_qs }}">&#8592; prev</a>
+  {% else %}<span class="page-btn disabled">&#8592; prev</span>{% endif %}
+  {% for p in page_obj.paginator.page_range %}
+    {% if p == page_obj.number %}<span class="page-btn current">{{ p }}</span>
+    {% elif p == 1 or p == page_obj.paginator.num_pages or p >= page_obj.number|add:"-2" and p <= page_obj.number|add:"2" %}<a class="page-btn" href="?page={{ p }}{{ base_qs }}">{{ p }}</a>
+    {% elif p == page_obj.number|add:"-3" or p == page_obj.number|add:"3" %}<span class="page-info">...</span>
+    {% endif %}
+  {% endfor %}
+  {% if page_obj.has_next %}<a class="page-btn" href="?page={{ page_obj.next_page_number }}{{ base_qs }}">next &#8594;</a>
+  {% else %}<span class="page-btn disabled">next &#8594;</span>{% endif %}
+</div>
+<div style="text-align:center;font-family:var(--mono);font-size:.75rem;color:var(--text-dim);padding-bottom:1rem;">
+  page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }} &mdash; {{ page_obj.paginator.count }} posts
+</div>
+{% endif %}
+
+<!-- Selection toolbar -->
+<div class="selection-bar" id="sel-bar">
+  <div class="selection-top">
+    <span class="sel-count" id="sel-count">0 selected</span>
+    <button class="btn" onclick="selectAll()">all</button>
+    <button class="btn" onclick="clearSelection()">none</button>
+    <button class="btn" id="range-btn" onclick="toggleRangeMode()">range</button>
+    <button class="btn" onclick="toggleSelectMode()">done</button>
+  </div>
+  <div class="selection-actions">
+    <button class="btn" onclick="openBulkTag('add')">+ tag</button>
+    <button class="btn" onclick="openBulkTag('remove')">- tag</button>
+    <button class="btn" onclick="openBulkRate()">&#9733; rate</button>
+    <button class="btn" onclick="bulkFav(true)">&#9829;</button>
+    <button class="btn" onclick="bulkFav(false)">&#9825;</button>
+    <button class="btn" onclick="bulkMerge()">&#9135; queue merge</button>
+    <button class="btn" onclick="finalizeMergeQueue()" id="merge-go-btn">merge now</button>
+    <button class="btn danger" onclick="bulkDelete()">&#128465;</button>
+  </div>
+</div>
+
+<!-- Bulk tag modal -->
+<div class="modal-backdrop" id="bulk-modal">
+  <div class="bulk-modal">
+    <div class="modal-handle"></div>
+    <h3 id="bulk-modal-title">add tag to selected</h3>
+    <div class="bulk-input-row">
+      <input id="bulk-tag-input" type="text" placeholder="tag name..." autocomplete="off">
+      <select class="cat-select" id="bulk-tag-cat">
+        <option value="general">gen</option><option value="character">char</option>
+        <option value="artist">art</option><option value="meta">meta</option>
+      </select>
+      <button class="btn primary" onclick="doBulkTag()">apply</button>
+    </div>
+    <div style="margin-top:.6rem;text-align:right;"><button class="btn" onclick="closeBulkModal()">cancel</button></div>
+  </div>
+</div>
+
+<!-- Bulk rate modal -->
+<div class="modal-backdrop" id="bulk-rate-modal">
+  <div class="bulk-modal">
+    <div class="modal-handle"></div>
+    <h3>rate selected</h3>
+    <div style="display:flex;gap:.5rem;justify-content:center;margin:.8rem 0;">
+      {% for n in "12345" %}<button class="btn" style="font-size:1.2rem;padding:.4rem .7rem;" onclick="doBulkRate({{ n }})">{{ n }}&#9733;</button>{% endfor %}
+      <button class="btn" onclick="doBulkRate(0)">clear</button>
+    </div>
+    <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-rate-modal').classList.remove('open')">cancel</button></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ── State from server ─────────────────────────────────────────
+const SCROLL_MODE = {{ scroll_mode|yesno:"true,false" }};
+const CURRENT_PAGE = {{ page_obj.number }};
+const TOTAL_PAGES  = {{ page_obj.paginator.num_pages }};
+// Single source of truth for the sort list (mirrors views.py sort_options) so
+// the desktop sidebar and the mobile "more" menu never have to be hand-synced.
+window.SORT_OPTIONS = [{% for val, label in sort_options %}['{{ val|escapejs }}','{{ label|escapejs }}']{% if not forloop.last %},{% endif %}{% endfor %}];
+
+// ── Grid size ─────────────────────────────────────────────────
+function isMobile() { return window.innerWidth <= 640; }
+
+function setGridSize(val, platform) {
+  let px;
+  const mob = platform === 'mobile' || (platform === undefined && isMobile());
+  if (mob) {
+    px = Math.floor(window.innerWidth / parseInt(val)) - 4;
+    localStorage.setItem('gridSize_mobile', val);
+    // force slider to correct visual position
+    const sl = document.getElementById('mob-size-slider');
+    if (sl && sl.value != val) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+  } else {
+    px = parseInt(val);
+    localStorage.setItem('gridSize_desktop', val);
+    const sl = document.getElementById('size-slider');
+    if (sl && sl.value != val) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+  }
+  document.getElementById('photo-grid').style.gridTemplateColumns = `repeat(auto-fill,minmax(${px}px,1fr))`;
+  localStorage.setItem('gridSize', px); // legacy
+  const mobSl = document.getElementById('mob-size-slider');
+  if (mobSl) mobSl.value = px;
+}
+
+// ── Scroll save/restore ───────────────────────────────────────
+function saveScroll() {
+  sessionStorage.setItem('scrollY', window.scrollY);
+  sessionStorage.setItem('scrollURL', window.location.href);
+}
+
+// ── Infinite scroll (vanilla IntersectionObserver) ────────────
+let infinitePage = CURRENT_PAGE;
+let infiniteLoading = false;
+let infiniteExhausted = false;
+
+function buildApiUrl(page) {
+  const p = new URLSearchParams(window.location.search);
+  p.set('page', page);
+  return '/api/posts/?' + p.toString();
+}
+
+function makeCard(post) {
+  const tagQs = post.tag_qs || '';
+  const a = document.createElement('a');
+  a.href = post.url + (tagQs ? tagQs : '');
+  a.className = 'photo-card';
+  a.dataset.id = post.id;
+  a.dataset.rating = post.rating;
+  a.dataset.fav = post.fav ? 'true' : 'false';
+  a.onclick = () => saveScroll();
+
+  let html = `<img src="${post.thumb_url}" loading="lazy">`;
+  html += `<div class="overlay"><span class="tag-count-badge">${post.tag_count} tags${post.img_count > 1 ? ' &middot; ' + post.img_count : ''}</span></div>`;
+  html += `<div class="sel-check">&#10003;</div>`;
+  if (post.img_count > 1) html += `<div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">${post.img_count}</div>`;
+  if (post.is_video) html += `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;"><div style="background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff;">&#9654;</div></div>`;
+  if (post.rating) html += `<div class="card-rating">${post.rating}&#9733;</div>`;
+  if (post.fav) html += `<div class="card-fav">&#9829;</div>`;
+  a.innerHTML = html;
+  return a;
+}
+
+async function loadNextPage() {
+  if (infiniteLoading || infiniteExhausted) return;
+  infiniteLoading = true;
+  const sentinel = document.getElementById('scroll-sentinel');
+  if (sentinel) sentinel.textContent = 'loading...';
+
+  try {
+    const r = await fetch(buildApiUrl(infinitePage + 1));
+    const d = await r.json();
+    const grid = document.getElementById('photo-grid');
+    d.posts.forEach(post => {
+      const card = makeCard(post);
+      grid.appendChild(card);
+    });
+    infinitePage = d.page;
+    if (!d.has_next) {
+      infiniteExhausted = true;
+      if (sentinel) sentinel.textContent = `all ${d.total} posts loaded`;
+    } else {
+      if (sentinel) sentinel.textContent = '';
+    }
+    // rewire if in select mode
+    if (selectModeOn) wireCards();
+  } catch(e) {
+    if (sentinel) sentinel.textContent = 'error loading — scroll up and try again';
+  }
+  infiniteLoading = false;
+}
+
+function initInfiniteScroll() {
+  const sentinel = document.getElementById('scroll-sentinel');
+  if (!sentinel) return;
+  if (TOTAL_PAGES <= 1) { sentinel.textContent = ''; return; }
+
+  const obs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting) loadNextPage();
+  }, { rootMargin: '300px' });
+  obs.observe(sentinel);
+}
+
+// ── Mode / sort / filter navigation ──────────────────────────
+// setMode and setSort defined in Preferences section above
+function setSortTags(mode) {
+  const p = new URLSearchParams(window.location.search);
+  if (mode === 'name') p.set('sort_tags', 'name'); else p.delete('sort_tags');
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function setRatingFilter(btn) {
+  const p = new URLSearchParams(window.location.search);
+  p.set('min_rating', btn.dataset.stars); p.delete('rating'); p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function setExactRating(btn) {
+  const p = new URLSearchParams(window.location.search);
+  p.set('rating', btn.dataset.stars); p.delete('min_rating'); p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function clearRatingFilter() {
+  const p = new URLSearchParams(window.location.search);
+  p.delete('min_rating'); p.delete('rating'); p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function toggleFav(btn) {
+  const p = new URLSearchParams(window.location.search);
+  if (p.get('fav') === '1') p.delete('fav'); else p.set('fav', '1');
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function toggleSingleOnly(btn) {
+  const p = new URLSearchParams(window.location.search);
+  if (p.get('single_only') === '1') p.delete('single_only'); else { p.set('single_only','1'); p.delete('multi_only'); }
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function toggleMultiOnly(btn) {
+  const p = new URLSearchParams(window.location.search);
+  if (p.get('multi_only') === '1') p.delete('multi_only'); else p.set('multi_only', '1');
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function addTagToSearch(name) {
+  const tags = new URLSearchParams(window.location.search).getAll('tag');
+  if (!tags.includes(name)) tags.push(name);
+  window.location.href = '/?' + tags.map(t => 'tag=' + encodeURIComponent(t)).join('&');
+}
+
+// ── Search ────────────────────────────────────────────────────
+let suggestItems = [], suggestIdx = -1, suggestTimer = null;
+
+function doSearch() {
+  const val = document.getElementById('tag-search').value.trim();
+  if (!val) { window.location.href = '/'; return; }
+  // preserve other params
+  const p = new URLSearchParams(window.location.search);
+  p.delete('tag'); p.delete('page');
+  val.split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
+  window.location.href = '/?' + p.toString();
+}
+
+function onSearchInput(val) {
+  const parts = val.trim().toLowerCase().split(/\s+/);
+  const last  = parts[parts.length - 1];
+  document.querySelectorAll('.tag-entry').forEach(el => {
+    el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
+  });
+  clearTimeout(suggestTimer);
+  if (!last || last.length < 1) { hideSuggestions(); return; }
+  suggestTimer = setTimeout(() => fetchSuggestions(last, parts.slice(0,-1)), 150);
+}
+
+async function fetchSuggestions(q, already) {
+  const r = await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`);
+  const d = await r.json();
+  suggestItems = d.tags.filter(t => !already.includes(t.name));
+  suggestIdx = -1; renderSuggestions();
+}
+
+function renderSuggestions() {
+  const el = document.getElementById('search-suggestions');
+  el.innerHTML = '';
+  if (!suggestItems.length) { el.style.display = 'none'; return; }
+  suggestItems.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.innerHTML = `<span>${t.name}</span><span class="sug-count">${t.count}</span>`;
+    div.dataset.idx = i;
+    div.addEventListener('mousedown', e => { e.preventDefault(); pickSuggestion(i); });
+    div.addEventListener('touchend',  e => { e.preventDefault(); pickSuggestion(i); });
+    el.appendChild(div);
+  });
+  el.style.display = 'block';
+}
+
+function setSuggestActive(idx) {
+  suggestIdx = idx;
+  document.querySelectorAll('#search-suggestions div').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+    if (i === idx) el.scrollIntoView({block:'nearest'});
+  });
+}
+function pickSuggestion(idx) {
+  const tag = suggestItems[idx]; if (!tag) return;
+  const input = document.getElementById('tag-search');
+  const parts = input.value.trimEnd().split(/\s+/);
+  parts[parts.length - 1] = tag.name;
+  input.value = parts.join(' ') + ' ';
+  hideSuggestions(); input.focus(); onSearchInput(input.value);
+}
+function hideSuggestions() {
+  document.getElementById('search-suggestions').style.display = 'none';
+  suggestItems = []; suggestIdx = -1;
+}
+function onSearchKey(e) {
+  const el = document.getElementById('search-suggestions');
+  const visible = el.style.display !== 'none' && suggestItems.length;
+  if (visible && e.key === 'ArrowDown') { e.preventDefault(); setSuggestActive(Math.min(suggestIdx+1, suggestItems.length-1)); return; }
+  if (visible && e.key === 'ArrowUp')   { e.preventDefault(); setSuggestActive(Math.max(suggestIdx-1, 0)); return; }
+  if (visible && e.key === 'Tab')       { e.preventDefault(); pickSuggestion(suggestIdx>=0?suggestIdx:0); return; }
+  if (visible && e.key === 'Escape')    { hideSuggestions(); return; }
+  if (e.key === 'Enter') {
+    if (visible && suggestIdx >= 0) { e.preventDefault(); pickSuggestion(suggestIdx); return; }
+    hideSuggestions(); doSearch();
+  }
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#tag-search') && !e.target.closest('#search-suggestions')) hideSuggestions();
+});
+
+// ── Tag fav ───────────────────────────────────────────────────
+async function toggleTagFav(name, btn) {
+  const r = await fetch(`/api/tag/${encodeURIComponent(name)}/fav/`, {method:'POST',headers:{'X-CSRFToken':getCsrf()}});
+  const d = await r.json();
+  btn.classList.toggle('active', d.fav);
+  toast(d.fav ? `♥ ${name} pinned` : `${name} unpinned`);
+}
+
+// ── Selection mode ────────────────────────────────────────────
+let selectedIds = new Set(), selectModeOn = false;
+let lastClickedIdx = null;       // for range select
+let mergeQueue = [];             // array of arrays (each is a group of ids to merge)
+
+function toggleSelectMode() {
+  selectModeOn = !selectModeOn;
+  document.body.classList.toggle('select-mode', selectModeOn);
+  document.getElementById('sel-bar').classList.toggle('open', selectModeOn);
+  document.getElementById('sel-toggle').textContent = selectModeOn ? 'done' : 'sel';
+  if (!selectModeOn) {
+    selectedIds.clear(); lastClickedIdx = null;
+    if (mergeQueue.length) finalizeMergeQueue();
+    updateSelCount();
+  }
+  wireCards();
+}
+
+function orderedCards() {
+  return [...document.querySelectorAll('.photo-card')].filter(c => c.dataset.id);
+}
+
+function wireCards() {
+  orderedCards().forEach((card, idx) => {
+    card.onclick = selectModeOn ? (e => {
+      e.preventDefault();
+      if (rangeMode && lastClickedIdx !== null) {
+        selectRange(lastClickedIdx, idx);
+        rangeMode = false;
+        document.getElementById('range-btn')?.classList.remove('active');
+      } else {
+        toggleCard(card);
+        lastClickedIdx = idx;
+      }
+    }) : null;
+  });
+}
+
+let rangeMode = false;
+function toggleRangeMode() {
+  if (lastClickedIdx === null) { toast('tap a post first, then range','err'); return; }
+  rangeMode = !rangeMode;
+  document.getElementById('range-btn')?.classList.toggle('active', rangeMode);
+  if (rangeMode) toast('now tap the end of the range');
+}
+
+function selectRange(a, b) {
+  const cards = orderedCards();
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  for (let i = lo; i <= hi; i++) {
+    const card = cards[i];
+    if (card && card.dataset.id) { selectedIds.add(card.dataset.id); card.classList.add('selected'); }
+  }
+  updateSelCount();
+}
+
+function toggleCard(card) {
+  const id = card.dataset.id; if (!id) return;
+  if (selectedIds.has(id)) { selectedIds.delete(id); card.classList.remove('selected'); }
+  else { selectedIds.add(id); card.classList.add('selected'); }
+  updateSelCount();
+}
+function selectAll() {
+  orderedCards().forEach(card => { selectedIds.add(card.dataset.id); card.classList.add('selected'); });
+  updateSelCount();
+}
+function clearSelection() {
+  selectedIds.clear(); lastClickedIdx = null;
+  document.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
+  updateSelCount();
+}
+function updateSelCount() {
+  let txt = `${selectedIds.size} selected`;
+  if (mergeQueue.length) txt += ` · ${mergeQueue.length} group(s) queued`;
+  document.getElementById('sel-count').textContent = txt;
+}
+
+// ── Bulk actions ──────────────────────────────────────────────
+let bulkTagAction = 'add';
+function openBulkTag(action) {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  bulkTagAction = action;
+  document.getElementById('bulk-modal-title').textContent = action==='add' ? 'add tag to selected' : 'remove tag from selected';
+  document.getElementById('bulk-tag-input').value = '';
+  document.getElementById('bulk-modal').classList.add('open');
+  setTimeout(() => document.getElementById('bulk-tag-input').focus(), 100);
+}
+function closeBulkModal() { document.getElementById('bulk-modal').classList.remove('open'); }
+async function doBulkTag() {
+  const tag = document.getElementById('bulk-tag-input').value.trim();
+  const cat = document.getElementById('bulk-tag-cat').value;
+  if (!tag) return;
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:bulkTagAction+'_tag',tag,category:cat})});
+  closeBulkModal(); toast(`${bulkTagAction==='add'?'added':'removed'} "${tag}" on ${selectedIds.size} posts`);
+}
+function openBulkRate() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  document.getElementById('bulk-rate-modal').classList.add('open');
+}
+async function doBulkRate(rating) {
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'rate',rating})});
+  document.getElementById('bulk-rate-modal').classList.remove('open');
+  toast(`rated ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+}
+async function bulkFav(fav) {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'fav',fav})});
+  toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+}
+
+// ── Merge queue ───────────────────────────────────────────────
+// "merge" banks the current selection as one group, clears selection,
+// lets you keep building more groups. "done"/"none" flushes the queue.
+function bulkMerge() {
+  if (selectedIds.size < 2) { toast('select at least 2 posts to merge','err'); return; }
+  mergeQueue.push([...selectedIds].map(Number));
+  // clear current selection visually, keep building next group
+  document.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
+  selectedIds.clear(); lastClickedIdx = null;
+  updateSelCount();
+  toast(`group queued (${mergeQueue.length}) — select next group, then press done`);
+}
+
+async function finalizeMergeQueue() {
+  // include any still-selected group
+  if (selectedIds.size >= 2) mergeQueue.push([...selectedIds].map(Number));
+  if (!mergeQueue.length) return;
+  if (!confirm(`Merge ${mergeQueue.length} group(s)?\nEach group's first post becomes the target.`)) {
+    mergeQueue = []; return;
+  }
+  let done = 0;
+  for (const group of mergeQueue) {
+    if (group.length < 2) continue;
+    const target = group[0];
+    const r = await fetch('/api/merge/', {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({target, sources: group.slice(1)})
+    });
+    if ((await r.json()).ok) done++;
+  }
+  mergeQueue = [];
+  toast(`merged ${done} group(s)`);
+  setTimeout(()=>location.reload(), 700);
+}
+
+async function bulkDelete() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  const alsoFile = confirm(`Delete ${selectedIds.size} posts from disk too?\n\nOK = delete files\nCancel = DB only`);
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'delete',delete_file:alsoFile})});
+  toast(`deleted ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+}
+
+// ── Preferences ──────────────────────────────────────────────
+const PREFS = {
+  get: k => localStorage.getItem('pref_' + k),
+  set: (k, v) => localStorage.setItem('pref_' + k, v),
+};
+
+function setMode(mode) {
+  PREFS.set('browse_mode', mode);
+  const p = new URLSearchParams(window.location.search);
+  if (mode === 'scroll') p.set('scroll', '1'); else p.delete('scroll');
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+function setSort(val) {
+  PREFS.set('sort', val);
+  const p = new URLSearchParams(window.location.search);
+  if (val === 'new') p.delete('sort'); else p.set('sort', val);
+  p.delete('page');
+  window.location.href = '/?' + p.toString();
+}
+
+// ── Close modals ──────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  ['bulk-modal','bulk-rate-modal'].forEach(id => {
+    document.getElementById(id)?.addEventListener('click', e => {
+      if (e.target.id === id) document.getElementById(id).classList.remove('open');
+    });
+  });
+  document.getElementById('bulk-tag-input')?.addEventListener('keydown', e => {
+    if (e.key==='Enter') doBulkTag();
+    if (e.key==='Escape') closeBulkModal();
+  });
+
+  // restore grid size per platform
+  if (isMobile()) {
+    const saved = localStorage.getItem('gridSize_mobile') || '3';
+    const sl = document.getElementById('mob-size-slider');
+    if (sl) sl.value = saved;
+    setGridSize(saved, 'mobile');
+  } else {
+    const saved = localStorage.getItem('gridSize_desktop') || '180';
+    const sl = document.getElementById('size-slider');
+    if (sl) sl.value = saved;
+    setGridSize(saved, 'desktop');
+  }
+
+  // restore scroll position after back navigation
+  const savedURL = sessionStorage.getItem('scrollURL');
+  const savedY   = sessionStorage.getItem('scrollY');
+  if (savedURL && savedY && window.location.href === savedURL) {
+    requestAnimationFrame(() => window.scrollTo(0, parseInt(savedY)));
+    sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
+  }
+
+  // init infinite scroll
+  if (SCROLL_MODE) initInfiniteScroll();
+});
+
+// save grid size to prefs when changed
+const origSetGridSize = setGridSize;
+// (setGridSize already saves to localStorage - keep that + also save to pref_gridSize)
+</script>
+{% endblock %}

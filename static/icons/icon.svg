@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="32" fill="#0d0d0f"/>
+  <rect x="24" y="24" width="144" height="144" rx="16" fill="#141417" stroke="#2a2a32" stroke-width="2"/>
+  <circle cx="72" cy="80" r="16" fill="#7c6af7" opacity=".7"/>
+  <path d="M24 128 L60 96 L90 116 L120 88 L168 128 L168 152 Q168 168 152 168 L40 168 Q24 168 24 152 Z" fill="#7c6af7" opacity=".5"/>
+  <text x="96" y="178" text-anchor="middle" font-family="monospace" font-size="14" fill="#666678">booru</text>
+</svg>

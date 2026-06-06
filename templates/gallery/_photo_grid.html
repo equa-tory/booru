@@ -1,0 +1,31 @@
+{% for post in page_obj %}
+{% with cover=post.cover %}
+{% if cover %}
+<a href="/post/{{ post.pk }}/?{% for t in q_tags %}tag={{ t }}&{% endfor %}"
+   class="photo-card"
+   data-id="{{ post.pk }}"
+   data-rating="{{ post.rating }}"
+   data-fav="{{ post.fav|lower }}"
+   onclick="if(typeof saveScroll!=='undefined')saveScroll()">
+  <img src="{{ cover.thumb_url }}" alt="{{ post.title }}" loading="lazy">
+  <div class="overlay">
+    <span class="tag-count-badge">{{ post.tags.all|length }} tags{% if post.image_count > 1 %} &middot; {{ post.image_count }}{% endif %}</span>
+  </div>
+  <div class="sel-check">&#10003;</div>
+  {% if post.image_count > 1 %}
+  <div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">{{ post.image_count }}</div>
+  {% endif %}
+  {% if cover.is_video %}
+  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;"><div style="background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff;">&#9654;</div></div>
+  {% endif %}
+  {% if post.rating %}<div class="card-rating">{{ post.rating }}&#9733;</div>{% endif %}
+  {% if post.fav %}<div class="card-fav">&#9829;</div>{% endif %}
+</a>
+{% endif %}
+{% endwith %}
+{% empty %}
+<div style="grid-column:1/-1;text-align:center;padding:4rem;color:var(--text-dim);">
+  <p style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;">no posts yet</p>
+  <p style="margin-top:.5rem;font-size:.85rem;">drop images into <code>media/inbox/</code> and scan, or use upload</p>
+</div>
+{% endfor %}
