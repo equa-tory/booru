@@ -10,6 +10,6 @@ venv/bin/gunicorn \
     --workers 4 \
     --worker-class gevent \
     --worker-connections 100 \
-    --bind 0.0.0.0:3000 \
+    --bind 0.0.0.0:3001 \
     --timeout 900 \
     booru.wsgi:application

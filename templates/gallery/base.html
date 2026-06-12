@@ -85,6 +85,26 @@ header {
 .btn.danger:hover, .btn.danger:active { background: var(--danger); color: #fff; }
 .btn:disabled { opacity: .4; cursor: default; }
 
+/* ── Shared controls (used by the mobile "more" sheet + bulk modals on EVERY
+   page, so they must live here in base, not only in index.html). ───────── */
+.mode-btn { text-align:center; padding:.3rem .55rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text-dim); cursor:pointer; font-family:var(--mono); font-size:.75rem; transition:all .15s; -webkit-tap-highlight-color:transparent; }
+.mode-btn.active { border-color:var(--accent); color:var(--accent); background:rgba(124,106,247,.1); }
+.star-filter { display:flex; gap:.3rem; align-items:center; flex-wrap:wrap; }
+.star-filter-btn { font-size:.8rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text-dim); cursor:pointer; font-family:var(--mono); transition:all .15s; -webkit-tap-highlight-color:transparent; }
+.star-filter-btn.active { border-color:#ffd580; color:#ffd580; background:rgba(255,213,128,.12); }
+.fav-filter-btn { font-size:.85rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text-dim); cursor:pointer; transition:all .15s; -webkit-tap-highlight-color:transparent; }
+.fav-filter-btn.active { border-color:#f87272; color:#f87272; background:rgba(248,114,114,.12); }
+.cat-select { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); padding:.3rem; border-radius:6px; font-size:.75rem; outline:none; }
+
+/* ── Global top progress bar (long actions) ─────────────────────── */
+#progress-bar-global {
+  position:fixed; top:0; left:0; height:3px; width:0;
+  background:var(--accent); box-shadow:0 0 8px var(--accent);
+  z-index:9999; opacity:0; pointer-events:none;
+  transition:width .2s ease, opacity .3s;
+}
+#progress-bar-global.active { opacity:1; }
+
 /* ── Layout ───────────────────────────────────────────── */
 .layout { display: flex; flex: 1; }
 main { flex: 1; padding: 1rem 1rem; overflow-x: hidden; }
@@ -116,7 +136,14 @@ aside {
 .tag-fav-btn:hover, .tag-fav-btn.active { color: #f87272; }
 
 /* ── Active tag pills ─────────────────────────────────── */
-.active-tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; }
+.active-tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; align-items: center; }
+/* #tag-pills wraps the JS-rendered pills; display:contents lets each pill be a
+   direct flex child of .active-tags so they lay out horizontally (and wrap)
+   instead of stacking vertically. */
+#tag-pills { display: contents; }
+/* performance: kill transitions/animations site-wide when enabled */
+body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+body.reduce-motion .sheet-backdrop > div, body.reduce-motion .swipe-preview, body.reduce-motion #media-container { transition: none !important; }
 .active-tag {
   background: var(--accent-dim); border: 1px solid var(--accent);
   color: var(--text-bright); padding: .2rem .6rem; border-radius: 3px;
@@ -130,9 +157,9 @@ aside {
 @media (max-width: 640px) { .photo-grid { grid-template-columns: repeat(3, 1fr); gap: 2px; } }
 @media (max-width: 380px)  { .photo-grid { grid-template-columns: repeat(2, 1fr); } }
 
-.photo-card { aspect-ratio: 1; overflow: hidden; background: var(--bg3); position: relative; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.photo-card { aspect-ratio: 1; overflow: hidden; background: var(--bg3); position: relative; cursor: pointer; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
 @media (hover: hover) { .photo-card:hover { transform: scale(1.02); z-index: 1; } }
-.photo-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-card img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-touch-callout: none; -webkit-user-drag: none; }
 .photo-card .overlay {
   position: absolute; inset: 0;
   background: linear-gradient(to top, rgba(0,0,0,.7) 0%, transparent 55%);
@@ -143,6 +170,10 @@ aside {
 @media (hover: none) { .photo-card .overlay { opacity: 1; } }
 @media (hover: hover) { .photo-card:hover .overlay { opacity: 1; } }
 .photo-card .tag-count-badge { font-size: .68rem; color: #fff; font-family: var(--mono); }
+/* media-kind markers: solid border = contains video, dashed = contains gif
+   (shows even when the cover image itself isn't the clip). */
+.photo-card.has-video { outline: 3px solid var(--tag-ai); outline-offset: -3px; }
+.photo-card.has-gif   { outline: 2px dashed var(--tag-meta); outline-offset: -2px; }
 
 .load-more { text-align: center; padding: 2rem; grid-column: 1/-1; }
 
@@ -211,13 +242,23 @@ aside {
 
 /* ── Mobile tag sheet ─────────────────────────────────── */
 .sheet-backdrop {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: flex; position: fixed; inset: 0; background: rgba(0,0,0,.6);
   z-index: 150; align-items: flex-end;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .25s ease, visibility .25s;
 }
-.sheet-backdrop.open { display: flex; }
+.sheet-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; }
+/* the sheet itself slides up from the bottom (and back down on close) */
+.sheet-backdrop > div { transform: translateY(100%); transition: transform .28s cubic-bezier(.4,0,.2,1); }
+.sheet-backdrop.open > div { transform: translateY(0); }
 .tag-sheet {
   background: var(--bg2); border-radius: 20px 20px 0 0;
-  width: 100%; max-height: 80vh;
+  width: 100%;
+  /* Fixed tall height (dvh excludes the on-screen keyboard area) so the search
+     box + a short list of matches stay near the top of the screen instead of
+     collapsing down behind the keyboard when only a few tags are found. */
+  height: 75vh; max-height: 75vh;
+  height: 75dvh; max-height: 75dvh;
   display: flex; flex-direction: column;
   padding-bottom: calc(.5rem + var(--safe-bottom));
   border-top: 1px solid var(--border);
@@ -244,6 +285,15 @@ aside {
 .sheet-tag-name.ai       { color: var(--tag-ai); }
 .sheet-tag-count { font-size: .75rem; color: var(--text-dim); font-family: var(--mono); }
 .sheet-tag-add { color: var(--text-dim); font-size: 1.2rem; padding: .2rem .4rem; -webkit-tap-highlight-color: transparent; }
+.sheet-sug { padding:.5rem .8rem; font-family:var(--mono); font-size:.9rem; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,.04); -webkit-tap-highlight-color:transparent; }
+.sheet-sug.general{color:var(--tag-general);} .sheet-sug.character{color:var(--tag-character);} .sheet-sug.artist{color:var(--tag-artist);} .sheet-sug.meta{color:var(--tag-meta);} .sheet-sug.ai{color:var(--tag-ai);}
+.sheet-sug:active { background:var(--accent-dim); }
+.quick-row { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; padding:.25rem 0; }
+.quick-lbl { font-family:var(--mono); font-size:.62rem; color:var(--text-dim); }
+.quick-chip { font-family:var(--mono); font-size:.74rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.quick-chip:active, .quick-chip:hover { border-color:var(--accent); color:var(--accent); }
+.quick-chip.character{color:var(--tag-character);} .quick-chip.artist{color:var(--tag-artist);} .quick-chip.meta{color:var(--tag-meta);} .quick-chip.ai{color:var(--tag-ai);}
+.cheat-code { font-family: var(--mono); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent); font-size: .78rem; white-space: nowrap; }
 
 /* ── Misc ─────────────────────────────────────────────── */
 .sidebar-input {
@@ -294,12 +344,17 @@ input[type=range].size-slider::-moz-range-thumb {
 <header>
   <a href="/" class="logo">booru<span>.local</span></a>
   <div class="header-actions header-desktop">
-    <a class="btn" href="/duplicates/">⧉ dupes</a>
+    <a class="btn" href="/duplicates/" onclick="startProgress()">⧉ dupes</a>
     <button class="btn" onclick="openUploadModal()">⬆ upload</button>
     <button class="btn" id="scan-btn" onclick="doScan()">⟳ scan inbox</button>
     <button class="btn" id="ai-all-btn" onclick="aiTagAll()">✦ ai tag all</button>
     <button class="btn header-desktop" onclick="goRandom()">&#9684; random</button>
-    <button class="btn header-desktop" id="organize-btn" onclick="organizeMerged()">&#128193; fix folders</button>
+    <a class="btn header-desktop" href="/tags/edit/">&#9998; tags</a>
+    <a class="btn header-desktop" href="/shortcuts/" title="keyboard shortcuts">&#9000; keys</a>
+    <!-- "fix folders" kept available but hidden from the top bar (run from
+         console or re-enable here if needed). Hidden on phone too (no mobile
+         menu entry exists for it). -->
+    <button class="btn header-desktop" id="organize-btn" onclick="organizeMerged()" style="display:none;">&#128193; fix folders</button>
     <a class="btn header-desktop" href="/logout/" style="color:var(--text-dim);">logout</a>
   </div>
 </header>
@@ -324,9 +379,10 @@ input[type=range].size-slider::-moz-range-thumb {
     <div class="sheet-handle"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;padding:.5rem 0;">
       <button class="btn" onclick="aiTagAll();closeMobMenu()">&#10022; ai tag all</button>
-      <a class="btn" href="/duplicates/" style="text-align:center;">&#9673; dupes</a>
+      <a class="btn" href="/duplicates/" onclick="startProgress()" style="text-align:center;">&#9673; dupes</a>
       <a class="btn" href="/logout/" style="text-align:center;color:var(--text-dim);">logout</a>
       <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select posts</button>
+      <a class="btn" href="/tags/edit/" style="text-align:center;">&#9998; edit tags</a>
     </div>
     <!-- Preview size -->
     <div style="margin:.5rem 0;">
@@ -362,6 +418,8 @@ input[type=range].size-slider::-moz-range-thumb {
         <button class="mode-btn" id="mob-mode-pages" onclick="setMode('pages')">pages</button>
         <button class="mode-btn" id="mob-mode-scroll" onclick="setMode('scroll')">infinite</button>
       </div>
+      <button class="mode-btn full-preview-btn" id="mob-full-preview" onclick="toggleFullPreview()" style="width:100%;margin-top:.4rem;">&#9647; full-size previews</button>
+      <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.4rem;">&#9889; reduce animations (faster)</button>
     </div>
     <!-- Zoom mode -->
     <div style="margin:.5rem 0;">
@@ -408,10 +466,16 @@ input[type=range].size-slider::-moz-range-thumb {
 <!-- Mobile tag sheet -->
 <div class="sheet-backdrop" id="tag-sheet-backdrop" onclick="closeTagSheet()">
   <div class="tag-sheet" id="tag-sheet" onclick="event.stopPropagation()">
-    <div class="sheet-handle"></div>
-    <div class="sheet-search-row">
-      <input class="sheet-search" id="sheet-search" type="search" placeholder="search tags…" oninput="filterSheetTags(this.value)">
-    </div>
+    <div class="sheet-handle" id="tag-sheet-handle"></div>
+    <form class="sheet-search-row" style="display:flex;gap:.4rem;align-items:center;" onsubmit="sheetSearch();return false;">
+      <input class="sheet-search" id="sheet-search" type="text" enterkeyhint="search"
+             placeholder="tag1 tag2 … (search)" autocomplete="off"
+             oninput="onSheetInput(this.value)" onkeydown="onSheetKey(event)" style="flex:1;">
+      <button type="submit" class="btn primary" style="padding:.55rem .7rem;flex-shrink:0;font-size:1rem;" title="search">&#128269;</button>
+    </form>
+    <div id="sheet-suggestions" style="display:none;margin:0 1rem;background:var(--bg3);border:1px solid var(--border);border-radius:8px;max-height:170px;overflow-y:auto;flex-shrink:0;"></div>
+    <div style="text-align:right;padding:0 1rem;flex-shrink:0;"><button onclick="openCheatSheet()" style="font-family:var(--mono);font-size:.66rem;background:none;border:none;color:var(--text-dim);text-decoration:underline;-webkit-tap-highlight-color:transparent;">search syntax&nbsp;?</button></div>
+    <div id="sheet-quick" style="padding:.1rem 1rem;flex-shrink:0;"></div>
     <div class="sheet-tag-list" id="sheet-tag-list">
       <!-- filled by JS -->
     </div>
@@ -419,17 +483,121 @@ input[type=range].size-slider::-moz-range-thumb {
 </div>
 
 <div id="toast"></div>
+<div id="progress-bar-global"></div>
+
+<!-- Search syntax cheat sheet (shared: gallery sidebar + mobile tag sheet) -->
+<div class="modal-backdrop" id="cheat-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-handle"></div>
+    <h2>search syntax</h2>
+    <div style="display:flex;flex-direction:column;gap:.6rem;font-size:.83rem;line-height:1.5;">
+      <div><code class="cheat-code">tag1 tag2</code> — posts that have <b>both</b> tags (AND).</div>
+      <div><code class="cheat-code">( tag1 ~ tag2 )</code> — posts that have tag1 <b>or</b> tag2. The spaces around the braces and the <code class="cheat-code">~</code> matter, because some tags end in braces.</div>
+      <div><code class="cheat-code">-tag1</code> — posts that do <b>not</b> have tag1.</div>
+      <div><code class="cheat-code">night~</code> — <b>fuzzy</b> match: also returns near-spelled tags like night, fight, bright.</div>
+      <div><code class="cheat-code">ta*1</code> — <b>wildcard</b>: tags starting with “ta” and ending “1”. <code class="cheat-code">*</code> matches anything.</div>
+      <div><code class="cheat-code">file:cat</code> — posts whose <b>file name</b> contains “cat”.</div>
+      <div><code class="cheat-code">folder:trip</code> — posts whose <b>folder</b> path contains “trip”.</div>
+      <div style="color:var(--text-dim);font-size:.76rem;border-top:1px solid var(--border);padding-top:.5rem;">Combine freely, e.g.&nbsp; <code class="cheat-code">1girl ( red_hair ~ blue_hair ) -monochrome file:2024</code></div>
+    </div>
+    <div class="modal-actions"><button class="btn primary" onclick="document.getElementById('cheat-modal').classList.remove('open')">got it</button></div>
+  </div>
+</div>
 
 <script>
 function getCsrf() { return document.querySelector('meta[name="csrf-token"]').content; }
+function openCheatSheet() { document.getElementById('cheat-modal').classList.add('open'); }
+
+/* ── Keyboard bindings ─────────────────────────────────────────
+   Handlers check BINDINGS[action] so users can customise everything. */
+const DEFAULT_BINDINGS = {
+  // Gallery page
+  focus_search:    '/',    cheat_sheet:    '?',
+  scroll_top:      't',    scroll_bottom:  'b',
+  select_mode:     's',    select_all:     'a',
+  prev_page:       'ArrowLeft',  next_page: 'ArrowRight',
+  full_preview:    'p',    scan_inbox:     'F5',
+  open_random:     'q',    random_post:    'w',
+  // Post page
+  detail_back:    'Escape', toggle_info:   'i',
+  toggle_view:    'v',    fav:             'f',
+  ai_tag:         'g',    find_similar:   'u',
+  regen_thumb:    'h',
+  detail_prev:    'ArrowLeft', detail_next: 'ArrowRight',
+};
+window.BINDINGS = {...DEFAULT_BINDINGS};
+async function loadBindings() {
+  try {
+    const d = await (await fetch('/api/prefs/')).json();
+    const stored = d.prefs.keyBindings || {};
+    window.BINDINGS = Object.assign({...DEFAULT_BINDINGS}, stored);
+  } catch(e) {}
+}
+function bind(action) { return window.BINDINGS[action] || DEFAULT_BINDINGS[action] || ''; }
+document.addEventListener('DOMContentLoaded', loadBindings);
+
+/* ── Performance: reduce animations toggle ─────────────────────── */
+function applyReduceMotion() {
+  const on = localStorage.getItem('reduceMotion') === '1';
+  document.body.classList.toggle('reduce-motion', on);
+  document.querySelectorAll('.reduce-motion-btn').forEach(b => b.classList.toggle('active', on));
+  return on;
+}
+function toggleReduceMotion() {
+  localStorage.setItem('reduceMotion', localStorage.getItem('reduceMotion') === '1' ? '0' : '1');
+  applyReduceMotion();
+}
+document.addEventListener('DOMContentLoaded', applyReduceMotion);
+
+/* ── Global progress bar ───────────────────────────────────────
+   startProgress()  — begin an indeterminate action (creeps to 90%)
+   setProgress(pct) — set a known percentage (for client-side loops)
+   doneProgress()   — finish + hide                                   */
+let _progTimer = null, _progVal = 0;
+function startProgress() {
+  const b = document.getElementById('progress-bar-global');
+  if (!b) return;
+  clearInterval(_progTimer);
+  _progVal = 8; b.classList.add('active'); b.style.width = _progVal + '%';
+  _progTimer = setInterval(() => {
+    if (_progVal < 90) { _progVal += Math.max(0.5, (90 - _progVal) * 0.08); b.style.width = _progVal + '%'; }
+  }, 200);
+}
+function setProgress(pct) {
+  const b = document.getElementById('progress-bar-global');
+  if (!b) return;
+  clearInterval(_progTimer);
+  _progVal = Math.max(_progVal, pct);
+  b.classList.add('active'); b.style.width = _progVal + '%';
+}
+function doneProgress() {
+  const b = document.getElementById('progress-bar-global');
+  if (!b) return;
+  clearInterval(_progTimer);
+  b.style.width = '100%';
+  setTimeout(() => { b.classList.remove('active'); b.style.width = '0'; _progVal = 0; }, 350);
+}
 
 function updateSliderFill(sl) {
   if (!sl) return;
   const min = parseFloat(sl.min) || 0;
   const max = parseFloat(sl.max) || 100;
-  const val = parseFloat(sl.value);
-  const pct = ((val - min) / (max - min) * 100).toFixed(1) + '%';
+  const pct = ((parseFloat(sl.value) - min) / (max - min) * 100).toFixed(1) + '%';
   sl.style.setProperty('--pct', pct);
+  // iOS Safari sometimes doesn't cascade custom properties from an input to its
+  // pseudo-elements (::-webkit-slider-runnable-track). Inject a <style> tag
+  // directly so the track background uses the literal percentage value.
+  if (sl.id) {
+    let styleEl = document.getElementById('_sf_' + sl.id);
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = '_sf_' + sl.id;
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent =
+      `#${sl.id}::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--accent) 0%,var(--accent) ${pct},var(--bg3) ${pct},var(--bg3) 100%)!important}` +
+      `#${sl.id}::-moz-range-progress{width:${pct}}`;
+  }
 }
 // Auto-update all sliders on input
 document.addEventListener('input', e => {
@@ -450,8 +618,10 @@ function toast(msg, type='ok') {
 async function doScan() {
   const btns = ['scan-btn','mob-scan'];
   btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
+  startProgress();
   const r = await fetch('/api/scan/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
   const d = await r.json();
+  doneProgress();
   btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
   let msg = `+${d.added} added`;
   if (d.removed > 0) msg += `, -${d.removed} removed`;
@@ -482,8 +652,10 @@ async function organizeMerged() {
 async function aiTagAll() {
   const btns = ['ai-all-btn','mob-ai'];
   btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
+  startProgress();
   const r = await fetch('/api/ai-tag-all/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
   const d = await r.json();
+  doneProgress();
   btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
   toast(`tagged ${d.count} photo(s)`);
   if (d.count > 0) setTimeout(() => location.reload(), 1200);
@@ -491,13 +663,7 @@ async function aiTagAll() {
 
 /* ── Upload modal ────────────────────────────────────── */
 let selectedFiles = [];
-function openUploadModal() { document.getElementById('upload-modal').classList.add('open'); }
-function closeUploadModal() {
-  document.getElementById('upload-modal').classList.remove('open');
-  selectedFiles = [];
-  document.getElementById('upload-status').textContent = '';
-  document.getElementById('upload-btn').disabled = true;
-}
+// openUploadModal / closeUploadModal defined later (with body-scroll lock + drag-dismiss)
 
 document.addEventListener('DOMContentLoaded', () => {
   const dz = document.getElementById('drop-zone');
@@ -566,20 +732,115 @@ async function doUpload() {
   setTimeout(() => location.reload(), 800);
 }
 
+/* ── Shared recent / favorite tag helpers (used by tag sheet, bulk modal,
+   and the in-post tag adder) ─────────────────────────────────── */
+function getRecentTags() {
+  try { return JSON.parse(localStorage.getItem('recentTags') || '[]'); }
+  catch(e) { return []; }
+}
+function pushRecentTag(name, category) {
+  let r = getRecentTags().filter(t => t.name !== name);
+  r.unshift({name, category: category || 'general'});
+  localStorage.setItem('recentTags', JSON.stringify(r.slice(0, 16)));
+  pushRecentSync();
+}
+let _favTagCache = null;
+async function getFavTags() {
+  if (_favTagCache) return _favTagCache;
+  try { const d = await (await fetch('/api/tags/')).json(); _favTagCache = d.tags.filter(t => t.fav); }
+  catch(e) { _favTagCache = []; }
+  return _favTagCache;
+}
+
+/* recently RUN searches (full queries like "1girl ( blue_hair ~ red_hair )"),
+   distinct from recently-added tags */
+function getRecentSearches() {
+  try { return JSON.parse(localStorage.getItem('recentSearches') || '[]'); }
+  catch(e) { return []; }
+}
+function pushRecentSearch(query) {
+  query = (query || '').trim().replace(/\s+/g, ' ');
+  if (!query) return;
+  let r = getRecentSearches().filter(q => q !== query);
+  r.unshift(query);
+  localStorage.setItem('recentSearches', JSON.stringify(r.slice(0, 12)));
+  pushRecentSync();
+}
+function recordRecentPost(entry) {
+  try {
+    let seen = JSON.parse(localStorage.getItem('recentPosts') || '[]');
+    // append each visit as a new entry (sequential viewing log, no dedup)
+    // cap at 50 so it doesn't grow forever
+    seen.unshift(entry);
+    localStorage.setItem('recentPosts', JSON.stringify(seen.slice(0, 50)));
+    pushRecentSync();
+  } catch(e) {}
+}
+
+/* ── Cross-device sync of recent lists (single-user → server prefs) ── */
+const _SYNC_KEYS = ['recentPosts', 'recentSearches', 'recentTags'];
+let _syncTimer = null;
+async function pullRecent() {
+  try {
+    const d = await (await fetch('/api/prefs/')).json();
+    const p = d.prefs || {};
+    _SYNC_KEYS.forEach(k => { if (p[k] !== undefined) localStorage.setItem(k, JSON.stringify(p[k])); });
+  } catch(e) {}
+}
+function pushRecentSync() {
+  clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(() => {
+    _SYNC_KEYS.forEach(k => {
+      let v; try { v = JSON.parse(localStorage.getItem(k) || '[]'); } catch(e) { v = []; }
+      fetch('/api/pref/set/', {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+        body: JSON.stringify({key:k, value:v})
+      }).catch(()=>{});
+    });
+  }, 900);
+}
+async function initRecentSync() {
+  await pullRecent();
+  if (typeof renderRecentStrip !== 'undefined') renderRecentStrip();
+  if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
+  ['recent-searches', 'detail-recent-searches'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && typeof recentSearchChips !== 'undefined') {
+      const c = recentSearchChips();
+      el.innerHTML = c ? '<span class="quick-lbl">searches</span>' + c : '';
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', initRecentSync);
+function runSearchQuery(query) {
+  const p = new URLSearchParams();
+  query.trim().split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
+  if (typeof startProgress !== 'undefined') startProgress();
+  window.location.href = p.toString() ? '/?' + p.toString() : '/';
+}
+function recentSearchChips() {
+  return getRecentSearches().map(q =>
+    `<span class="quick-chip" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${q.replace(/"/g,'&quot;')}" onclick="runSearchQuery('${q.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">${q.replace(/</g,'&lt;')}</span>`).join('');
+}
+
 /* ── Mobile tag sheet ────────────────────────────────── */
-let _sheetTags = [];
+let _sheetTags = [], _sheetSugItems = [], _sheetSugTimer = null;
 async function openTagSheet() {
+  document.body.style.overflow = 'hidden';   // prevent body scroll + iOS pull-to-refresh
   if (!_sheetTags.length) {
-    const r = await fetch('/api/tag-search/?q=');
-    // reuse tag-search with empty q to get all — actually fetch index tags
     const r2 = await fetch('/api/tags/');
     _sheetTags = (await r2.json()).tags;
   }
+  // prefill with the tags already in the current search
+  const cur = new URLSearchParams(window.location.search).getAll('tag');
+  const inp = document.getElementById('sheet-search');
+  inp.value = cur.length ? cur.join(' ') + ' ' : '';
   renderSheetTags(_sheetTags);
+  await renderSheetQuick();
   document.getElementById('tag-sheet-backdrop').classList.add('open');
-  document.getElementById('sheet-search').focus();
+  inp.focus();
 }
-function closeTagSheet() { document.getElementById('tag-sheet-backdrop').classList.remove('open'); }
+function closeTagSheet() { document.getElementById('tag-sheet-backdrop').classList.remove('open'); hideSheetSug(); document.body.style.overflow = ''; }
 
 function renderSheetTags(tags) {
   const el = document.getElementById('sheet-tag-list');
@@ -587,11 +848,85 @@ function renderSheetTags(tags) {
     <div class="sheet-tag-item" data-name="${t.name}">
       <span class="tag-fav-btn ${t.fav ? 'active' : ''}"
             onclick="sheetToggleFav('${t.name}', this)">&#9829;</span>
-      <a class="sheet-tag-name ${t.category}" href="/?tag=${encodeURIComponent(t.name)}">${t.name}</a>
+      <span class="sheet-tag-name ${t.category}" onclick="sheetAppendTag('${t.name}')" style="cursor:pointer;">${t.name}</span>
       <span class="sheet-tag-count">${t.count}</span>
-      <span class="sheet-tag-add" onclick="addTagMobile('${t.name}')" title="add to search">+</span>
+      <span class="sheet-tag-add" onclick="sheetAppendTag('${t.name}')" title="add to search">+</span>
     </div>`).join('');
 }
+
+// recent + favorite quick chips at the top of the sheet
+async function renderSheetQuick() {
+  const wrap = document.getElementById('sheet-quick');
+  if (!wrap) return;
+  const recent = getRecentTags().slice(0, 10);
+  const favs   = await getFavTags();
+  let html = '';
+  const searches = recentSearchChips();
+  if (searches) html += '<div class="quick-row"><span class="quick-lbl">searches</span>' + searches + '</div>';
+  if (recent.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>'
+    + recent.map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}</span>`).join('') + '</div>';
+  if (favs.length) html += '<div class="quick-row"><span class="quick-lbl">&#9829;</span>'
+    + favs.slice(0,12).map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}</span>`).join('') + '</div>';
+  wrap.innerHTML = html;
+}
+
+// append a tag to the (multi-token) search box rather than navigating away
+function sheetAppendTag(name) {
+  const inp = document.getElementById('sheet-search');
+  const parts = inp.value.trim().length ? inp.value.trim().split(/\s+/) : [];
+  if (!parts.includes(name)) parts.push(name);
+  inp.value = parts.join(' ') + ' ';
+  hideSheetSug();
+  inp.focus();
+  onSheetInput(inp.value);
+}
+
+// tapping a SUGGESTION replaces the partial token being typed
+// ("vi" + tap "video"  →  "video ", not "vi video")
+function sheetPickSuggestion(name) {
+  const inp = document.getElementById('sheet-search');
+  let parts = inp.value.trim().length ? inp.value.trim().split(/\s+/) : [];
+  if (parts.length) parts[parts.length - 1] = name; else parts.push(name);
+  inp.value = parts.join(' ') + ' ';
+  hideSheetSug();
+  inp.focus();
+  onSheetInput(inp.value);
+}
+
+// run the search with everything typed in the box
+function sheetSearch() {
+  const val = document.getElementById('sheet-search').value.trim();
+  if (!val) { window.location.href = '/'; return; }
+  pushRecentSearch(val);
+  const p = new URLSearchParams(window.location.search);
+  p.delete('tag'); p.delete('page');
+  val.split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
+  startProgress();
+  window.location.href = '/?' + p.toString();
+}
+
+// filter the list + fetch autocomplete for the LAST token typed
+function onSheetInput(val) {
+  const parts = val.trim().toLowerCase().split(/\s+/);
+  const last  = parts[parts.length - 1] || '';
+  document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
+    el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
+  });
+  clearTimeout(_sheetSugTimer);
+  if (!last || last.length < 1) { hideSheetSug(); return; }
+  _sheetSugTimer = setTimeout(async () => {
+    const d = await (await fetch(`/api/tag-search/?q=${encodeURIComponent(last)}`)).json();
+    _sheetSugItems = d.tags;
+    const el = document.getElementById('sheet-suggestions');
+    if (!d.tags.length) { hideSheetSug(); return; }
+    el.innerHTML = d.tags.map(t =>
+      `<div class="sheet-sug ${t.category}" onclick="sheetPickSuggestion('${t.name.replace(/'/g,"\\'")}')">${t.name}<span style="color:var(--text-dim);font-size:.72rem;">${t.count}</span></div>`
+    ).join('');
+    el.style.display = 'block';
+  }, 150);
+}
+function hideSheetSug() { const el = document.getElementById('sheet-suggestions'); if (el) el.style.display = 'none'; }
+function onSheetKey(e) { if (e.key === 'Enter') { e.preventDefault(); sheetSearch(); } }
 
 async function sheetToggleFav(name, btn) {
   const r = await fetch(`/api/tag/${encodeURIComponent(name)}/fav/`, {
@@ -599,12 +934,14 @@ async function sheetToggleFav(name, btn) {
   });
   const d = await r.json();
   btn.classList.toggle('active', d.fav);
-  // also update cached tag data
   const t = _sheetTags.find(t => t.name === name);
   if (t) t.fav = d.fav;
+  _favTagCache = null;           // invalidate fav cache
+  renderSheetQuick();
 }
 
 function openMobMenu() {
+  document.body.style.overflow = 'hidden';
   // sync state from current URL
   const p = new URLSearchParams(window.location.search);
   // sort buttons — single source of truth: window.SORT_OPTIONS (set by the
@@ -629,11 +966,18 @@ function openMobMenu() {
   const exactEl = document.getElementById('mob-exact-filters');
   const curExact = p.get('rating') || '';
   if (exactEl) {
-    let h = [1,2,3,4,5].map(n =>
+    let h = `<button class="star-filter-btn ${curExact==='0'?'active':''}" data-stars="0" onclick="setExactRating(this);closeMobMenu()">&#9734; unrated</button>`;
+    h += [1,2,3,4,5].map(n =>
       `<button class="star-filter-btn ${curExact==n?'active':''}" data-stars="${n}" onclick="setExactRating(this);closeMobMenu()">${n}&#9733;</button>`
     ).join('');
     if (curStar || curExact) h += `<button class="star-filter-btn" onclick="clearRatingFilter();closeMobMenu()">clear</button>`;
     exactEl.innerHTML = h;
+  }
+  // full-size preview toggle (gallery only)
+  const fpBtn = document.getElementById('mob-full-preview');
+  if (fpBtn) {
+    if (typeof toggleFullPreview === 'undefined') { fpBtn.style.display = 'none'; }
+    else { fpBtn.style.display = ''; fpBtn.classList.toggle('active', localStorage.getItem('fullPreview') === '1'); }
   }
   // fav filter
   const favEl = document.getElementById('mob-fav-filter');
@@ -657,7 +1001,38 @@ function openMobMenu() {
   document.getElementById('mob-menu-backdrop').classList.add('open');
   setTimeout(() => { const sl=document.getElementById('mob-size-slider'); if(sl&&typeof updateSliderFill!=='undefined') updateSliderFill(sl); }, 50);
 }
-function closeMobMenu() { document.getElementById('mob-menu-backdrop').classList.remove('open'); }
+function closeMobMenu() { document.getElementById('mob-menu-backdrop').classList.remove('open'); document.body.style.overflow = ''; }
+
+function openUploadModal() {
+  document.getElementById('upload-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeUploadModal() {
+  document.getElementById('upload-modal').classList.remove('open');
+  document.body.style.overflow = '';
+  selectedFiles = [];
+  const st = document.getElementById('upload-status');
+  if (st) st.textContent = '';
+  const ub = document.getElementById('upload-btn');
+  if (ub) ub.disabled = true;
+}
+// drag-down-to-close for the upload modal
+(function() {
+  const modal = document.getElementById('upload-modal');
+  if (!modal) return;
+  const inner = modal.querySelector('.modal');
+  if (!inner) return;
+  let sy=0, tracking=false;
+  inner.addEventListener('touchstart', e=>{
+    if (e.touches.length!==1) return;
+    sy=e.touches[0].clientY; tracking=true;
+  },{passive:true});
+  inner.addEventListener('touchmove', e=>{
+    if (!tracking||e.touches.length!==1) return;
+    if (e.touches[0].clientY-sy>70) { closeUploadModal(); tracking=false; }
+  },{passive:true});
+  inner.addEventListener('touchend', ()=>{ tracking=false; },{passive:true});
+})();
 
 function setZoomMode(mode) {
   localStorage.setItem('zoomMode', mode);
@@ -684,19 +1059,38 @@ function applyZoomMode(mode) {
   applyZoomMode(saved);
 })();
 
-function filterSheetTags(q) {
-  q = q.toLowerCase();
+function filterSheetTags(q) {  // kept for back-compat (unused)
+  q = (q||'').toLowerCase();
   document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
     el.style.display = el.dataset.name.includes(q) ? '' : 'none';
   });
 }
 
-function addTagMobile(name) {
-  const current = new URLSearchParams(window.location.search);
-  const tags = current.getAll('tag');
-  if (!tags.includes(name)) tags.push(name);
-  window.location.href = '/?' + tags.map(t => 'tag='+encodeURIComponent(t)).join('&');
+/* ── Drag a bottom sheet down (from its top) to dismiss it ──────
+   Applies to the tag sheet and the "more" menu, matching the post
+   swipe-down-to-close feel. */
+function _attachSheetDismiss(sheetId, scrollSel, closeFn) {
+  const sheet = document.getElementById(sheetId);
+  if (!sheet) return;
+  const scroller = scrollSel ? sheet.querySelector(scrollSel) : null;
+  let startY = 0, atTop = false, tracking = false;
+  sheet.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { tracking = false; return; }
+    startY = e.touches[0].clientY;
+    atTop  = !scroller || scroller.scrollTop <= 0;
+    tracking = true;
+  }, {passive:true});
+  sheet.addEventListener('touchmove', e => {
+    if (!tracking || e.touches.length !== 1) return;
+    if (scroller && scroller.scrollTop > 0) { atTop = false; return; }
+    if (atTop && e.touches[0].clientY - startY > 70) { closeFn(); tracking = false; }
+  }, {passive:true});
+  sheet.addEventListener('touchend', () => { tracking = false; }, {passive:true});
 }
+document.addEventListener('DOMContentLoaded', () => {
+  _attachSheetDismiss('tag-sheet', '#sheet-tag-list', closeTagSheet);
+  _attachSheetDismiss('mob-menu-sheet', null, closeMobMenu);
+});
 </script>
 
 {% block extra_js %}{% endblock %}

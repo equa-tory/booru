@@ -1,13 +1,13 @@
 {% for post in page_obj %}
 {% with cover=post.cover %}
 {% if cover %}
-<a href="/post/{{ post.pk }}/?{% for t in q_tags %}tag={{ t }}&{% endfor %}"
-   class="photo-card"
+<a href="/post/{{ post.pk }}/{% if nav_qs %}?{{ nav_qs }}{% endif %}"
+   class="photo-card{% if post.has_video %} has-video{% elif post.has_gif %} has-gif{% endif %}"
    data-id="{{ post.pk }}"
    data-rating="{{ post.rating }}"
    data-fav="{{ post.fav|lower }}"
    onclick="if(typeof saveScroll!=='undefined')saveScroll()">
-  <img src="{{ cover.thumb_url }}" alt="{{ post.title }}" loading="lazy">
+  <img src="{{ cover.thumb_url }}" alt="{{ post.title }}" loading="lazy" decoding="async">
   <div class="overlay">
     <span class="tag-count-badge">{{ post.tags.all|length }} tags{% if post.image_count > 1 %} &middot; {{ post.image_count }}{% endif %}</span>
   </div>

@@ -1,0 +1,122 @@
+{% extends "gallery/base.html" %}
+{% block title %}keyboard shortcuts{% endblock %}
+
+{% block extra_head %}
+<style>
+  .sc-wrap { max-width: 760px; margin: 0 auto; padding: 1rem; }
+  .sc-wrap h1 { font-size: 1.3rem; margin-bottom: .3rem; }
+  .sc-sub { color: var(--text-dim); font-size: .85rem; margin-bottom: 1.2rem; }
+  .sc-group { margin-bottom: 1.6rem; }
+  .sc-group h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); font-family: var(--mono); margin-bottom: .5rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+  .sc-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .45rem .2rem; border-bottom: 1px solid rgba(255,255,255,.04); }
+  .sc-row .lbl { font-size: .9rem; }
+  .sc-key { font-family: var(--mono); font-size: .82rem; min-width: 90px; text-align: center; padding: .35rem .6rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .sc-key:hover { border-color: var(--accent); color: var(--accent); }
+  .sc-key.capturing { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); animation: scpulse 1s infinite; }
+  @keyframes scpulse { 0%,100%{opacity:1;} 50%{opacity:.55;} }
+  .sc-actions { display: flex; gap: .6rem; margin-top: 1rem; }
+  .sc-note { color: var(--text-dim); font-size: .78rem; margin-top: 1.2rem; line-height: 1.5; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="sc-wrap">
+  <h1>keyboard shortcuts</h1>
+  <div class="sc-sub">Click a key, then press the key you want to bind. Settings sync across devices.</div>
+  <div id="sc-groups"></div>
+  <div class="sc-actions">
+    <button class="btn" onclick="resetBindings()">reset to defaults</button>
+    <a class="btn" href="/">done</a>
+  </div>
+  <div class="sc-note">
+    Number keys <b>0–5</b> always set a post's rating (0 clears) and aren't rebindable.
+    Leave a binding empty to disable that shortcut. Shortcuts never fire while typing in a text box.
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SC_GROUPS = [
+  { title: 'gallery', actions: [
+    ['focus_search',  'Focus search box'],
+    ['cheat_sheet',   'Open search-syntax help'],
+    ['scroll_top',    'Scroll to top'],
+    ['scroll_bottom', 'Scroll to bottom'],
+    ['full_preview',  'Toggle full-size previews'],
+    ['select_mode',   'Toggle select mode'],
+    ['select_all',    'Select all (in select mode)'],
+    ['prev_page',     'Previous page'],
+    ['next_page',     'Next page'],
+    ['scan_inbox',    'Scan inbox for new posts'],
+    ['open_random',   'Shuffle gallery (random order)'],
+    ['random_post',   'Open a random post'],
+  ]},
+  { title: 'post', actions: [
+    ['detail_back',   'Back / close panel'],
+    ['toggle_info',   'Toggle info panel'],
+    ['toggle_view',   'Toggle paged / scroll view'],
+    ['detail_prev',   'Previous image'],
+    ['detail_next',   'Next image'],
+    ['fav',           'Toggle favorite'],
+    ['ai_tag',        'AI auto-tag'],
+    ['find_similar',  'Find similar'],
+    ['regen_thumb',   'Regenerate thumbnail'],
+  ]},
+];
+
+// start from defaults, overlay server-stored bindings
+let CUR = Object.assign({}, DEFAULT_BINDINGS, {{ bindings_json|safe }});
+
+function keyLabel(k) {
+  if (!k) return '(none)';
+  return ({' ':'Space','ArrowLeft':'←','ArrowRight':'→','ArrowUp':'↑','ArrowDown':'↓','Escape':'Esc'})[k] || k;
+}
+
+function renderGroups() {
+  document.getElementById('sc-groups').innerHTML = SC_GROUPS.map(g => `
+    <div class="sc-group">
+      <h2>${g.title}</h2>
+      ${g.actions.map(([id,lbl]) => `
+        <div class="sc-row">
+          <span class="lbl">${lbl}</span>
+          <button class="sc-key" id="sck_${id}" onclick="capture('${id}', this)">${keyLabel(CUR[id])}</button>
+        </div>`).join('')}
+    </div>`).join('');
+}
+
+let capturingId = null, capturingBtn = null;
+function capture(id, btn) {
+  if (capturingBtn) capturingBtn.classList.remove('capturing');
+  capturingId = id; capturingBtn = btn;
+  btn.classList.add('capturing'); btn.textContent = 'press a key…';
+}
+document.addEventListener('keydown', e => {
+  if (capturingId === null) return;
+  e.preventDefault(); e.stopPropagation();
+  let k = e.key;
+  if (k === 'Backspace' || k === 'Delete') k = '';   // clear binding
+  CUR[capturingId] = k;
+  capturingBtn.classList.remove('capturing');
+  capturingId = null; capturingBtn = null;
+  renderGroups();
+  saveBindings();
+}, true);
+
+function saveBindings() {
+  fetch('/api/pref/set/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({key:'keyBindings', value:CUR})
+  }).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS, CUR); toast('saved'); });
+}
+function resetBindings() {
+  if (!confirm('Reset all shortcuts to defaults?')) return;
+  CUR = Object.assign({}, DEFAULT_BINDINGS);
+  fetch('/api/pref/set/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({key:'keyBindings', value:{}})
+  }).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS); renderGroups(); toast('reset'); });
+}
+renderGroups();
+</script>
+{% endblock %}

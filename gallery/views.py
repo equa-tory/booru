@@ -1,15 +1,136 @@
 import os
+import re
 import json
-from django.shortcuts import render, get_object_or_404
+import random
+from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
+from django.db.models import Q, Case, When, IntegerField, F
+from django.db.models.functions import Mod
 from django.conf import settings
 
 from .models import Post, Photo, Tag
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos)
+
+
+# ── Search syntax helpers ──────────────────────────────────────
+# Supported in the search box (tokens are split on whitespace):
+#   tag1 tag2        AND   — posts having both
+#   ( a ~ b )        OR    — posts having at least one (braces + spaces matter)
+#   -tag1            NOT   — posts without the tag
+#   night~           FUZZY — Levenshtein-close tag names (night/fight/bright…)
+#   ta*1             GLOB  — tags starting "ta" and ending "1" (* = anything)
+
+def _levenshtein(a, b):
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        cur = [i + 1]
+        for j, cb in enumerate(b):
+            cur.append(min(prev[j + 1] + 1, cur[j] + 1, prev[j] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_tag_names(base):
+    """Tag names within a small edit distance of `base` (for the `tag~` form)."""
+    base = base.lower()
+    budget = 2 if len(base) <= 4 else 3
+    out = []
+    for name in Tag.objects.filter(count__gt=0).values_list('name', flat=True):
+        if abs(len(name) - len(base)) > budget:
+            continue
+        if _levenshtein(base, name.lower()) <= budget:
+            out.append(name)
+    return out
+
+
+def _term_to_q(term):
+    """Translate one search term into a Q over Post.tags.
+    Returns (Q, multi) — multi=True means the term may match several tag
+    names, so it has OR semantics (a post matches if ANY of its tags fit)."""
+    term = term.strip()
+    if not term:
+        return None, False
+    if term.startswith('file:') and len(term) > 5:   # search by file name
+        return Q(images__file_path__icontains=term[5:]), True
+    if term.startswith('folder:') and len(term) > 7:  # search by folder name
+        return Q(images__file_path__icontains=term[7:]), True
+    if '*' in term:                                   # wildcard glob
+        pattern = '^' + re.escape(term).replace(r'\*', '.*') + '$'
+        return Q(tags__name__iregex=pattern), True
+    if term.endswith('~') and len(term) > 1:          # fuzzy
+        names = _fuzzy_tag_names(term[:-1])
+        return (Q(tags__name__in=names) if names else Q(pk__in=[])), True
+    return Q(tags__name=term), False                  # plain exact
+
+
+def _parse_tag_tokens(tokens):
+    """Parse search tokens into (and_clauses, or_clauses, not_clauses)."""
+    ands, ors, nots = [], [], []
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok == '(':                                # OR group: ( a ~ b )
+            group = []
+            i += 1
+            while i < n and tokens[i] != ')':
+                if tokens[i] != '~':
+                    group.append(tokens[i])
+                i += 1
+            i += 1                                    # skip ')'
+            q, has = Q(), False
+            for g in group:
+                sub, _ = _term_to_q(g)
+                if sub is not None:
+                    q |= sub
+                    has = True
+            if has:
+                ors.append(q)
+            continue
+        if tok in ('~', ')'):                         # stray separators
+            i += 1
+            continue
+        if tok.startswith('-') and len(tok) > 1:      # NOT
+            sub, _ = _term_to_q(tok[1:])
+            if sub is not None:
+                nots.append(sub)
+        else:
+            sub, multi = _term_to_q(tok)
+            if sub is not None:
+                (ors if multi else ands).append(sub)
+        i += 1
+    return ands, ors, nots
+
+
+def _apply_seeded_order(posts, seed):
+    """Deterministic shuffle so 'random' stays stable across the gallery,
+    infinite scroll and prev/next navigation (all share the URL's seed).
+
+    Order by (id * a) % P with a large, seed-derived multiplier `a`. The
+    multiplier must be large so that id*a wraps the modulus and actually
+    permutes the order (a small `a` would leave rows in plain id order). This
+    is computed entirely in SQL — far cheaper than a CASE/WHEN over every post,
+    which made paging back to the gallery slow once the library grew large."""
+    P = 2_000_003
+    a = (seed * 2_654_435_761 + 12_345) % P or 1
+    return posts.annotate(_rnd=Mod(F('id') * a, P)).order_by('_rnd', 'id')
+
+
+def _ordered_by_ids(id_list):
+    """Posts limited to id_list, preserving the given order (for 'similar')."""
+    posts = Post.objects.prefetch_related('tags', 'images').filter(id__in=id_list)
+    order = Case(*[When(id=pk, then=pos) for pos, pk in enumerate(id_list)],
+                 output_field=IntegerField())
+    return posts.order_by(order)
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -23,12 +144,25 @@ def _build_post_qs(request):
     single_only = request.GET.get('single_only', '')
     sort_by     = request.GET.get('sort', 'new')   # new | old | rating | fav | random
 
+    # Explicit id list (used by "find similar") — show exactly these posts in
+    # the given order and skip every other filter.
+    explicit_ids = request.GET.get('ids', '')
+    if explicit_ids:
+        id_list = [int(x) for x in explicit_ids.split(',') if x.strip().isdigit()]
+        return _ordered_by_ids(id_list), q_tags, 'ids', '', ''
+
     posts = Post.objects.prefetch_related('tags', 'images').all()
 
     if q_tags:
-        for t in q_tags:
-            posts = posts.filter(tags__name=t)
-        posts = posts.distinct()
+        ands, ors, nots = _parse_tag_tokens(q_tags)
+        for q in ands:
+            posts = posts.filter(q)
+        for q in ors:
+            posts = posts.filter(q)
+        for q in nots:
+            posts = posts.exclude(q)
+        if ands or ors or nots:
+            posts = posts.distinct()
 
     if min_rating.isdigit():
         posts = posts.filter(rating__gte=int(min_rating))
@@ -57,7 +191,11 @@ def _build_post_qs(request):
     elif sort_by == 'fav':
         posts = posts.order_by('-fav', '-added_at')
     elif sort_by == 'random':
-        posts = posts.order_by('?')
+        seed = request.GET.get('seed', '')
+        if seed.isdigit():
+            posts = _apply_seeded_order(posts, int(seed))
+        else:
+            posts = posts.order_by('?')
     else:  # new (default)
         posts = posts.order_by('-added_at')
 
@@ -67,7 +205,23 @@ def _build_post_qs(request):
 # ── Pages ──────────────────────────────────────────────────────
 
 def index(request):
+    # Random sort needs a stable seed in the URL so the gallery, infinite
+    # scroll and prev/next all walk the SAME shuffle. Add one if missing.
+    if (request.GET.get('sort') == 'random' and not request.GET.get('seed')
+            and not request.GET.get('ids')
+            and not request.headers.get('HX-Request')):
+        p = request.GET.copy()
+        p['seed'] = str(random.randint(1, 2_000_000_000))
+        return redirect(f'{request.path}?{p.urlencode()}')
+
     posts, q_tags, sort_by, multi_only, single_only = _build_post_qs(request)
+
+    # Full nav query string (tags + sort + filters + seed/ids, minus paging) so
+    # links into a post carry the exact browsing context for prev/next.
+    np = request.GET.copy()
+    np.pop('page', None)
+    np.pop('scroll', None)
+    nav_qs = np.urlencode()
 
     paginator = Paginator(posts, 40)
     page_obj  = paginator.get_page(request.GET.get('page', 1))
@@ -104,11 +258,18 @@ def index(request):
         else:
             popular_tags = base.order_by('-fav', 'cat_rank', '-count')
 
+    # Only render the top N tags in the sidebar. The full list lives behind the
+    # search box / tag sheet / "edit tags" page. Rendering thousands of <a>
+    # tags into every gallery page made paging back to the gallery slow on the
+    # phone (the markup is parsed even though the sidebar is hidden on mobile).
+    tag_total    = popular_tags.count()
+    popular_tags = list(popular_tags[:300])
+
     is_htmx = request.headers.get('HX-Request')
     scroll_mode = request.GET.get('scroll', '0') == '1'
     if is_htmx:
         return render(request, 'gallery/_photo_grid.html', {
-            'page_obj': page_obj, 'q_tags': q_tags,
+            'page_obj': page_obj, 'q_tags': q_tags, 'nav_qs': nav_qs,
             'scroll_mode': scroll_mode, 'request': request,
         })
 
@@ -121,7 +282,9 @@ def index(request):
     return render(request, 'gallery/index.html', {
         'page_obj': page_obj,
         'popular_tags': popular_tags,
+        'tag_total': tag_total,
         'q_tags': q_tags,
+        'nav_qs': nav_qs,
         'min_rating': request.GET.get('min_rating', ''),
         'exact_rating': request.GET.get('rating', ''),
         'fav_only':   request.GET.get('fav', ''),
@@ -132,7 +295,7 @@ def index(request):
         'sort_by': sort_by,
         'multi_only': request.GET.get('multi_only',''),
         'single_only': request.GET.get('single_only',''),
-        'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','favs'),('random','random')],
+        'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('random','random')],
     })
 
 
@@ -141,6 +304,14 @@ def posts_json(request):
     posts, q_tags, sort_by, multi_only, single_only = _build_post_qs(request)
     paginator = Paginator(posts, 40)
     page_obj  = paginator.get_page(request.GET.get('page', 1))
+
+    # Full nav context (minus paging) so each card links back into the same
+    # sorted/filtered list for correct prev/next.
+    np = request.GET.copy()
+    np.pop('page', None)
+    np.pop('scroll', None)
+    nav_qs = np.urlencode()
+    suffix = ('?' + nav_qs) if nav_qs else ''
 
     result = []
     for post in page_obj:
@@ -155,10 +326,12 @@ def posts_json(request):
             'img_count':  post.image_count,
             'thumb_url':  cover.thumb_url,
             'is_video':   cover.is_video,
-            'url':        f'/post/{post.pk}/',
+            'has_video':  post.has_video,
+            'has_gif':    post.has_gif,
+            'url':        f'/post/{post.pk}/{suffix}',
         })
 
-    # build tag query string to embed in post URLs
+    # legacy tag-only query string (kept for back-compat)
     tag_qs = '?' + '&'.join(f'tag={t}' for t in q_tags) if q_tags else ''
 
     return JsonResponse({
@@ -189,7 +362,8 @@ def post_detail(request, pk):
 
     # Full search query string (tags + filters + sort) for neighbor navigation
     search_params = []
-    for key in ('tag', 'sort', 'min_rating', 'rating', 'fav', 'multi_only', 'single_only'):
+    for key in ('tag', 'sort', 'min_rating', 'rating', 'fav',
+                'multi_only', 'single_only', 'seed', 'ids'):
         for val in request.GET.getlist(key):
             search_params.append(f'{key}={val}')
     search_qs = '&'.join(search_params)
@@ -216,10 +390,22 @@ def duplicates(request):
         return prefix + rel.replace('/', '\\')
 
     # Build a list of post_id -> cover info
+    from .utils import compute_phash
     post_data = []
     for post in posts:
         cover = post.cover
-        if not cover or not cover.phash:
+        if not cover:
+            continue
+        # lazy backfill: covers (incl. videos) missing a pHash get one from
+        # their thumbnail so they can take part in duplicate detection.
+        if not cover.phash:
+            base = cover.thumb_path or cover.file_path
+            if base and os.path.exists(base):
+                ph = compute_phash(base)
+                if ph:
+                    cover.phash = ph
+                    cover.save(update_fields=['phash'])
+        if not cover.phash:
             continue
         src = cover.thumb_path or cover.file_path
         rel = os.path.relpath(src, settings.MEDIA_ROOT)
@@ -228,6 +414,7 @@ def duplicates(request):
             'post':      post,
             'phash':     cover.phash,
             'is_gif':    cover.is_gif,
+            'is_video':  cover.is_video,
             'thumb_url': '/media/' + rel.replace(os.sep, '/'),
             'title':     post.title,
             'img_count': post.image_count,
@@ -242,6 +429,12 @@ def duplicates(request):
             pair = tuple(sorted([post.pk, other.pk]))
             ignored_pairs.add(pair)
 
+    def _comparable(a, b):
+        # video only ever compares with video; image/gif cross-compare freely.
+        if a['is_video'] or b['is_video']:
+            return a['is_video'] and b['is_video']
+        return True
+
     groups = []
     used   = set()
     for i, p in enumerate(post_data):
@@ -251,8 +444,7 @@ def duplicates(request):
             if i == j or q['post_id'] in used: continue
             # never compare two photos from the same post
             if p['post_id'] == q['post_id']: continue
-            # don't compare animated GIFs against still images
-            if p['is_gif'] != q['is_gif']: continue
+            if not _comparable(p, q): continue
             pair = tuple(sorted([p['post_id'], q['post_id']]))
             if pair in ignored_pairs: continue
             if phash_distance(p['phash'], q['phash']) <= 8:
@@ -610,7 +802,21 @@ def tag_search(request):
 
 
 def tags_all(request):
-    tags = Tag.objects.filter(count__gt=0).order_by('-fav', '-count')
+    # Same ordering the desktop sidebar uses: pinned first, then by category
+    # rank (meta, char, art, gen, ai), then alphabetically by name — so the
+    # mobile tag sheet is grouped by category + name instead of name-only.
+    from django.db.models import Case, When, IntegerField, Value
+    cat_order = Case(
+        When(category='meta', then=Value(0)),
+        When(category='character', then=Value(1)),
+        When(category='artist', then=Value(2)),
+        When(category='general', then=Value(3)),
+        When(category='ai', then=Value(4)),
+        default=Value(9), output_field=IntegerField(),
+    )
+    tags = (Tag.objects.filter(count__gt=0)
+            .annotate(cat_rank=cat_order)
+            .order_by('-fav', 'cat_rank', 'name'))
     return JsonResponse({'tags': [{'name': t.name, 'count': t.count,
                                     'category': t.category, 'fav': t.fav} for t in tags]})
 
@@ -626,14 +832,18 @@ def post_neighbors(request, pk):
     prev_id = ids[idx-1] if idx > 0         else None
     next_id = ids[idx+1] if idx < len(ids)-1 else None
 
-    # Provide cover image URLs of neighbours for preloading
+    # Provide ONE lightweight thumbnail per neighbour for preloading + the
+    # swipe preview. (Previously this returned up to 3 FULL-size images per
+    # side = 6 big downloads per post view, which made phones crawl.)
     def cover_urls(post_id):
-        if not post_id: return []
+        if not post_id:
+            return []
         try:
             p = Post.objects.prefetch_related('images').get(pk=post_id)
         except Post.DoesNotExist:
             return []
-        return [img.media_url for img in p.images.order_by('order', 'id')[:3]]
+        cover = p.cover
+        return [cover.thumb_url] if cover else []
 
     return JsonResponse({
         'prev':  prev_id,
@@ -700,19 +910,32 @@ def merge_posts(request):
         return JsonResponse({'error': 'need target and sources'}, status=400)
     target = get_object_or_404(Post, pk=target_id)
     max_order = target.images.count()
+    merged = 0
+    failed = []
     for src_id in source_ids:
         try:
             src = Post.objects.get(pk=src_id)
         except Post.DoesNotExist:
+            failed.append(src_id)
             continue
-        for i, photo in enumerate(src.images.order_by('order', 'id')):
-            photo.post  = target
-            photo.order = max_order + i
-            photo.save(update_fields=['post', 'order'])
-        max_order += src.images.count()
-        for tag in src.tags.all():
-            target.tags.add(tag)
-        src.delete()
+        # Re-grouping each source in its own try so a single bad post (e.g. a
+        # missing file or a DB hiccup) can't abort the whole batch — this is
+        # what caused "selected 40+ but only a few migrated".
+        try:
+            n_imgs = src.images.count()
+            for i, photo in enumerate(src.images.order_by('order', 'id')):
+                photo.post  = target
+                photo.order = max_order + i
+                photo.save(update_fields=['post', 'order'])
+            max_order += n_imgs
+            for tag in src.tags.all():
+                target.tags.add(tag)
+            src.delete()
+            merged += 1
+        except Exception as e:
+            print(f"merge error for source {src_id}: {e}")
+            failed.append(src_id)
+            continue
     for tag in target.tags.all():
         tag.update_count()
 
@@ -728,7 +951,8 @@ def merge_posts(request):
         except Exception as e:
             print(f"merge folder move error: {e}")
 
-    return JsonResponse({'ok': True, 'post_id': target.pk})
+    return JsonResponse({'ok': True, 'post_id': target.pk,
+                         'merged': merged, 'failed': failed})
 
 
 @require_POST
@@ -814,6 +1038,44 @@ def split_images_to_one(request):
 
 
 @require_POST
+def split_images_to_separate(request):
+    """Move several selected images out of their post, each into its OWN new
+    post (one post per image), as opposed to split-to-one which groups them.
+    Leaves at least one image in the source post."""
+    data = json.loads(request.body)
+    ids  = [int(i) for i in data.get('ids', [])]
+    if not ids:
+        return JsonResponse({'error': 'no images selected'}, status=400)
+
+    photos = list(Photo.objects.filter(pk__in=ids).select_related('post'))
+    if not photos:
+        return JsonResponse({'error': 'images not found'}, status=404)
+
+    source = photos[0].post
+    if source:
+        remaining = source.images.exclude(pk__in=ids).count()
+        if remaining == 0:
+            return JsonResponse({'error': 'cannot split out every image — '
+                                          'leave at least one in the post'},
+                                status=400)
+
+    src_tags = list(source.tags.all()) if source else []
+    new_ids = []
+    for photo in sorted(photos, key=lambda p: (p.order, p.id)):
+        new_post = Post.objects.create(title=photo.filename)
+        photo.post  = new_post
+        photo.order = 0
+        photo.save(update_fields=['post', 'order'])
+        for tag in src_tags:
+            new_post.tags.add(tag)
+        new_ids.append(new_post.pk)
+    for tag in src_tags:
+        tag.update_count()
+
+    return JsonResponse({'ok': True, 'new_post_ids': new_ids, 'count': len(new_ids)})
+
+
+@require_POST
 def reorder_images(request, pk):
     """Reorder images within a post."""
     post    = get_object_or_404(Post, pk=pk)
@@ -865,6 +1127,182 @@ def post_not_dupes(request, pk):
     post = get_object_or_404(Post, pk=pk)
     ids  = list(post.not_dupes.values_list('id', flat=True))
     return JsonResponse({'not_dupe_ids': ids})
+
+
+@require_POST
+def regen_thumb(request, pk):
+    """Regenerate the thumbnail for a single image/video/gif/pdf. Also re-reads
+    dimensions + pHash, which fixes files that were still downloading when they
+    were first ingested (so the original thumb was a placeholder/blank).
+    For videos, an optional `pct` (0-100) picks which frame to grab."""
+    photo = get_object_or_404(Photo, pk=pk)
+    try:
+        pct = float(json.loads(request.body or '{}').get('pct', 0))
+    except Exception:
+        pct = 0
+    from .utils import (make_thumb, compute_phash, _thumb_path_for,
+                        is_video as _is_video, is_pdf as _is_pdf)
+    if not os.path.exists(photo.file_path):
+        return JsonResponse({'ok': False, 'error': 'source file missing'}, status=404)
+
+    # drop any stale/placeholder thumb first so a fresh one is written cleanly
+    for tp in {photo.thumb_path, _thumb_path_for(photo.file_path)}:
+        try:
+            if tp and os.path.exists(tp):
+                os.remove(tp)
+        except OSError:
+            pass
+
+    thumb = make_thumb(photo.file_path, pct=pct)   # dispatches to video/pdf/image
+    if not thumb:
+        return JsonResponse({'ok': False, 'error': 'could not render thumbnail'}, status=500)
+
+    photo.thumb_path = thumb
+    vid = _is_video(photo.file_path)
+    pdf = _is_pdf(photo.file_path)
+    photo.is_video = vid
+    if vid:
+        ph = compute_phash(thumb) if thumb else ''
+        if ph:
+            photo.phash = ph
+    elif not pdf:
+        try:
+            from PIL import Image as _Img
+            with _Img.open(photo.file_path) as im:
+                photo.width, photo.height = im.size
+        except Exception:
+            pass
+        ph = compute_phash(photo.file_path)
+        if ph:
+            photo.phash = ph
+    photo.save(update_fields=['thumb_path', 'phash', 'is_video', 'width', 'height'])
+    return JsonResponse({'ok': True, 'thumb_url': photo.thumb_url})
+
+
+@require_POST
+def bulk_video_thumb(request):
+    """Regenerate the COVER thumbnail of each selected post at a given video
+    percentage. Only affects posts whose cover is a video."""
+    data = json.loads(request.body)
+    ids = data.get('ids', [])
+    try:
+        pct = float(data.get('pct', 0))
+    except (TypeError, ValueError):
+        pct = 0
+    from .utils import make_thumb, is_video as _is_video
+    done = 0
+    for post in Post.objects.filter(id__in=ids).prefetch_related('images'):
+        cover = post.cover
+        if not cover or not cover.is_video:
+            continue
+        if not os.path.exists(cover.file_path):
+            continue
+        thumb = make_thumb(cover.file_path, pct=pct)
+        if thumb:
+            cover.thumb_path = thumb
+            cover.save(update_fields=['thumb_path'])
+            done += 1
+    return JsonResponse({'ok': True, 'updated': done})
+
+
+def similar_posts(request, pk):
+    """Rank other posts by visual (cover pHash) + tag overlap similarity.
+    Returns an ordered id list the gallery can display via ?ids=…"""
+    post   = get_object_or_404(Post, pk=pk)
+    cover  = post.cover
+    my_ph  = cover.phash if cover else ''
+    my_tags = set(post.tags.values_list('name', flat=True))
+
+    scored = []
+    for other in (Post.objects.exclude(pk=pk)
+                      .prefetch_related('tags', 'images')):
+        score = 0.0
+        if my_ph:
+            oc = other.cover
+            if oc and oc.phash:
+                dist = phash_distance(my_ph, oc.phash)
+                if dist <= 16:
+                    score += (16 - dist) * 2.0      # visual closeness
+        if my_tags:
+            ot = set(other.tags.values_list('name', flat=True))
+            inter = len(my_tags & ot)
+            if inter:
+                union = len(my_tags | ot) or 1
+                score += (inter / union) * 20.0     # tag overlap (Jaccard)
+        if score > 0:
+            scored.append((score, other.pk))
+
+    scored.sort(reverse=True)
+    ids = [pid for _, pid in scored[:120]]
+    return JsonResponse({'ids': ids, 'count': len(ids)})
+
+
+# ── Tag management ──────────────────────────────────────────────
+@require_POST
+def tag_manage(request):
+    """Edit a tag globally: rename (merge if target exists), delete, or change
+    its category. The tag name is passed in the body to avoid URL-encoding
+    issues with special characters."""
+    data = json.loads(request.body)
+    action = data.get('action')
+    name   = (data.get('name') or '').strip()
+    tag = Tag.objects.filter(name=name).first()
+    if not tag:
+        return JsonResponse({'ok': False, 'error': 'tag not found'}, status=404)
+
+    if action == 'delete':
+        tag.delete()      # M2M links cascade automatically
+        return JsonResponse({'ok': True})
+
+    if action == 'category':
+        cat = data.get('category', 'general')
+        if cat not in {'general', 'character', 'artist', 'meta', 'ai'}:
+            return JsonResponse({'ok': False, 'error': 'bad category'}, status=400)
+        tag.category = cat
+        tag.save(update_fields=['category'])
+        return JsonResponse({'ok': True})
+
+    if action == 'rename':
+        new_name = (data.get('new_name') or '').strip().lower().replace(' ', '_')
+        if not new_name:
+            return JsonResponse({'ok': False, 'error': 'empty name'}, status=400)
+        if new_name == tag.name:
+            return JsonResponse({'ok': True, 'merged': False, 'name': new_name})
+        existing = Tag.objects.filter(name=new_name).first()
+        if existing:
+            # merge: every post that had the old tag gets the existing one
+            for post in tag.posts.all():
+                post.tags.add(existing)
+            tag.delete()
+            existing.update_count()
+            return JsonResponse({'ok': True, 'merged': True, 'name': new_name, 'count': existing.count})
+        tag.name = new_name
+        tag.save(update_fields=['name'])
+        return JsonResponse({'ok': True, 'merged': False, 'name': new_name})
+
+    return JsonResponse({'ok': False, 'error': 'bad action'}, status=400)
+
+
+# ── Validate which post ids still exist (for the recent strip) ──
+def posts_exist(request):
+    ids = [int(x) for x in request.GET.get('ids', '').split(',') if x.strip().isdigit()]
+    alive = set(Post.objects.filter(id__in=ids).values_list('id', flat=True))
+    return JsonResponse({'alive': list(alive)})
+
+
+# ── Admin pages ─────────────────────────────────────────────────
+def shortcuts_page(request):
+    try:
+        with open(_prefs_path()) as f:
+            prefs = json.load(f)
+    except Exception:
+        prefs = {}
+    return render(request, 'gallery/shortcuts.html',
+                  {'bindings_json': json.dumps(prefs.get('keyBindings', {}))})
+
+
+def tags_edit_page(request):
+    return render(request, 'gallery/tags_edit.html', {})
 
 
 # ── Cross-device preferences (shared, single-user app) ──────────

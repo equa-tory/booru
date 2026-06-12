@@ -48,6 +48,16 @@ class Post(models.Model):
         # len() on the (possibly prefetched) cache — no extra COUNT query.
         return len(self.images.all())
 
+    @property
+    def has_video(self):
+        # True if ANY image in the post is a video (even a multi-image post
+        # with one clip). Uses the prefetched cache.
+        return any(i.is_video for i in self.images.all())
+
+    @property
+    def has_gif(self):
+        return any(i.is_gif for i in self.images.all())
+
 
 class Photo(models.Model):
     post       = models.ForeignKey(Post, on_delete=models.CASCADE,
@@ -87,8 +97,15 @@ class Photo(models.Model):
 
     @property
     def thumb_url(self):
+        from django.conf import settings
         if self.thumb_path:
-            from django.conf import settings
             rel = os.path.relpath(self.thumb_path, settings.MEDIA_ROOT)
-            return '/media/' + rel.replace(os.sep, '/')
+            url = '/media/' + rel.replace(os.sep, '/')
+            # version by mtime: unchanged thumbs keep the same URL (cache hit),
+            # a regenerated thumb gets a new URL (cache bust) automatically.
+            try:
+                url += f'?v={int(os.path.getmtime(self.thumb_path))}'
+            except OSError:
+                pass
+            return url
         return self.media_url

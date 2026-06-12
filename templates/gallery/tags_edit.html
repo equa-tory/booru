@@ -1,0 +1,120 @@
+{% extends "gallery/base.html" %}
+{% block title %}edit tags{% endblock %}
+
+{% block extra_head %}
+<style>
+  .te-wrap { max-width: 860px; margin: 0 auto; padding: 1rem; }
+  .te-wrap h1 { font-size: 1.3rem; margin-bottom: .3rem; }
+  .te-sub { color: var(--text-dim); font-size: .85rem; margin-bottom: 1rem; }
+  .te-controls { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; position: sticky; top: 0; background: var(--bg); padding: .5rem 0; z-index: 5; }
+  .te-controls input, .te-controls select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: .45rem .6rem; font-family: var(--mono); font-size: .85rem; outline: none; }
+  .te-controls input { flex: 1; min-width: 160px; }
+  .te-count { color: var(--text-dim); font-size: .78rem; align-self: center; font-family: var(--mono); }
+  .te-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: .5rem; align-items: center; padding: .4rem .2rem; border-bottom: 1px solid rgba(255,255,255,.05); }
+  .te-name { font-family: var(--mono); font-size: .88rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .te-name.character{color:var(--tag-character);} .te-name.artist{color:var(--tag-artist);} .te-name.meta{color:var(--tag-meta);} .te-name.ai{color:var(--tag-ai);} .te-name.general{color:var(--tag-general);}
+  .te-cnt { font-family: var(--mono); font-size: .76rem; color: var(--text-dim); min-width: 46px; text-align: right; }
+  .te-row select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: .25rem; font-size: .74rem; }
+  .te-btn { font-family: var(--mono); font-size: .72rem; padding: .25rem .5rem; border-radius: 5px; border: 1px solid var(--border); background: var(--bg3); color: var(--text-dim); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .te-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .te-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+  #te-list { max-height: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="te-wrap">
+  <h1>edit tags</h1>
+  <div class="te-sub">Rename (merges &amp; sums counts if the new name exists), change a tag's type for every post, or delete it everywhere.</div>
+  <div class="te-controls">
+    <input id="te-search" type="text" placeholder="filter tags…" oninput="renderTags()" autocomplete="off">
+    <select id="te-cat" onchange="renderTags()">
+      <option value="">all types</option>
+      <option value="general">general</option>
+      <option value="character">character</option>
+      <option value="artist">artist</option>
+      <option value="meta">meta</option>
+      <option value="ai">ai</option>
+    </select>
+    <select id="te-sort" onchange="renderTags()">
+      <option value="count">by count</option>
+      <option value="name">by name</option>
+    </select>
+    <span class="te-count" id="te-count"></span>
+  </div>
+  <div id="te-list">loading…</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let ALL_TAGS = [];
+
+async function loadTags() {
+  try {
+    const d = await (await fetch('/api/tags/')).json();
+    ALL_TAGS = d.tags || [];
+  } catch(e) { ALL_TAGS = []; }
+  renderTags();
+}
+
+function renderTags() {
+  const q   = document.getElementById('te-search').value.trim().toLowerCase();
+  const cat = document.getElementById('te-cat').value;
+  const sort= document.getElementById('te-sort').value;
+  let list = ALL_TAGS.filter(t => (!q || t.name.includes(q)) && (!cat || t.category === cat));
+  list.sort(sort === 'name' ? (a,b)=>a.name.localeCompare(b.name) : (a,b)=>b.count-a.count);
+  document.getElementById('te-count').textContent = list.length + ' tags';
+  const cap = list.slice(0, 800);   // keep the DOM light; narrow with the filter
+  document.getElementById('te-list').innerHTML = cap.map(t => `
+    <div class="te-row" data-name="${encodeURIComponent(t.name)}">
+      <span class="te-name ${t.category}">${t.name.replace(/</g,'&lt;')}</span>
+      <span class="te-cnt">${t.count}</span>
+      <select onchange="setCat('${t.name.replace(/'/g,"\\'")}', this.value)">
+        ${['general','character','artist','meta','ai'].map(c=>`<option value="${c}" ${c===t.category?'selected':''}>${c}</option>`).join('')}
+      </select>
+      <button class="te-btn" onclick="renameTag('${t.name.replace(/'/g,"\\'")}')">rename</button>
+      <button class="te-btn danger" onclick="deleteTag('${t.name.replace(/'/g,"\\'")}')">delete</button>
+    </div>`).join('') + (list.length > cap.length ? `<div class="te-sub" style="padding:.6rem .2rem;">showing first ${cap.length} — narrow the filter to see more</div>` : '');
+}
+
+async function tagManage(body) {
+  const r = await fetch('/api/tag/manage/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+async function setCat(name, category) {
+  const d = await tagManage({action:'category', name, category});
+  if (d.ok) { const t = ALL_TAGS.find(x=>x.name===name); if (t) t.category=category; toast('type changed'); renderTags(); }
+  else toast(d.error||'error','err');
+}
+
+async function deleteTag(name) {
+  if (!confirm(`Delete "${name}" from ALL posts? This cannot be undone.`)) return;
+  const d = await tagManage({action:'delete', name});
+  if (d.ok) { ALL_TAGS = ALL_TAGS.filter(t=>t.name!==name); toast('deleted'); renderTags(); }
+  else toast(d.error||'error','err');
+}
+
+async function renameTag(name) {
+  const newName = prompt(`Rename "${name}" to:\n(if the new name already exists, the two are merged)`, name);
+  if (newName === null) return;
+  const d = await tagManage({action:'rename', name, new_name:newName});
+  if (!d.ok) { toast(d.error||'error','err'); return; }
+  if (d.merged) {
+    ALL_TAGS = ALL_TAGS.filter(t=>t.name!==name);
+    const t = ALL_TAGS.find(x=>x.name===d.name); if (t) t.count = d.count;
+    toast(`merged into ${d.name}`);
+  } else {
+    const t = ALL_TAGS.find(x=>x.name===name); if (t) t.name = d.name;
+    toast('renamed');
+  }
+  renderTags();
+}
+
+loadTags();
+</script>
+{% endblock %}

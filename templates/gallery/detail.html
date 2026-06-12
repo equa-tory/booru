@@ -66,12 +66,16 @@
 .view-paged .scroll-container { display:none; }
 .view-scroll .img-main  { display:none; }
 .view-scroll .filmstrip { display:none; }
+/* desktop: the reorder/select controls belong to paged mode only — hide them
+   in scroll mode (the mobile media query below re-enables the filmstrip
+   overlay). */
+.view-scroll #filmstrip-controls { display:none; }
 /* On mobile the filmstrip is a fixed overlay — allow it in scroll mode when toggled */
 @media (max-width:640px) {
   .view-scroll .filmstrip { display:flex; }
   .view-scroll #filmstrip-controls { display:flex; }
 }
-.view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:8px; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y pinch-zoom; }
+.view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:20vh 8px 45vh; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y pinch-zoom; }
 .scroll-img { max-width:100%; display:block; border-radius:2px; }
 
 /* Topbar */
@@ -138,16 +142,16 @@
 }
 
 /* Nav arrows */
-.nav-arrow { position:absolute; top:50%; transform:translateY(-50%); z-index:8; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.1); color:#fff; font-size:1.5rem; width:44px; height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px; text-decoration:none; transition:background .15s, opacity .2s; opacity:0; -webkit-tap-highlight-color:transparent; }
+.nav-arrow { position:absolute; top:50%; transform:translateY(-50%); z-index:8; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.1); color:#fff; font-size:1.5rem; width:44px; height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px; text-decoration:none; transition:background .15s, opacity .2s; opacity:0; pointer-events:none; -webkit-tap-highlight-color:transparent; }
 /* paged mode: show on hover (PC) or when the overlay is toggled (mobile tap) */
-@media (hover:hover) { .view-paged:hover .nav-arrow { opacity:1; } }
-.view-paged.arrows-visible .nav-arrow { opacity:1; }
+@media (hover:hover) { .view-paged:hover .nav-arrow { opacity:1; pointer-events:auto; } }
+.view-paged.arrows-visible .nav-arrow { opacity:1; pointer-events:auto; }
 /* scroll mode: always visible on PC (devices with a real hover/pointer) */
-@media (hover:hover) { .view-scroll .nav-arrow { opacity:.85; } }
+@media (hover:hover) { .view-scroll .nav-arrow { opacity:.85; pointer-events:auto; } }
 @media (hover:hover) { .view-scroll:hover .nav-arrow { opacity:1; } }
 /* mobile mode toggle handled by #mode-toggle-fixed which is always visible */
 .nav-arrow:active { background:rgba(124,106,247,.7); }
-.nav-arrow.disabled { opacity:0 !important; pointer-events:none; }
+.nav-arrow.disabled { opacity:0 !important; pointer-events:none !important; }
 .nav-arrow.left  { left:.4rem; }
 .nav-arrow.right { right:.4rem; }
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
@@ -155,6 +159,16 @@
 
 /* Pinch-zoom overlay for images (mobile) */
 .zoom-active { cursor:zoom-in; }
+/* Pixiv-style finger-follow swipe between posts/images */
+.swipe-preview { position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:2; background:var(--bg); }
+.swipe-preview img { max-width:100%; max-height:100%; object-fit:contain; }
+.swipe-snap { transition: transform .22s ease !important; }
+/* stop iOS long-press preview/callout on post media (long-press is reused for
+   entering select mode on the filmstrip instead). */
+.scroll-img, #media-container img, #main-img,
+.filmstrip-item, .filmstrip-item img { -webkit-touch-callout:none; }
+/* note: filmstrip items keep native HTML5 drag (draggable="true") for reorder,
+   so we must NOT set -webkit-user-drag:none on them. */
 
 /* Info panel */
 .info-panel { width:280px; min-width:280px; background:var(--bg2); border-left:1px solid var(--border); padding:1rem; overflow-y:auto; }
@@ -196,20 +210,28 @@
 #tag-suggestions { position:absolute; background:var(--bg3); border:1px solid var(--border); border-radius:6px; z-index:200; max-height:180px; overflow-y:auto; font-size:.85rem; font-family:var(--mono); min-width:180px; box-shadow:0 4px 16px rgba(0,0,0,.5); }
 #tag-suggestions div { padding:.45rem .7rem; cursor:pointer; -webkit-tap-highlight-color:transparent; }
 #tag-suggestions div:active { background:var(--accent-dim); color:var(--text-bright); }
+#tag-suggestions .tag-sug-item { display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
+#tag-suggestions .tag-sug-item.character{color:var(--tag-character);} #tag-suggestions .tag-sug-item.artist{color:var(--tag-artist);} #tag-suggestions .tag-sug-item.meta{color:var(--tag-meta);} #tag-suggestions .tag-sug-item.general{color:var(--tag-general);}
 
 .delete-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.4rem; }
 
-/* Floating mobile buttons */
-.mob-float-btns { display:none; position:fixed; left:1rem; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 14.6rem); z-index:500; display:none; flex-direction:column; gap:.5rem; align-items:flex-end; }
+/* Floating mobile buttons — info toggle, now anchored bottom-RIGHT so it
+   doesn't sit on top of the always-open rating menu at bottom-left. */
+.mob-float-btns { display:none; position:fixed; right:1rem; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .6rem); z-index:118; flex-direction:column; gap:.5rem; align-items:flex-end; }
 @media (max-width:640px) { .mob-float-btns { display:flex; } }
 .mob-float-btn { background:var(--bg2); border:1px solid var(--border); border-radius:50%; width:46px; height:46px; font-size:1.1rem; color:var(--text); cursor:pointer; box-shadow:0 2px 16px rgba(0,0,0,.5); -webkit-tap-highlight-color:transparent; display:flex; align-items:center; justify-content:center; }
 .mob-float-btn.accent { background:var(--accent); border-color:var(--accent); color:#fff; }
 .mob-float-btn.fav-active { color:#f87272; border-color:#f87272; }
 
-/* Mobile rating/like popover (opens above the ♥ float button) */
-/*.mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); margin-bottom:.1rem; } */
-.mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); position:absolute; bottom:calc(100% + .4rem); left:0; width:max-content; }
-.mob-rate-pop.open { display:flex; left:1rem; }
+/* Mobile rating/like menu — always visible, fixed to the bottom-LEFT of the
+   post (no separate ♥ button / no open-close toggle anymore). */
+/* touch-action: manipulation kills Safari's double-tap-to-zoom on these
+   controls so tapping stars/like never zooms the whole page. */
+.mob-rate-pop, .mob-float-btns, .mob-float-btn,
+#filmstrip-controls, #mode-toggle-fixed, #filmstrip-sel-bar,
+.img-topbar, .nav-arrow { touch-action: manipulation; }
+.mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); position:fixed; left:1rem; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .6rem); z-index:118; width:max-content; transition:opacity .2s; }
+@media (max-width:640px) { .mob-rate-pop { display:flex; } }
 .mob-rate-stars { display:flex; gap:.1rem; }
 .mob-rate-star { font-size:1.8rem; background:none; border:none; color:var(--text-dim); cursor:pointer; padding:.05rem; line-height:1; -webkit-tap-highlight-color:transparent; }
 .mob-rate-star.active { color:#ffd580; }
@@ -231,6 +253,23 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 .filmstrip-item.film-selectable { cursor:pointer; }
 .filmstrip-item.film-selectable::after { content:''; position:absolute; inset:0; background:rgba(0,0,0,.3); }
 .filmstrip-item.film-selected::after { content:'\2713'; position:absolute; inset:0; background:rgba(124,106,247,.5); display:flex; align-items:center; justify-content:center; font-size:1.2rem; color:#fff; }
+
+/* ── Desktop: keep the paged-mode selection bar attached to the controls ──
+   On mobile it's a fixed overlay floated above the bottom nav. On PC there is
+   no bottom nav, so those mobile offsets left a big empty gap. Here we drop the
+   fixed positioning and slot the bar into the panel's flex column right beneath
+   the reorder/select controls (via `order`), so there's no gap. */
+@media (min-width:641px) {
+  #img-main            { order:0; }
+  #filmstrip-controls  { order:1; }
+  #filmstrip-sel-bar   {
+    position:static; bottom:auto; left:auto; right:auto;
+    order:2; width:100%;
+    border-top:1px solid var(--accent);
+  }
+  .filmstrip           { order:3; }
+  .img-counter         { order:4; }
+}
 </style>
 {% endblock %}
 
@@ -301,7 +340,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       <span id="filmstrip-sel-count" style="font-family:var(--mono);font-size:.75rem;color:var(--accent);flex:1;">0 selected</span>
       <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSelAll()">all</button>
       <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSelNone()">none</button>
-      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSplitSelected()">split out</button>
+      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSplitSelected()" title="move all selected into ONE new post">split&#8594;1</button>
+      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmSplitSeparate()" title="move each selected into its OWN new post">split&#8594;each</button>
       <button class="btn danger" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmDeleteSelected(false)">remove</button>
       <button class="btn danger" style="font-size:.72rem;padding:.2rem .5rem;" onclick="filmDeleteSelected(true)">&#128465;</button>
     </div>
@@ -311,11 +351,12 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="scroll-container" id="scroll-container">
       {% for img in images %}
       {% if img.is_video %}
-      <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline
+      <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="none"
              {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
              style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
       {% else %}
-      <img class="scroll-img" src="{{ img.media_url }}" loading="lazy">
+      <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"
+           style="min-height:38vh;background:var(--bg3);">
       {% endif %}
       {% endfor %}
     </div>
@@ -324,6 +365,21 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   <!-- Info panel -->
   <div class="info-panel" id="info-panel">
     <div class="info-handle" id="info-handle"></div>
+
+    <div class="info-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <div class="info-label" style="margin-bottom:0;">search tags</div>
+        <button onclick="openCheatSheet()" style="font-family:var(--mono);font-size:.62rem;background:none;border:none;color:var(--text-dim);cursor:pointer;text-decoration:underline;padding:0;">syntax&nbsp;?</button>
+      </div>
+      <form style="display:flex;gap:.4rem;align-items:center;position:relative;" onsubmit="detailSearch();return false;">
+        <input id="detail-search" type="text" enterkeyhint="search" autocomplete="off"
+               placeholder="tag1 tag2 …" oninput="onDetailSearchInput(this.value)" onkeydown="onDetailSearchKey(event)"
+               style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.4rem .5rem;font-family:var(--mono);font-size:.8rem;outline:none;">
+        <button type="submit" class="btn primary" style="padding:.4rem .55rem;" title="search">&#128269;</button>
+        <div id="detail-search-sug" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--bg3);border:1px solid var(--border);border-radius:0 0 6px 6px;max-height:200px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.5);"></div>
+      </form>
+      <div id="detail-recent-searches" class="quick-row" style="margin-top:.3rem;"></div>
+    </div>
 
     <div class="info-section">
       <div class="info-label">post</div>
@@ -366,6 +422,11 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <!-- Actions -->
     <div class="info-section">
       <button class="btn" onclick="aiTag()" style="width:100%;justify-content:center;margin-bottom:.4rem;" id="ai-btn">&#10022; ai auto-tag</button>
+
+      <div style="display:flex;gap:.4rem;margin-bottom:.5rem;">
+        <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="findSimilar()" id="similar-btn" title="open the gallery filtered to visually + tag-similar posts">&#9783; find similar</button>
+        <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="regenThumb()" id="regen-btn" title="rebuild the thumbnail for the current image">&#10227; regen thumb</button>
+      </div>
 
       {% if images|length > 1 %}
       <div style="margin-bottom:.5rem;">
@@ -422,6 +483,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
           <button class="btn primary" onclick="addTag()" style="padding:.35rem .6rem;">+</button>
         </div>
         <div id="tag-suggestions" style="display:none;"></div>
+        <div id="post-quick-tags" style="margin-top:.45rem;"></div>
       </div>
       <div class="tag-chips" id="tag-chips">
         {% for tag in post.tags.all|sort_by_category %}
@@ -437,19 +499,18 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 {% endwith %}
 
 <!-- Mobile floating buttons -->
-<div class="mob-float-btns">
-  <div class="mob-rate-pop" id="mob-rate-pop">
-    <div class="mob-rate-stars" id="mob-rate-stars">
-      {% for n in "12345" %}
-      <button class="mob-rate-star" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
-      {% endfor %}
-    </div>
-    <div class="mob-rate-row2">
-      <button class="mob-rate-fav {% if post.fav %}active{% endif %}" id="mob-rate-fav" onclick="mobFav()">&#9829;</button>
-      <button class="mob-rate-clear" onclick="mobClear()">clear</button>
-    </div>
+<div class="mob-rate-pop" id="mob-rate-pop">
+  <div class="mob-rate-stars" id="mob-rate-stars">
+    {% for n in "12345" %}
+    <button class="mob-rate-star {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
+    {% endfor %}
   </div>
-  <button class="mob-float-btn {% if post.fav %}fav-active{% endif %}" id="mob-fav-btn" onclick="toggleMobRatePop()">&#9829;</button>
+  <div class="mob-rate-row2">
+    <button class="mob-rate-fav {% if post.fav %}active{% endif %}" id="mob-rate-fav" onclick="mobFav()">&#9829;</button>
+    <button class="mob-rate-clear" onclick="mobClear()">clear</button>
+  </div>
+</div>
+<div class="mob-float-btns">
   <button class="mob-float-btn accent" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
 </div>
 
@@ -520,14 +581,40 @@ function applyViewMode(mode) {
     topbar.style.position = 'relative';
     topbar.style.background = 'rgba(0,0,0,.85)';
     topbar.style.padding = '.5rem .6rem';
-  
+    setupScrollLazy();
     setTimeout(initScrollZoom, 50);
   } else {
     topbar.style.position = 'absolute';
     topbar.style.background = '';
     topbar.style.padding = '';
-  
   }
+}
+
+// Lazy-load scroll-mode images as they near the viewport and UNLOAD them once
+// they're far away, so a 100-image post doesn't hold every full-res frame in
+// memory at once (keeps the phone responsive after browsing a while).
+let _scrollLazyReady = false;
+function setupScrollLazy() {
+  if (_scrollLazyReady) return;
+  const sc = document.getElementById('scroll-container');
+  if (!sc || !('IntersectionObserver' in window)) {
+    // fallback: just load everything
+    document.querySelectorAll('img.scroll-img[data-src]').forEach(im => { im.src = im.dataset.src; im.removeAttribute('data-src'); im.style.minHeight=''; });
+    _scrollLazyReady = true; return;
+  }
+  _scrollLazyReady = true;
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      const img = en.target;
+      if (en.isIntersecting) {
+        if (img.dataset.src) { img.src = img.dataset.src; img.removeAttribute('data-src'); img.dataset.loaded='1'; img.style.minHeight=''; }
+      } else if (img.dataset.loaded === '1') {
+        img.style.minHeight = (img.offsetHeight || 300) + 'px';   // hold height
+        img.dataset.src = img.src; img.removeAttribute('src'); img.dataset.loaded='0';
+      }
+    });
+  }, { root: sc, rootMargin: '300% 0px' });
+  document.querySelectorAll('img.scroll-img').forEach(el => io.observe(el));
 }
 function toggleViewMode() {
   const newMode = viewMode === 'paged' ? 'scroll' : 'paged';
@@ -635,13 +722,21 @@ function attachZoom(el, wrapper, lockPointer=true) {
   let wasPinching=false; // track if last gesture was a pinch
 
   function apply() {
+    // Clamp panning so you can't drag the image past its own edges. The on-
+    // screen offset is scale*pan (translate happens inside the scale), so the
+    // max pan in element units is overflow/scale on each axis.
+    const contW = (el.parentElement ? el.parentElement.clientWidth : el.clientWidth) || 1;
+    const contH = (el.parentElement ? el.parentElement.clientHeight : el.clientHeight) || 1;
+    const elW = el.clientWidth  || contW;
+    const elH = el.clientHeight || contH;
+    const maxPanX = Math.max(0, (scale * elW - contW) / 2) / scale;
+    const maxPanY = Math.max(0, (scale * elH - contH) / 2) / scale;
+    panX = Math.min(maxPanX, Math.max(-maxPanX, panX));
+    panY = Math.min(maxPanY, Math.max(-maxPanY, panY));
     el.style.transform = `scale(${scale}) translate(${panX}px,${panY}px)`;
     zoomScale = scale;
-    // In paged mode we toggle pointer-events so taps fall through to the
-    // nav layer when not zoomed. In scroll mode we must NOT do this: setting
-    // pointer-events:none after zooming back out stops the element from ever
-    // receiving touches again, so you could only zoom once per image.
     if (lockPointer) el.style.pointerEvents = scale > 1 ? 'auto' : 'none';
+    el.style.touchAction = scale > 1 ? 'none' : '';
   }
 
   el.addEventListener('touchstart', e => {
@@ -666,6 +761,7 @@ function attachZoom(el, wrapper, lockPointer=true) {
 
   el.addEventListener('touchmove', e => {
     if (e.touches.length===2) {
+      e.preventDefault();          // own the pinch; stop page/swipe interference
       const d=Math.hypot(
         e.touches[0].clientX-e.touches[1].clientX,
         e.touches[0].clientY-e.touches[1].clientY
@@ -674,11 +770,12 @@ function attachZoom(el, wrapper, lockPointer=true) {
       startDist = d;
       apply();
     } else if (panning && scale>1 && e.touches.length===1) {
+      e.preventDefault();
       panX=e.touches[0].clientX-panSX;
       panY=e.touches[0].clientY-panSY;
       apply();
     }
-  }, {passive:true});
+  }, {passive:false});
 
   el.addEventListener('touchend', e => {
     if (e.touches.length===0) {
@@ -687,6 +784,8 @@ function attachZoom(el, wrapper, lockPointer=true) {
       // NEVER auto-reset scale on finger lift — only double-tap can reset
       // (clamp below 1 only, to prevent negative scale)
       if (scale < 1) { scale=1; apply(); }
+      // hand touch-action back when not zoomed so scrolling works again
+      el.style.touchAction = scale > 1 ? 'none' : '';
     } else if (e.touches.length===1 && wasPinching) {
       // 2 fingers -> 1: seamlessly switch to pan mode
       wasPinching = false;
@@ -728,9 +827,11 @@ function initScrollZoom() {
 function setFilmstripUI(showing) {
   const floats  = document.querySelector('.mob-float-btns');
   const modeBtn = document.getElementById('mode-toggle-fixed');
+  const ratePop = document.getElementById('mob-rate-pop');
   const controls = document.getElementById('filmstrip-controls');
-  // hide ♥ and ℹ buttons + mode toggle when filmstrip is shown
-  [floats, modeBtn].forEach(el => {
+  // hide info button, mode toggle and the always-open rating menu when the
+  // filmstrip overlay is shown (they share the bottom edge)
+  [floats, modeBtn, ratePop].forEach(el => {
     if (!el) return;
     el.style.opacity       = showing ? '0' : '';
     el.style.pointerEvents = showing ? 'none' : '';
@@ -776,6 +877,83 @@ function updateFilmSelCount() {
   document.getElementById('filmstrip-sel-count').textContent = `${filmSelected.size} selected`;
 }
 
+/* Filmstrip touch gestures:
+   • default        → press-hold an item, then drag it over another to REORDER
+   • selection mode → drag across items to range-select (iPhone-Photos style)
+   A plain tap still selects the image (handled by the item's onclick).        */
+(function() {
+  const strip = document.getElementById('filmstrip');
+  if (!strip) return;
+  const items  = () => [...strip.querySelectorAll('.filmstrip-item')];
+  const itemAt = (x,y) => { const el = document.elementFromPoint(x,y); return el ? el.closest('.filmstrip-item') : null; };
+
+  let mode=null, sx=0, sy=0, didGesture=false;
+  let pressTimer=null, holdReady=false, srcItem=null, srcIdx=null;          // reorder
+  let anchorIdx=null, setVal=true, snapshot=null;                           // select
+
+  function setSel(el, on) {
+    const id = el.dataset.photoId;
+    if (on) { filmSelected.add(id); el.classList.add('film-selected'); }
+    else    { filmSelected.delete(id); el.classList.remove('film-selected'); }
+  }
+  function applyRange(curIdx) {
+    const lo = Math.min(anchorIdx, curIdx), hi = Math.max(anchorIdx, curIdx);
+    items().forEach((el, i) => {
+      if (i >= lo && i <= hi) setSel(el, setVal);
+      else setSel(el, snapshot.has(el.dataset.photoId));
+    });
+    updateFilmSelCount();
+  }
+
+  strip.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    const item = e.target.closest('.filmstrip-item'); if (!item) return;
+    sx=e.touches[0].clientX; sy=e.touches[0].clientY; didGesture=false;
+    srcItem=item; srcIdx=parseInt(item.dataset.idx); holdReady=false;
+    if (filmSelMode) {
+      mode='select';
+      anchorIdx=srcIdx; snapshot=new Set(filmSelected); setVal=!filmSelected.has(item.dataset.photoId);
+    } else {
+      mode='reorder';
+      pressTimer=setTimeout(() => { holdReady=true; if (navigator.vibrate) navigator.vibrate(12); item.style.opacity='.4'; }, 250);
+    }
+  }, {passive:true});
+
+  strip.addEventListener('touchmove', e => {
+    if (e.touches.length !== 1) return;
+    const x=e.touches[0].clientX, y=e.touches[0].clientY, dx=x-sx, dy=y-sy;
+    if (mode==='select') {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      e.preventDefault(); didGesture=true;
+      const it = itemAt(x,y); if (it) applyRange(parseInt(it.dataset.idx));
+    } else if (mode==='reorder') {
+      if (!holdReady) {                                    // moved before hold → cancel, allow scroll/tap
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) { clearTimeout(pressTimer); pressTimer=null; mode=null; if (srcItem) srcItem.style.opacity=''; }
+        return;
+      }
+      e.preventDefault(); didGesture=true;
+      items().forEach(el => el.style.outline='');
+      const it = itemAt(x,y);
+      if (it && it!==srcItem) it.style.outline='2px solid var(--accent)';
+    }
+  }, {passive:false});
+
+  strip.addEventListener('touchend', e => {
+    clearTimeout(pressTimer); pressTimer=null;
+    if (mode==='reorder' && holdReady) {
+      const t=e.changedTouches[0]; const it=itemAt(t.clientX, t.clientY);
+      items().forEach(el => el.style.outline='');
+      if (srcItem) srcItem.style.opacity='';
+      if (it && it!==srcItem) doReorder(srcIdx, parseInt(it.dataset.idx));
+      e.preventDefault();
+    }
+    mode=null; holdReady=false; srcItem=null;
+  }, {passive:false});
+
+  // swallow the click that follows a real drag/range gesture
+  strip.addEventListener('click', e => { if (didGesture) { e.preventDefault(); e.stopPropagation(); didGesture=false; } }, true);
+})();
+
 async function filmSplitSelected() {
   if (!filmSelected.size) { toast('select items first','err'); return; }
   if (filmSelected.size === IMAGES.length) { toast('leave at least one image in this post','err'); return; }
@@ -789,12 +967,29 @@ async function filmSplitSelected() {
   else toast(d.error||'error','err');
 }
 
+async function filmSplitSeparate() {
+  if (!filmSelected.size) { toast('select items first','err'); return; }
+  if (filmSelected.size === IMAGES.length) { toast('leave at least one image in this post','err'); return; }
+  if (!confirm(`Split ${filmSelected.size} selected item(s) out — each into its OWN new post?`)) return;
+  const r = await fetch('/api/images/split-to-separate/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({ids: [...filmSelected].map(Number)})
+  });
+  const d = await r.json();
+  if (d.ok) { toast(`split ${d.count} item(s) into ${d.count} new post(s)`); location.reload(); }
+  else toast(d.error||'error','err');
+}
+
 async function filmDeleteSelected(alsoFile) {
   if (!filmSelected.size) { toast('select items first','err'); return; }
   if (!confirm(alsoFile ? `Delete ${filmSelected.size} file(s) from disk?` : `Remove ${filmSelected.size} item(s) from post?`)) return;
+  startProgress();
+  let done = 0;
   for (const id of filmSelected) {
     await fetch(`/api/image/${id}/delete/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({delete_file:alsoFile})});
+    done++; setProgress(Math.round(done / filmSelected.size * 100));
   }
+  doneProgress();
   toast(`removed ${filmSelected.size} item(s)`); location.reload();
 }
 
@@ -885,6 +1080,7 @@ function filmstripTapReorder(itemEl) {
 
 /* ── Post neighbors + preloading ────────────────────────── */
 let prevId = null, nextId = null;
+let prevPreviewUrl = '', nextPreviewUrl = '';
 let neighborIndex = 0;          // 0-based position of this post in the filtered list
 const GALLERY_PAGE_SIZE = 40;   // must match Paginator(posts, 40) in views.py
 const preloadCache = [];
@@ -899,6 +1095,8 @@ async function loadNeighbors() {
   const r = await fetch(`/api/post/${POST_ID}/neighbors/${navSuffix}`);
   const d = await r.json();
   prevId = d.prev; nextId = d.next;
+  prevPreviewUrl = (d.prev_preload && d.prev_preload[0]) || '';
+  nextPreviewUrl = (d.next_preload && d.next_preload[0]) || '';
   neighborIndex = d.index || 0;
   document.getElementById('nav-counter').textContent = `${d.index+1} / ${d.total}`;
   updateArrows();
@@ -932,23 +1130,70 @@ function navTo(dir, pos) {
   window.location.href = `/post/${id}/${navSuffix}${posSuffix}`;
 }
 
+/* ── Tag search from the post page (PC) ──────────────────── */
+function detailSearch() {
+  const val = document.getElementById('detail-search').value.trim();
+  if (!val) return;
+  if (typeof pushRecentSearch !== 'undefined') pushRecentSearch(val);
+  if (typeof runSearchQuery !== 'undefined') runSearchQuery(val);
+  else window.location.href = '/?' + val.split(/\s+/).map(t=>'tag='+encodeURIComponent(t)).join('&');
+}
+let _dsTimer = null;
+function onDetailSearchInput(val) {
+  const last = (val.trim().split(/\s+/).pop() || '');
+  clearTimeout(_dsTimer);
+  if (last.length < 1) { hideDetailSug(); return; }
+  _dsTimer = setTimeout(async () => {
+    const d = await (await fetch(`/api/tag-search/?q=${encodeURIComponent(last)}`)).json();
+    const el = document.getElementById('detail-search-sug');
+    if (!d.tags.length) { hideDetailSug(); return; }
+    el.innerHTML = d.tags.map(t =>
+      `<div class="tag-sug-item ${t.category}" style="padding:.4rem .6rem;cursor:pointer;display:flex;justify-content:space-between;gap:.5rem;" onclick="detailPickSug('${t.name.replace(/'/g,"\\'")}')">${t.name}<span style="color:var(--text-dim);font-size:.7rem;">${t.count}</span></div>`
+    ).join('');
+    el.style.display = 'block';
+  }, 150);
+}
+function detailPickSug(name) {
+  const inp = document.getElementById('detail-search');
+  const parts = inp.value.trim().length ? inp.value.trim().split(/\s+/) : [];
+  if (parts.length) parts[parts.length-1] = name; else parts.push(name);
+  inp.value = parts.join(' ') + ' ';
+  hideDetailSug(); inp.focus();
+}
+function hideDetailSug() { const el = document.getElementById('detail-search-sug'); if (el) el.style.display = 'none'; }
+function onDetailSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); detailSearch(); } if (e.key === 'Escape') hideDetailSug(); }
+document.addEventListener('click', e => { if (!e.target.closest('#detail-search') && !e.target.closest('#detail-search-sug')) hideDetailSug(); });
+(function() {
+  const el = document.getElementById('detail-recent-searches');
+  if (el && typeof recentSearchChips !== 'undefined') {
+    const c = recentSearchChips();
+    if (c) el.innerHTML = '<span class="quick-lbl">searches</span>' + c;
+  }
+})();
+
 /* ── Keyboard ────────────────────────────────────────────── */
 document.addEventListener('keydown', e => {
-  if (e.target.tagName==='INPUT' || e.target.tagName==='SELECT') return;
+  if (e.target.tagName==='INPUT' || e.target.tagName==='SELECT' || e.target.tagName==='TEXTAREA') return;
   // don't hijack arrow keys when video is focused
   const vid = document.getElementById('main-video');
   if (vid && document.activeElement === vid) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  const bk = (typeof bind!=='undefined') ? bind : (a => a);
 
-  if (viewMode === 'paged') {
-    if (e.key==='ArrowLeft'  || e.key==='a') { e.preventDefault(); prevImage(); }
-    if (e.key==='ArrowRight' || e.key==='d') { e.preventDefault(); nextImage(); }
-  } else {
-    if (e.key==='ArrowLeft'  || e.key==='a') navTo('prev');
-    if (e.key==='ArrowRight' || e.key==='d') navTo('next');
-  }
-  if (e.key==='Escape') { if (infoPanelOpen) toggleInfoPanel(false); else goBack(); }
-  if (e.key==='i') toggleInfoPanel();
-  if (e.key==='v') toggleViewMode();
+  if (k === bk('detail_prev') || k === 'a') { e.preventDefault(); viewMode==='paged' ? prevImage() : navTo('prev'); return; }
+  if (k === bk('detail_next') || k === 'd') { e.preventDefault(); viewMode==='paged' ? nextImage() : navTo('next'); return; }
+  if (k === bk('detail_back'))  { if (infoPanelOpen) toggleInfoPanel(false); else goBack(); return; }
+  if (k === bk('toggle_info'))  { toggleInfoPanel(); return; }
+  if (k === bk('toggle_view'))  { toggleViewMode(); return; }
+  if (k >= '0' && k <= '5')     { setRating(parseInt(k)); return; }   // 0 clears
+  if (k === bk('fav'))          { toggleFav(); return; }
+  if (k === bk('ai_tag'))       { e.preventDefault(); aiTag(); return; }
+  if (k === bk('find_similar')) { e.preventDefault(); findSimilar(); return; }
+  if (k === bk('regen_thumb'))  { e.preventDefault(); regenThumb(); return; }
+  if (k === bk('open_random'))  { window.location.href='/?sort=random'; return; }
+  if (k === bk('random_post'))  { if(typeof goRandom!=='undefined') goRandom(); return; }
+  if (k === bk('scan_inbox'))   { e.preventDefault(); if(typeof doScan!=='undefined') doScan(); return; }
 });
 
 /* ── Touch gestures ──────────────────────────────────────── */
@@ -990,17 +1235,17 @@ document.addEventListener('keydown', e => {
     const vidPlaying = vid && !vid.paused && !vid.ended;
 
     if (viewMode === 'paged') {
-      if (dt<500 && dy>60 && absDy>absDx*1.2) { goBack(); return; }
-      if (!vidPlaying && dt<500 && absDx>35 && absDx>absDy*1.2) { if(dx<0)nextImage();else prevImage(); return; }
+      if (dt<700 && dy>55 && absDy>absDx*1.15) { goBack(); return; }
+      // horizontal swipes in paged mode are handled by the finger-follow module
       if (isTap) {
         if (infoPanelOpen) { toggleInfoPanel(false); return; }
         if (IS_MULTI) toggleFilmstripOverlay();
       }
     } else {
       // SCROLL MODE
-      if (!vidPlaying && dt<500 && absDx>50 && absDx>absDy*1.8) { if(dx<0)navTo('next');else navTo('prev'); return; }
+      if (!vidPlaying && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev'); return; }
       const sc = document.getElementById('scroll-container');
-      if (dt<500 && dy>60 && absDy>absDx*1.2 && sc && sc.scrollTop<10) { goBack(); return; }
+      if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { goBack(); return; }
       // tap toggles filmstrip/buttons overlay in scroll mode too
       if (isTap && IS_MULTI) toggleFilmstripOverlay();
     }
@@ -1010,6 +1255,98 @@ document.addEventListener('keydown', e => {
   if (imgMain) { imgMain.addEventListener('touchstart', onStart, {passive:true}); imgMain.addEventListener('touchend', onEnd, {passive:true}); }
   const sc = document.getElementById('scroll-container');
   if (sc) { sc.addEventListener('touchstart', onStart, {passive:true}); sc.addEventListener('touchend', onEnd, {passive:true}); }
+})();
+
+/* ── Finger-following swipe (paged mode), Pixiv-style ──────────
+   The current media follows your finger; the neighbour (next image in the
+   post, or the next/prev POST's cover) slides in beside it. Release past
+   ~28% of the width to commit, otherwise it snaps back. */
+(function() {
+  const main = document.getElementById('img-main');
+  const mc   = document.getElementById('media-container');
+  if (!main || !mc) return;
+  let sx=0, sy=0, W=1, active=false, decided=false, dir=0, preview=null, targetIdx=null, isPost=false;
+  const RM = () => document.body.classList.contains('reduce-motion');
+
+  function clearPreview() { if (preview) { preview.remove(); preview = null; } }
+  function resetTransforms() {
+    mc.classList.remove('swipe-snap'); mc.style.transform='';
+    clearPreview(); active=false; decided=false; dir=0; targetIdx=null; isPost=false;
+  }
+  function computeTarget(d) {
+    let url = '';
+    if (d < 0) { // swipe left → next
+      if (currentImgIdx < IMAGES.length - 1) { isPost=false; targetIdx=currentImgIdx+1; url=IMAGES[targetIdx].thumb || IMAGES[targetIdx].url; }
+      else if (nextId) { isPost=true; url=nextPreviewUrl; }
+      else return false;
+    } else {     // swipe right → prev
+      if (currentImgIdx > 0) { isPost=false; targetIdx=currentImgIdx-1; url=IMAGES[targetIdx].thumb || IMAGES[targetIdx].url; }
+      else if (prevId) { isPost=true; url=prevPreviewUrl; }
+      else return false;
+    }
+    dir = d;
+    return url;
+  }
+  function commitTarget() {
+    if (isPost) { navTo(dir < 0 ? 'next' : 'prev'); }
+    else { selectImage(targetIdx, document.querySelectorAll('.filmstrip-item')[targetIdx]); resetTransforms(); }
+  }
+  function begin(d) {
+    const url = computeTarget(d);
+    if (url === false) return false;
+    preview = document.createElement('div');
+    preview.className = 'swipe-preview';
+    preview.innerHTML = url ? `<img src="${url}">` : '';
+    preview.style.transform = `translateX(${d < 0 ? 100 : -100}%)`;
+    main.appendChild(preview);
+    return true;
+  }
+  main.addEventListener('touchstart', e => {
+    // Touches that begin on the <video> belong to its native controls (seek /
+    // play-pause) — never start a post swipe there, whether playing or paused.
+    if (e.target.closest('video')) { active=false; return; }
+    if (viewMode !== 'paged' || e.touches.length !== 1 || zoomScale > 1.05) { active=false; return; }
+    sx=e.touches[0].clientX; sy=e.touches[0].clientY; W=main.clientWidth || 1;
+    active=true; decided=false; mc.classList.remove('swipe-snap');
+  }, {passive:true});
+  main.addEventListener('touchmove', e => {
+    if (!active || e.touches.length !== 1) return;
+    if (zoomScale > 1.05) { resetTransforms(); return; }
+    const dx=e.touches[0].clientX-sx, dy=e.touches[0].clientY-sy;
+    if (!decided) {
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+        // reduce-motion: just detect a target, no live preview / animation
+        if (RM() ? (computeTarget(dx < 0 ? -1 : 1) === false) : !begin(dx < 0 ? -1 : 1)) { active=false; return; }
+        decided=true;
+      } else if (Math.abs(dy) > 12) { active=false; return; }  // vertical → leave to others
+      else return;
+    }
+    e.preventDefault();
+    if (RM()) return;                       // no finger-follow visuals
+    mc.style.transform = `translateX(${dx}px)`;
+    if (preview) preview.style.transform = `translateX(calc(${dir < 0 ? 100 : -100}% + ${dx}px))`;
+  }, {passive:false});
+  main.addEventListener('touchend', e => {
+    if (!active || !decided) { active=false; return; }
+    const dx = e.changedTouches[0].clientX - sx;
+    active=false;
+    const commit = Math.abs(dx) > W * 0.28;
+    if (RM()) {                       // no animation — act (or cancel) immediately
+      if (commit) commitTarget(); else resetTransforms();
+      return;
+    }
+    mc.classList.add('swipe-snap');
+    if (preview) preview.classList.add('swipe-snap');
+    if (commit) {
+      mc.style.transform = `translateX(${dir < 0 ? -W : W}px)`;
+      if (preview) preview.style.transform = 'translateX(0)';
+      setTimeout(commitTarget, 200);
+    } else {
+      mc.style.transform = 'translateX(0)';
+      if (preview) preview.style.transform = `translateX(${dir < 0 ? 100 : -100}%)`;
+      setTimeout(resetTransforms, 220);
+    }
+  }, {passive:true});
 })();
 
 if (!sessionStorage.getItem('swipeHinted')) {
@@ -1036,6 +1373,26 @@ function toggleInfoPanel(force) {
   handle.addEventListener('touchstart', e=>{startY=e.touches[0].clientY;dragging=true;},{passive:true});
   handle.addEventListener('touchmove',  e=>{if(dragging&&e.touches[0].clientY-startY>30){toggleInfoPanel(false);dragging=false;}},{passive:true});
   handle.addEventListener('click', ()=>toggleInfoPanel(false));
+})();
+// drag DOWN anywhere on the panel — only when its content is scrolled to the
+// top — dismisses it (same feel as swiping a post down to go back).
+(function() {
+  const panel = document.getElementById('info-panel');
+  if (!panel) return;
+  let startY=0, atTop=false, tracking=false;
+  panel.addEventListener('touchstart', e=>{
+    if (e.touches.length !== 1) { tracking=false; return; }
+    startY = e.touches[0].clientY;
+    atTop  = panel.scrollTop <= 0;
+    tracking = true;
+  }, {passive:true});
+  panel.addEventListener('touchmove', e=>{
+    if (!tracking || e.touches.length !== 1) return;
+    if (panel.scrollTop > 0) { atTop = false; return; }
+    const dy = e.touches[0].clientY - startY;
+    if (atTop && dy > 70 && infoPanelOpen) { toggleInfoPanel(false); tracking = false; }
+  }, {passive:true});
+  panel.addEventListener('touchend', ()=>{ tracking=false; }, {passive:true});
 })();
 
 /* ── Rating ─────────────────────────────────────────────── */
@@ -1064,20 +1421,13 @@ async function toggleFav() {
   syncMobRatePop();
 }
 
-/* ── Mobile rating/like popover ──────────────────────────── */
+/* ── Mobile rating/like menu (always visible, bottom-left) ──── */
 function syncMobRatePop() {
   document.querySelectorAll('.mob-rate-star').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.v) <= currentRating));
   document.getElementById('mob-rate-fav')?.classList.toggle('active', currentFav);
 }
-function toggleMobRatePop(force) {
-  const pop = document.getElementById('mob-rate-pop');
-  if (!pop) return;
-  const open = force !== undefined ? force : !pop.classList.contains('open');
-  pop.classList.toggle('open', open);
-  if (open) syncMobRatePop();
-}
-function mobRate(n) { setRating(n); toggleMobRatePop(false); }
+function mobRate(n) { setRating(n); }
 async function mobClear() {
   currentRating = 0;
   currentFav    = false;
@@ -1089,16 +1439,9 @@ async function mobClear() {
   currentFav    = d.fav;
   document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('fav-btn')?.classList.remove('active');
-  document.getElementById('mob-fav-btn')?.classList.remove('fav-active');
   syncMobRatePop();
-  toggleMobRatePop(false);
 }
-function mobFav()   { toggleFav();  toggleMobRatePop(false); }
-// tap outside the popover (and not on the ♥ button) closes it
-document.addEventListener('click', e => {
-  if (e.target.closest('#mob-rate-pop') || e.target.closest('#mob-fav-btn')) return;
-  toggleMobRatePop(false);
-});
+function mobFav()   { toggleFav(); }
 
 /* ── Delete post ─────────────────────────────────────────── */
 async function doDeletePost(alsoFiles) {
@@ -1140,11 +1483,13 @@ async function mergeInto() {
   const targetId = parseInt(document.getElementById('merge-target').value);
   if (!targetId || isNaN(targetId)) { toast('enter a valid post ID','err'); return; }
   if (!confirm(`Merge this post (#${POST_ID}) into post #${targetId}?\nThis post will be deleted after merge.`)) return;
+  startProgress();
   const r = await fetch('/api/merge/', {
     method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
     body: JSON.stringify({target: targetId, sources: [POST_ID]})
   });
   const d = await r.json();
+  doneProgress();
   if (d.ok) { toast(`merged into post #${d.post_id}`); window.location.href = `/post/${d.post_id}/${navSuffix}`; }
   else toast(d.error||'error','err');
 }
@@ -1161,12 +1506,30 @@ function updateFilePath() {
 }
 async function copyPath(el) {
   const path = el.dataset.path || el.textContent;
+  let ok = false;
   try {
-    await navigator.clipboard.writeText(path);
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(path); ok = true;
+    }
+  } catch (e) { ok = false; }
+  if (!ok) {
+    // fallback for plain-http (LAN) where navigator.clipboard is unavailable
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = path;
+      ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) { ok = false; }
+  }
+  if (ok) {
     el.style.borderColor = 'var(--tag-meta)';
     setTimeout(() => el.style.borderColor = '', 800);
     toast('path copied');
-  } catch { toast('select text and copy manually'); }
+  } else {
+    toast('could not copy automatically — long-press to select', 'err');
+  }
 }
 
 /* ── Not-dupe ────────────────────────────────────────────── */
@@ -1197,6 +1560,7 @@ async function apiTag(action, tag, category) {
     body: JSON.stringify({action, tag, category})
   })).json();
   renderTags(d.tags);
+  if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
 }
 function renderTags(tags) {
   const chips = document.getElementById('tag-chips');
@@ -1217,15 +1581,88 @@ function renderTags(tags) {
 }
 function addTag() {
   const input=document.getElementById('new-tag'), cat=document.getElementById('tag-cat').value, name=input.value.trim();
-  if (!name) return; apiTag('add',name,cat); input.value=''; hideSuggestions();
+  if (!name) return;
+  apiTag('add',name,cat);
+  if (typeof pushRecentTag !== 'undefined') pushRecentTag(name, cat);
+  input.value=''; hideSuggestions();
+  renderPostQuickTags();
+}
+
+/* recent + favorite quick-add chips (tap = add the tag to THIS post) */
+async function renderPostQuickTags() {
+  const wrap = document.getElementById('post-quick-tags');
+  if (!wrap || typeof getRecentTags === 'undefined') return;
+  const recent = getRecentTags().slice(0, 10);
+  const favs   = (typeof getFavTags !== 'undefined') ? await getFavTags() : [];
+  const have   = new Set([...document.querySelectorAll('#tag-chips .tag-chip')].map(c => c.dataset.tag));
+  const chip = t => `<span class="quick-chip ${t.category||''}" onclick="quickAddTag('${t.name.replace(/'/g,"\\'")}','${t.category||'general'}')">${t.name}</span>`;
+  let html = '';
+  const r = recent.filter(t => !have.has(t.name));
+  const f = favs.filter(t => !have.has(t.name)).slice(0,14);
+  if (r.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>' + r.map(chip).join('') + '</div>';
+  if (f.length) html += '<div class="quick-row"><span class="quick-lbl">&#9829;</span>' + f.map(chip).join('') + '</div>';
+  wrap.innerHTML = html;
+}
+function quickAddTag(name, category) {
+  apiTag('add', name, category);
+  if (typeof pushRecentTag !== 'undefined') pushRecentTag(name, category);
+  setTimeout(renderPostQuickTags, 150);
 }
 function removeTag(name) { apiTag('remove',name,''); }
 async function aiTag() {
   const btn=document.getElementById('ai-btn'); btn.disabled=true; btn.textContent='tagging...';
+  startProgress();
   const d=await(await fetch(`/api/post/${POST_ID}/ai-tag/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}})).json();
+  doneProgress();
   btn.disabled=false; btn.textContent='ai auto-tag';
   if(d.ok){toast(`added ${d.tags.length} tag(s)`);location.reload();}
   else toast('ai error: '+d.error,'err');
+}
+
+/* ── Find similar posts (visual pHash + tag overlap) ─────────── */
+async function findSimilar() {
+  const btn = document.getElementById('similar-btn');
+  if (btn) btn.disabled = true;
+  startProgress();
+  try {
+    const d = await (await fetch(`/api/post/${POST_ID}/similar/`)).json();
+    if (!d.ids || !d.ids.length) {
+      doneProgress(); toast('no similar posts found','err');
+      if (btn) btn.disabled = false; return;
+    }
+    window.location.href = '/?ids=' + d.ids.join(',');
+  } catch(e) {
+    doneProgress(); toast('error finding similar','err');
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* ── Regenerate thumbnail for the current image ──────────────── */
+async function regenThumb() {
+  const img = IMAGES[currentImgIdx];
+  if (!img) { toast('no image','err'); return; }
+  let pct = 0;
+  if (img.is_video) {
+    const def = localStorage.getItem('videoThumbPct') || '0';
+    const ans = prompt('Thumbnail frame at what % of the video? (0–100)', def);
+    if (ans === null) return;                       // cancelled
+    pct = Math.max(0, Math.min(100, parseFloat(ans) || 0));
+    localStorage.setItem('videoThumbPct', String(pct));
+  }
+  const btn = document.getElementById('regen-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  startProgress();
+  try {
+    const d = await (await fetch(`/api/photo/${img.id}/regen-thumb/`,
+      {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+       body: JSON.stringify({pct})})).json();
+    doneProgress();
+    if (d.ok) {
+      toast(img.is_video ? `thumbnail set to ${pct}%` : 'thumbnail regenerated');
+      setTimeout(() => location.reload(), 500);
+    } else toast(d.error||'error','err');
+  } catch(e) { doneProgress(); toast('error regenerating','err'); }
+  if (btn) { btn.disabled = false; btn.textContent = '\u27F3 regen thumb'; }
 }
 let suggestTimeout;
 async function onTagInput() {
@@ -1240,7 +1677,21 @@ async function onTagInput() {
 function showSuggestions(tags) {
   const el=document.getElementById('tag-suggestions'); el.innerHTML='';
   if(!tags.length){el.style.display='none';return;}
-  tags.forEach(t=>{const div=document.createElement('div');div.textContent=t.name;div.ontouchend=div.onclick=()=>{document.getElementById('new-tag').value=t.name;hideSuggestions();};el.appendChild(div);});
+  tags.forEach(t=>{
+    const div=document.createElement('div');
+    div.className = 'tag-sug-item ' + (t.category||'');
+    div.innerHTML = `<span>${t.name}</span><span style="color:var(--text-dim);font-size:.7rem;">${t.count||''}</span>`;
+    // tapping a suggestion ADDS it to the post (it no longer just fills the box)
+    div.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const cat = (t.category && t.category !== 'ai') ? t.category : document.getElementById('tag-cat').value;
+      apiTag('add', t.name, cat);
+      if (typeof pushRecentTag !== 'undefined') pushRecentTag(t.name, cat);
+      document.getElementById('new-tag').value = '';
+      hideSuggestions(); renderPostQuickTags();
+    };
+    el.appendChild(div);
+  });
   el.style.display='block';
 }
 function hideSuggestions(){document.getElementById('tag-suggestions').style.display='none';}
@@ -1250,6 +1701,14 @@ document.addEventListener('click',e=>{if(!e.target.closest('#new-tag')&&!e.targe
 /* ── Init ────────────────────────────────────────────────── */
 applyViewMode(viewMode);
 loadNeighbors();
+if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
+
+// record this post in the "recently seen" strip (synced across devices)
+(function recordRecent() {
+  const cover = IMAGES[0] || {};
+  if (typeof recordRecentPost !== 'undefined')
+    recordRecentPost({id: POST_ID, thumb: cover.thumb || '', url: location.pathname});
+})();
 // Init PDF containers (must run after renderPdfContainer is defined)
 document.querySelectorAll('[data-pdf-url]').forEach(div => {
   div.innerHTML = renderPdfContainer(div.dataset.pdfUrl);

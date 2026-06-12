@@ -11,7 +11,7 @@ input, select, textarea { font-size: 16px !important; }
 
 .slider-row { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; }
 .slider-row label { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
-input[type=range].size-slider { flex: 1; accent-color: var(--accent); cursor: pointer; height: 3px; }
+/* size-slider styling (track gradient + thumb) is defined once in base.html */
 
 /* Search autocomplete */
 #search-suggestions div {
@@ -63,10 +63,18 @@ input[type=range].size-slider { flex: 1; accent-color: var(--accent); cursor: po
 .selection-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 130; background: var(--bg2); border-top: 1px solid var(--accent); padding: .6rem 1rem; padding-bottom: calc(.6rem + var(--safe-bottom)); flex-direction: column; gap: .5rem; }
 @media (max-width:640px) { .selection-bar { bottom: calc(var(--mobile-nav-h) + var(--safe-bottom)); padding-bottom: .6rem; } }
 .selection-bar.open { display: flex; }
-.selection-top { display: flex; align-items: center; gap: .6rem; }
-.sel-count { font-family: var(--mono); font-size: .85rem; color: var(--accent); flex: 1; }
-.selection-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
-.selection-top .btn.active, .selection-actions .btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.12); }
+.selection-top { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.sel-count { font-family: var(--mono); font-size: .85rem; color: var(--accent); flex: 1; min-width: 100%; }
+@media (min-width:641px){ .sel-count { min-width: auto; } }
+.selection-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
+@media (min-width:641px) { .selection-actions { grid-template-columns: repeat(8, 1fr); } }
+.selection-top .btn.active { border-color: var(--accent); color: var(--accent); background: rgba(124,106,247,.12); }
+.sel-act { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; min-height:52px; padding:.35rem .2rem; border-radius:8px; border:1px solid var(--border); background:var(--bg3); color:var(--text); font-family:var(--mono); font-size:.62rem; cursor:pointer; -webkit-tap-highlight-color:transparent; transition:all .15s; }
+.sel-act:hover, .sel-act:active { border-color:var(--accent); color:var(--accent); background:rgba(124,106,247,.1); }
+.sel-act.active { border-color:var(--accent); color:var(--accent); background:rgba(124,106,247,.12); }
+.sel-act.danger { border-color:var(--danger); color:var(--danger); }
+.sel-act.danger:active { background:var(--danger); color:#fff; }
+.sel-act .sa-i { font-size:1.2rem; line-height:1; }
 .photo-card.selectable { cursor: pointer; }
 .photo-card .sel-check { position: absolute; top: .35rem; left: .35rem; z-index: 2; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6); background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; font-size: .7rem; color: #fff; transition: all .15s; }
 body.select-mode .photo-card .sel-check { display: flex; }
@@ -84,13 +92,46 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
 .bulk-input-row { display: flex; gap: .4rem; }
 .bulk-input-row input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: .4rem .6rem; border-radius: 6px; font-family: var(--mono); outline: none; }
 .bulk-input-row input:focus { border-color: var(--accent); }
+/* bulk tag modal: autocomplete dropdown + recent-tag chips */
+#bulk-suggestions div {
+  padding: .4rem .6rem; font-size: .82rem; font-family: var(--mono);
+  cursor: pointer; color: var(--text-dim); border-bottom: 1px solid rgba(255,255,255,.04);
+  display: flex; justify-content: space-between; align-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+#bulk-suggestions div:last-child { border-bottom: none; }
+#bulk-suggestions div:hover, #bulk-suggestions div.active { background: var(--accent-dim); color: var(--text-bright); }
+.bulk-recent-chip {
+  font-family: var(--mono); font-size: .72rem; padding: .2rem .5rem;
+  border-radius: 4px; border: 1px solid var(--border); background: var(--bg3);
+  color: var(--text-dim); cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.bulk-recent-chip:hover, .bulk-recent-chip:active { border-color: var(--accent); color: var(--accent); }
+/* .cheat-code styling now lives in base.html (shared) */
+.recent-strip { display:flex; gap:4px; align-items:center; overflow-x:auto; padding:.1rem 0 .5rem; margin-bottom:.3rem; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+.recent-strip .rs-lbl { font-family:var(--mono); font-size:.62rem; color:var(--text-dim); flex:0 0 auto; padding-right:.2rem; text-transform:uppercase; letter-spacing:1px; }
+.recent-strip .rs-item { flex:0 0 auto; width:54px; height:54px; border-radius:4px; overflow:hidden; border:1px solid var(--border); }
+.recent-strip .rs-item img { width:100%; height:100%; object-fit:cover; display:block; }
+.scroll-fabs { position:fixed; right:.8rem; bottom:1.3rem; display:flex; flex-direction:column; gap:.4rem; z-index:90; }
+@media (max-width:640px){ .scroll-fabs { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .6rem); } }
+.scroll-fab { width:42px; height:42px; border-radius:50%; border:1px solid var(--border); background:var(--bg2); color:var(--text); cursor:pointer; box-shadow:0 2px 12px rgba(0,0,0,.5); -webkit-tap-highlight-color:transparent; font-size:.85rem; }
+.scroll-fab:active, .scroll-fab:hover { border-color:var(--accent); color:var(--accent); }
+body.select-mode .scroll-fabs { display:none; }
+/* full-size preview: masonry-style columns showing true thumbnail aspect */
+.photo-grid.full-preview { display:block; column-gap:3px; }
+.photo-grid.full-preview .photo-card { aspect-ratio:auto; height:auto; width:100%; display:inline-block; break-inside:avoid; margin-bottom:3px; }
+.photo-grid.full-preview .photo-card img { height:auto; width:100%; object-fit:contain; }
+@media (max-width:640px){ .photo-grid.full-preview { column-gap:2px; } .photo-grid.full-preview .photo-card { margin-bottom:2px; } }
 </style>
 {% endblock %}
 
 {% block sidebar %}
 <aside>
   <div class="sidebar-section">
-    <div class="sidebar-title">search</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+      <div class="sidebar-title" style="margin-bottom:0;">search</div>
+      <button onclick="openCheatSheet()" style="font-family:var(--mono);font-size:.63rem;background:none;border:none;color:var(--text-dim);cursor:pointer;text-decoration:underline;-webkit-tap-highlight-color:transparent;padding:0;">syntax&nbsp;?</button>
+    </div>
     <div style="position:relative;">
       <input id="tag-search" class="sidebar-input" type="text"
         placeholder="tag1 tag2 ... (enter)"
@@ -102,6 +143,7 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
       <button class="search-go-btn" onclick="doSearch()" title="search">&#128269;</button>
       <div id="search-suggestions" style="display:none;position:absolute;left:0;right:0;top:100%;background:var(--bg3);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;z-index:50;max-height:220px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.4);"></div>
     </div>
+    <div id="recent-searches" class="quick-row" style="margin-top:.35rem;"></div>
   </div>
 
   <div class="sidebar-section">
@@ -119,6 +161,7 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
       <button class="mode-btn {% if not scroll_mode %}active{% endif %}" onclick="setMode('pages')">pages</button>
       <button class="mode-btn {% if scroll_mode %}active{% endif %}" onclick="setMode('scroll')">infinite</button>
     </div>
+    <button class="mode-btn full-preview-btn" onclick="toggleFullPreview()" style="width:100%;margin-top:.3rem;">&#9647; full-size previews</button>
   </div>
 
   <div class="sidebar-section">
@@ -127,6 +170,7 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
       <button class="fav-filter-btn {% if fav_only == '1' %}active{% endif %}" onclick="toggleFav(this)">&#9829; favs</button>
       <button class="fav-filter-btn {% if multi_only == '1' %}active{% endif %}" onclick="toggleMultiOnly(this)">&#9783; multi</button>
       <button class="fav-filter-btn {% if single_only == '1' %}active{% endif %}" onclick="toggleSingleOnly(this)">&#9632; single</button>
+      <button class="fav-filter-btn {% if exact_rating == '0' %}active{% endif %}" data-stars="0" onclick="setExactRating(this)" title="posts with no rating">&#9734; unrated</button>
     </div>
     <div class="star-filter">
       <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">at least:</span>
@@ -154,7 +198,7 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
 
   <div class="sidebar-section">
     <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;gap:.3rem;">
-      <span>tags ({{ popular_tags|length }}{% if filtering_active %} related{% endif %})</span>
+      <span>tags ({{ tag_total }}{% if filtering_active %} related{% endif %}){% if tag_total > 300 %} · top 300{% endif %}</span>
       <div style="display:flex;gap:.3rem;align-items:center;">
         <button onclick="setSortTags('{% if sort_tags == "name" %}count{% else %}name{% endif %}')" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">{% if sort_tags == "name" %}#{% else %}az{% endif %}</button>
         <button onclick="toggleSelectMode()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;" id="sel-toggle">sel</button>
@@ -175,17 +219,15 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
 {% endblock %}
 
 {% block content %}
-{% if q_tags or fav_only or min_rating or multi_only %}
+<div id="recent-strip" class="recent-strip" style="display:none;"></div>
+{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only %}
 <div class="active-tags">
-  {% if fav_only == '1' %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.15);">&#9829; favs <a href="?" class="remove">x</a></span>{% endif %}
-  {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <a href="?" class="remove">x</a></span>{% endif %}
-  {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <a href="?" class="remove">x</a></span>{% endif %}
-  {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <a href="?" class="remove">x</a></span>{% endif %}
-  {% for t in q_tags %}
-  <span class="active-tag">{{ t }}
-    <a href="?{% for ot in q_tags %}{% if ot != t %}tag={{ ot }}&{% endif %}{% endfor %}{% if min_rating %}min_rating={{ min_rating }}&{% endif %}{% if fav_only %}fav={{ fav_only }}&{% endif %}" class="remove">x</a>
-  </span>
-  {% endfor %}
+  {% if fav_only == '1' %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.15);">&#9829; favs <span class="remove" onclick="removeFilter('fav')">x</span></span>{% endif %}
+  {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <span class="remove" onclick="removeFilter('multi_only')">x</span></span>{% endif %}
+  {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <span class="remove" onclick="removeFilter('single_only')">x</span></span>{% endif %}
+  {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <span class="remove" onclick="removeFilter('min_rating')">x</span></span>{% endif %}
+  {% if exact_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{% if exact_rating == '0' %}&#9734; unrated{% else %}{{ exact_rating }}&#9733;{% endif %} <span class="remove" onclick="removeFilter('rating')">x</span></span>{% endif %}
+  <span id="tag-pills"></span>
   <a href="/" class="btn" style="padding:.15rem .5rem;font-size:.75rem;">clear all</a>
 </div>
 {% endif %}
@@ -229,6 +271,13 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
 </div>
 {% endif %}
 
+{% if not scroll_mode %}
+<div id="scroll-fabs" class="scroll-fabs">
+  <button class="scroll-fab" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="top (t / Home)">&#9650;</button>
+  <button class="scroll-fab" onclick="scrollBottom()" title="bottom (b / End)">&#9660;</button>
+</div>
+{% endif %}
+
 <!-- Selection toolbar -->
 <div class="selection-bar" id="sel-bar">
   <div class="selection-top">
@@ -236,17 +285,18 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
     <button class="btn" onclick="selectAll()">all</button>
     <button class="btn" onclick="clearSelection()">none</button>
     <button class="btn" id="range-btn" onclick="toggleRangeMode()">range</button>
-    <button class="btn" onclick="toggleSelectMode()">done</button>
+    <button class="btn primary" onclick="toggleSelectMode()">done</button>
   </div>
   <div class="selection-actions">
-    <button class="btn" onclick="openBulkTag('add')">+ tag</button>
-    <button class="btn" onclick="openBulkTag('remove')">- tag</button>
-    <button class="btn" onclick="openBulkRate()">&#9733; rate</button>
-    <button class="btn" onclick="bulkFav(true)">&#9829;</button>
-    <button class="btn" onclick="bulkFav(false)">&#9825;</button>
-    <button class="btn" onclick="bulkMerge()">&#9135; queue merge</button>
-    <button class="btn" onclick="finalizeMergeQueue()" id="merge-go-btn">merge now</button>
-    <button class="btn danger" onclick="bulkDelete()">&#128465;</button>
+    <button class="sel-act" onclick="openBulkTag('add')"><span class="sa-i">&#65291;</span><span>add tag</span></button>
+    <button class="sel-act" onclick="openBulkTag('remove')"><span class="sa-i">&#65293;</span><span>del tag</span></button>
+    <button class="sel-act" onclick="openBulkRate()"><span class="sa-i">&#9733;</span><span>rate</span></button>
+    <button class="sel-act" onclick="bulkFav(true)"><span class="sa-i">&#9829;</span><span>fav</span></button>
+    <button class="sel-act" onclick="bulkFav(false)"><span class="sa-i">&#9825;</span><span>unfav</span></button>
+    <button class="sel-act" onclick="bulkMerge()"><span class="sa-i">&#9135;</span><span>queue merge</span></button>
+    <button class="sel-act" onclick="finalizeMergeQueue()" id="merge-go-btn"><span class="sa-i">&#8694;</span><span>merge now</span></button>
+    <button class="sel-act" onclick="bulkVideoThumb()"><span class="sa-i">&#9654;</span><span>vid thumb&nbsp;%</span></button>
+    <button class="sel-act danger" onclick="bulkDelete()"><span class="sa-i">&#128465;</span><span>delete</span></button>
   </div>
 </div>
 
@@ -255,8 +305,13 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
   <div class="bulk-modal">
     <div class="modal-handle"></div>
     <h3 id="bulk-modal-title">add tag to selected</h3>
+    <div id="bulk-recent" style="display:none;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem;align-items:center;"></div>
     <div class="bulk-input-row">
-      <input id="bulk-tag-input" type="text" placeholder="tag name..." autocomplete="off">
+      <div style="position:relative;flex:1;">
+        <input id="bulk-tag-input" type="text" placeholder="tag name..." autocomplete="off"
+               style="width:100%;" oninput="onBulkTagInput()" onkeydown="onBulkTagKey(event)">
+        <div id="bulk-suggestions" style="display:none;position:absolute;left:0;right:0;top:100%;background:var(--bg3);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;z-index:60;max-height:200px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.4);"></div>
+      </div>
       <select class="cat-select" id="bulk-tag-cat">
         <option value="general">gen</option><option value="character">char</option>
         <option value="artist">art</option><option value="meta">meta</option>
@@ -279,6 +334,8 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
     <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-rate-modal').classList.remove('open')">cancel</button></div>
   </div>
 </div>
+
+<!-- Search syntax cheat sheet now lives in base.html (shared with mobile) -->
 {% endblock %}
 
 {% block extra_js %}
@@ -290,6 +347,8 @@ const TOTAL_PAGES  = {{ page_obj.paginator.num_pages }};
 // Single source of truth for the sort list (mirrors views.py sort_options) so
 // the desktop sidebar and the mobile "more" menu never have to be hand-synced.
 window.SORT_OPTIONS = [{% for val, label in sort_options %}['{{ val|escapejs }}','{{ label|escapejs }}']{% if not forloop.last %},{% endif %}{% endfor %}];
+// raw search tokens (incl. (, ~, ), -tag) so we can render readable pills
+window.Q_TOKENS = [{% for t in q_tags %}'{{ t|escapejs }}'{% if not forloop.last %},{% endif %}{% endfor %}];
 
 // ── Grid size ─────────────────────────────────────────────────
 function isMobile() { return window.innerWidth <= 640; }
@@ -302,23 +361,82 @@ function setGridSize(val, platform) {
     localStorage.setItem('gridSize_mobile', val);
     // force slider to correct visual position
     const sl = document.getElementById('mob-size-slider');
-    if (sl && sl.value != val) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+    if (sl) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
   } else {
     px = parseInt(val);
     localStorage.setItem('gridSize_desktop', val);
     const sl = document.getElementById('size-slider');
-    if (sl && sl.value != val) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
+    if (sl) { sl.value = val; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
   }
-  document.getElementById('photo-grid').style.gridTemplateColumns = `repeat(auto-fill,minmax(${px}px,1fr))`;
+  const grid = document.getElementById('photo-grid');
+  if (grid.classList.contains('full-preview')) {
+    grid.style.gridTemplateColumns = '';
+    grid.style.columnWidth = px + 'px';
+  } else {
+    grid.style.columnWidth = '';
+    grid.style.gridTemplateColumns = `repeat(auto-fill,minmax(${px}px,1fr))`;
+  }
   localStorage.setItem('gridSize', px); // legacy
   const mobSl = document.getElementById('mob-size-slider');
   if (mobSl) mobSl.value = px;
+}
+
+// Toggle full-size (true-aspect) previews vs square thumbnails
+function toggleFullPreview() {
+  const grid = document.getElementById('photo-grid');
+  const on = !grid.classList.contains('full-preview');
+  grid.classList.toggle('full-preview', on);
+  localStorage.setItem('fullPreview', on ? '1' : '0');
+  document.querySelectorAll('.full-preview-btn').forEach(b => b.classList.toggle('active', on));
+  const mob = isMobile();
+  const val = mob ? (localStorage.getItem('gridSize_mobile') || '3')
+                  : (localStorage.getItem('gridSize_desktop') || '180');
+  setGridSize(val, mob ? 'mobile' : 'desktop');
 }
 
 // ── Scroll save/restore ───────────────────────────────────────
 function saveScroll() {
   sessionStorage.setItem('scrollY', window.scrollY);
   sessionStorage.setItem('scrollURL', window.location.href);
+  saveInfiniteState();
+}
+
+// In infinite-scroll mode, remember not just the Y offset but how many pages
+// were loaded, so after a reload (e.g. bulk rate/fav/delete/merge) we can
+// re-fetch the same depth and land back where we were instead of at the top.
+function saveInfiniteState() {
+  if (!SCROLL_MODE) return;
+  try {
+    sessionStorage.setItem('infScroll', JSON.stringify({
+      url:  window.location.href,
+      y:    window.scrollY,
+      page: infinitePage,
+      t:    Date.now(),
+    }));
+  } catch(e) {}
+}
+// Reload but preserve infinite-scroll position (used by bulk actions).
+function reloadKeepingScroll() { saveInfiniteState(); location.reload(); }
+
+async function restoreInfiniteScroll() {
+  let st = null;
+  try { st = JSON.parse(sessionStorage.getItem('infScroll') || 'null'); } catch(e) {}
+  sessionStorage.removeItem('infScroll');
+  if (!st || st.url !== window.location.href) return;
+  if (Date.now() - (st.t || 0) > 120000) return;   // stale (>2 min) — ignore
+  const targetPage = st.page || 1;
+  if (targetPage <= 1) { requestAnimationFrame(() => window.scrollTo(0, st.y || 0)); return; }
+  const sentinel = document.getElementById('scroll-sentinel');
+  if (sentinel) sentinel.textContent = 'restoring position…';
+  // Re-load pages sequentially up to the saved depth (or until exhausted).
+  let guard = 0;
+  while (infinitePage < targetPage && !infiniteExhausted && guard < 200) {
+    await loadNextPage();
+    guard++;
+  }
+  // Two rAFs so images/layout settle before we jump.
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, st.y || 0)));
+  if (sentinel && !infiniteExhausted) sentinel.textContent = '';
 }
 
 // ── Infinite scroll (vanilla IntersectionObserver) ────────────
@@ -333,16 +451,15 @@ function buildApiUrl(page) {
 }
 
 function makeCard(post) {
-  const tagQs = post.tag_qs || '';
   const a = document.createElement('a');
-  a.href = post.url + (tagQs ? tagQs : '');
-  a.className = 'photo-card';
+  a.href = post.url;   // already carries tags + sort + filters + seed
+  a.className = 'photo-card' + (post.has_video ? ' has-video' : (post.has_gif ? ' has-gif' : ''));
   a.dataset.id = post.id;
   a.dataset.rating = post.rating;
   a.dataset.fav = post.fav ? 'true' : 'false';
   a.onclick = () => saveScroll();
 
-  let html = `<img src="${post.thumb_url}" loading="lazy">`;
+  let html = `<img src="${post.thumb_url}" loading="lazy" decoding="async">`;
   html += `<div class="overlay"><span class="tag-count-badge">${post.tag_count} tags${post.img_count > 1 ? ' &middot; ' + post.img_count : ''}</span></div>`;
   html += `<div class="sel-check">&#10003;</div>`;
   if (post.img_count > 1) html += `<div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">${post.img_count}</div>`;
@@ -356,6 +473,7 @@ function makeCard(post) {
 async function loadNextPage() {
   if (infiniteLoading || infiniteExhausted) return;
   infiniteLoading = true;
+  if (typeof startProgress!=='undefined') startProgress();
   const sentinel = document.getElementById('scroll-sentinel');
   if (sentinel) sentinel.textContent = 'loading...';
 
@@ -379,6 +497,7 @@ async function loadNextPage() {
   } catch(e) {
     if (sentinel) sentinel.textContent = 'error loading — scroll up and try again';
   }
+  if (typeof doneProgress!=='undefined') doneProgress();
   infiniteLoading = false;
 }
 
@@ -440,16 +559,95 @@ function addTagToSearch(name) {
   window.location.href = '/?' + tags.map(t => 'tag=' + encodeURIComponent(t)).join('&');
 }
 
+// Remove a single active filter (fav / min_rating / rating / multi_only /
+// single_only / a single tag) while keeping every OTHER active filter intact.
+function removeFilter(key, val) {
+  const p = new URLSearchParams(window.location.search);
+  if (key === 'tag' && val !== undefined) {
+    const tags = p.getAll('tag').filter(t => t !== val);
+    p.delete('tag');
+    tags.forEach(t => p.append('tag', t));
+  } else {
+    p.delete(key);
+  }
+  p.delete('page');
+  const qs = p.toString();
+  window.location.href = qs ? '/?' + qs : '/';
+}
+
+/* ── Readable search pills ─────────────────────────────────────
+   Turns the raw token list ( "1girl" "(" "red_hair" "~" "blue_hair" ")"
+   "-1boy" ) into clean pills: 1girl · ~red_hair · ~blue_hair · -1boy
+   Structural tokens ( ( ) ~ ) are never shown as their own pills.
+   Removing a pill rebuilds the token list (dropping empty groups). */
+function renderTagPills() {
+  const host = document.getElementById('tag-pills');
+  if (!host) return;
+  const toks = (window.Q_TOKENS || []).slice();
+  const pills = [];                       // {label, idxs:[...token indices]}
+  let i = 0;
+  while (i < toks.length) {
+    const t = toks[i];
+    if (t === '(') {
+      let j = i + 1; const groupIdx = [i];
+      while (j < toks.length && toks[j] !== ')') {
+        if (toks[j] !== '~') pills.push({label: '~' + toks[j], idxs: [j], group: i});
+        groupIdx.push(j); j++;
+      }
+      if (j < toks.length) groupIdx.push(j);   // the ')'
+      // remember the full group span on each member for clean removal
+      pills.forEach(p => { if (p.group === i) p.groupSpan = groupIdx; });
+      i = j + 1; continue;
+    }
+    if (t === '~' || t === ')') { i++; continue; }
+    pills.push({label: t, idxs: [i]});
+    i++;
+  }
+  host.innerHTML = pills.map((p, k) =>
+    `<span class="active-tag">${p.label.replace(/</g,'&lt;')}` +
+    `<span class="remove" onclick="removeTagPill(${k})">x</span></span>`).join('');
+  window._pillData = pills;
+}
+function removeTagPill(k) {
+  const pills = window._pillData || [];
+  const pill = pills[k]; if (!pill) return;
+  const toks = (window.Q_TOKENS || []).slice();
+  const drop = new Set(pill.idxs);
+  // if removing an OR-group member would leave the group empty, drop the braces
+  if (pill.group !== undefined && pill.groupSpan) {
+    const remaining = pill.groupSpan.filter(idx =>
+      !drop.has(idx) && toks[idx] !== '(' && toks[idx] !== ')' && toks[idx] !== '~');
+    if (remaining.length === 0) pill.groupSpan.forEach(idx => drop.add(idx));
+  }
+  const kept = toks.filter((_, idx) => !drop.has(idx))
+                   .filter(t => t !== '(' || true);  // keep order
+  // clean any now-empty "()" or dangling "~"
+  const cleaned = [];
+  for (let x = 0; x < kept.length; x++) {
+    if (kept[x] === '(' && kept[x+1] === ')') { x++; continue; }
+    if (kept[x] === '~' && (cleaned.length === 0 || kept[x+1] === ')')) continue;
+    cleaned.push(kept[x]);
+  }
+  const p = new URLSearchParams(window.location.search);
+  p.delete('tag'); p.delete('page');
+  cleaned.forEach(t => p.append('tag', t));
+  const qs = p.toString();
+  window.location.href = qs ? '/?' + qs : '/';
+}
+document.addEventListener('DOMContentLoaded', renderTagPills);
+
 // ── Search ────────────────────────────────────────────────────
 let suggestItems = [], suggestIdx = -1, suggestTimer = null;
 
 function doSearch() {
   const val = document.getElementById('tag-search').value.trim();
   if (!val) { window.location.href = '/'; return; }
+  pushRecentSearch(val);
   // preserve other params
   const p = new URLSearchParams(window.location.search);
   p.delete('tag'); p.delete('page');
   val.split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
+  if (typeof startProgress !== 'undefined') startProgress();
   window.location.href = '/?' + p.toString();
 }
 
@@ -519,6 +717,7 @@ function onSearchKey(e) {
 }
 document.addEventListener('click', e => {
   if (!e.target.closest('#tag-search') && !e.target.closest('#search-suggestions')) hideSuggestions();
+  if (!e.target.closest('#bulk-tag-input') && !e.target.closest('#bulk-suggestions')) hideBulkSuggestions();
 });
 
 // ── Tag fav ───────────────────────────────────────────────────
@@ -550,6 +749,39 @@ function toggleSelectMode() {
 function orderedCards() {
   return [...document.querySelectorAll('.photo-card')].filter(c => c.dataset.id);
 }
+
+/* ── Long-press a post (touch) → enter select mode & pick it ──── */
+(function() {
+  const grid = document.getElementById('photo-grid');
+  if (!grid) return;
+  let lpTimer = null, lpFired = false, sx = 0, sy = 0;
+  grid.addEventListener('touchstart', e => {
+    const card = e.target.closest('.photo-card');
+    if (!card || !card.dataset.id) return;
+    lpFired = false;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+    lpTimer = setTimeout(() => {
+      lpFired = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+      if (!selectModeOn) toggleSelectMode();
+      toggleCard(card);
+      lastClickedIdx = orderedCards().indexOf(card);
+    }, 450);
+  }, {passive:true});
+  grid.addEventListener('touchmove', e => {
+    if (!lpTimer) return;
+    if (Math.abs(e.touches[0].clientX - sx) > 10 || Math.abs(e.touches[0].clientY - sy) > 10) {
+      clearTimeout(lpTimer); lpTimer = null;
+    }
+  }, {passive:true});
+  grid.addEventListener('touchend', e => {
+    clearTimeout(lpTimer); lpTimer = null;
+    if (lpFired) e.preventDefault();           // swallow the trailing tap
+  }, {passive:false});
+  grid.addEventListener('click', e => {
+    if (lpFired) { e.preventDefault(); e.stopPropagation(); lpFired = false; }
+  }, true);
+})();
 
 function wireCards() {
   orderedCards().forEach((card, idx) => {
@@ -608,21 +840,118 @@ function updateSelCount() {
 
 // ── Bulk actions ──────────────────────────────────────────────
 let bulkTagAction = 'add';
+let bulkSuggestItems = [], bulkSuggestIdx = -1, bulkSuggestTimer = null;
+// recent/favorite tag helpers now live in base.html (getRecentTags / pushRecentTag / getFavTags)
+function renderRecentBulkTags() {
+  const wrap = document.getElementById('bulk-recent');
+  if (!wrap) return;
+  const recent = getRecentTags();
+  let html = '';
+  if (recent.length) {
+    html += '<span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">recent:</span>'
+      + recent.map(t => `<span class="bulk-recent-chip" data-name="${t.name}" data-cat="${t.category||'general'}">${t.name}</span>`).join('');
+  }
+  wrap.style.display = 'flex';
+  wrap.innerHTML = html || '<span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);">type a tag…</span>';
+  // append favourites on a second row (async)
+  getFavTags().then(favs => {
+    if (!favs.length) return;
+    wrap.innerHTML += '<span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;margin-top:.2rem;">&#9829; favorites:</span>'
+      + favs.slice(0,16).map(t => `<span class="bulk-recent-chip" data-name="${t.name}" data-cat="${t.category||'general'}">${t.name}</span>`).join('');
+    wireBulkChips();
+  });
+  wireBulkChips();
+}
+function wireBulkChips() {
+  document.querySelectorAll('#bulk-recent .bulk-recent-chip').forEach(chip => {
+    chip.onclick = () => {
+      const input = document.getElementById('bulk-tag-input');
+      input.value = chip.dataset.name;
+      const sel = document.getElementById('bulk-tag-cat');
+      if (sel && [...sel.options].some(o => o.value === chip.dataset.cat)) sel.value = chip.dataset.cat;
+      hideBulkSuggestions(); input.focus();
+    };
+  });
+}
+
 function openBulkTag(action) {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   bulkTagAction = action;
   document.getElementById('bulk-modal-title').textContent = action==='add' ? 'add tag to selected' : 'remove tag from selected';
   document.getElementById('bulk-tag-input').value = '';
+  hideBulkSuggestions();
+  renderRecentBulkTags();
   document.getElementById('bulk-modal').classList.add('open');
   setTimeout(() => document.getElementById('bulk-tag-input').focus(), 100);
 }
-function closeBulkModal() { document.getElementById('bulk-modal').classList.remove('open'); }
+function closeBulkModal() { document.getElementById('bulk-modal').classList.remove('open'); hideBulkSuggestions(); }
 async function doBulkTag() {
   const tag = document.getElementById('bulk-tag-input').value.trim();
   const cat = document.getElementById('bulk-tag-cat').value;
   if (!tag) return;
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:bulkTagAction+'_tag',tag,category:cat})});
+  if (bulkTagAction === 'add') pushRecentTag(tag, cat);
   closeBulkModal(); toast(`${bulkTagAction==='add'?'added':'removed'} "${tag}" on ${selectedIds.size} posts`);
+}
+
+// ── Bulk tag autocomplete (with keyboard arrow selection) ─────
+function onBulkTagInput() {
+  clearTimeout(bulkSuggestTimer);
+  const q = document.getElementById('bulk-tag-input').value.trim().toLowerCase();
+  if (q.length < 1) { hideBulkSuggestions(); return; }
+  bulkSuggestTimer = setTimeout(() => fetchBulkSuggestions(q), 150);
+}
+async function fetchBulkSuggestions(q) {
+  const r = await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`);
+  const d = await r.json();
+  bulkSuggestItems = d.tags; bulkSuggestIdx = -1; renderBulkSuggestions();
+}
+function renderBulkSuggestions() {
+  const el = document.getElementById('bulk-suggestions'); el.innerHTML = '';
+  if (!bulkSuggestItems.length) { el.style.display = 'none'; return; }
+  bulkSuggestItems.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.innerHTML = `<span>${t.name}</span><span style="color:var(--text-dim);font-size:.72rem;">${t.count}</span>`;
+    div.dataset.idx = i;
+    div.addEventListener('mousedown', e => { e.preventDefault(); pickBulkSuggestion(i); });
+    div.addEventListener('touchend',  e => { e.preventDefault(); pickBulkSuggestion(i); });
+    el.appendChild(div);
+  });
+  el.style.display = 'block';
+}
+function setBulkSuggestActive(idx) {
+  bulkSuggestIdx = idx;
+  document.querySelectorAll('#bulk-suggestions div').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+    if (i === idx) el.scrollIntoView({block:'nearest'});
+  });
+}
+function pickBulkSuggestion(idx) {
+  const t = bulkSuggestItems[idx]; if (!t) return;
+  const input = document.getElementById('bulk-tag-input');
+  input.value = t.name;
+  if (t.category) {
+    const sel = document.getElementById('bulk-tag-cat');
+    if (sel && [...sel.options].some(o => o.value === t.category)) sel.value = t.category;
+  }
+  hideBulkSuggestions(); input.focus();
+}
+function hideBulkSuggestions() {
+  const el = document.getElementById('bulk-suggestions');
+  if (el) el.style.display = 'none';
+  bulkSuggestItems = []; bulkSuggestIdx = -1;
+}
+function onBulkTagKey(e) {
+  const el = document.getElementById('bulk-suggestions');
+  const visible = el.style.display !== 'none' && bulkSuggestItems.length;
+  if (visible && e.key === 'ArrowDown') { e.preventDefault(); setBulkSuggestActive(Math.min(bulkSuggestIdx+1, bulkSuggestItems.length-1)); return; }
+  if (visible && e.key === 'ArrowUp')   { e.preventDefault(); setBulkSuggestActive(Math.max(bulkSuggestIdx-1, 0)); return; }
+  if (visible && e.key === 'Tab')       { e.preventDefault(); pickBulkSuggestion(bulkSuggestIdx >= 0 ? bulkSuggestIdx : 0); return; }
+  if (e.key === 'Escape') { if (visible) hideBulkSuggestions(); else closeBulkModal(); return; }
+  if (e.key === 'Enter') {
+    if (visible && bulkSuggestIdx >= 0) { e.preventDefault(); pickBulkSuggestion(bulkSuggestIdx); return; }
+    doBulkTag();
+  }
 }
 function openBulkRate() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
@@ -631,12 +960,12 @@ function openBulkRate() {
 async function doBulkRate(rating) {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'rate',rating})});
   document.getElementById('bulk-rate-modal').classList.remove('open');
-  toast(`rated ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+  toast(`rated ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
 }
 async function bulkFav(fav) {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'fav',fav})});
-  toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+  toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
 }
 
 // ── Merge queue ───────────────────────────────────────────────
@@ -659,26 +988,57 @@ async function finalizeMergeQueue() {
   if (!confirm(`Merge ${mergeQueue.length} group(s)?\nEach group's first post becomes the target.`)) {
     mergeQueue = []; return;
   }
-  let done = 0;
+  let done = 0, failed = 0;
+  startProgress();
+  const totalGroups = mergeQueue.length;
   for (const group of mergeQueue) {
     if (group.length < 2) continue;
     const target = group[0];
-    const r = await fetch('/api/merge/', {
-      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({target, sources: group.slice(1)})
-    });
-    if ((await r.json()).ok) done++;
+    try {
+      const r = await fetch('/api/merge/', {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+        body: JSON.stringify({target, sources: group.slice(1)})
+      });
+      const d = await r.json();
+      if (d.ok) { done++; if (d.failed && d.failed.length) failed += d.failed.length; }
+      else failed++;
+    } catch(e) {
+      // one bad group must not stop the rest of the queue
+      failed++;
+    }
+    setProgress(Math.round((done + failed) / totalGroups * 100));
   }
+  doneProgress();
   mergeQueue = [];
-  toast(`merged ${done} group(s)`);
-  setTimeout(()=>location.reload(), 700);
+  toast(failed ? `merged ${done} group(s), ${failed} issue(s)` : `merged ${done} group(s)`,
+        failed ? 'err' : 'ok');
+  setTimeout(()=>reloadKeepingScroll(), 700);
+}
+
+async function bulkVideoThumb() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  const def = localStorage.getItem('videoThumbPct') || '0';
+  const ans = prompt(`Set video thumbnails to what % of the video? (0–100)\nApplies to the ${selectedIds.size} selected post(s) whose cover is a video.`, def);
+  if (ans === null) return;
+  const pct = Math.max(0, Math.min(100, parseFloat(ans) || 0));
+  localStorage.setItem('videoThumbPct', String(pct));
+  startProgress();
+  const d = await (await fetch('/api/bulk-video-thumb/', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({ids:[...selectedIds], pct})
+  })).json();
+  doneProgress();
+  toast(`updated ${d.updated||0} video thumbnail(s) to ${pct}%`);
+  if (d.updated) setTimeout(()=>reloadKeepingScroll(), 700);
 }
 
 async function bulkDelete() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   const alsoFile = confirm(`Delete ${selectedIds.size} posts from disk too?\n\nOK = delete files\nCancel = DB only`);
+  startProgress();
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'delete',delete_file:alsoFile})});
-  toast(`deleted ${selectedIds.size} posts`); setTimeout(()=>location.reload(), 600);
+  doneProgress();
+  toast(`deleted ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
 }
 
 // ── Preferences ──────────────────────────────────────────────
@@ -709,10 +1069,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (e.target.id === id) document.getElementById(id).classList.remove('open');
     });
   });
-  document.getElementById('bulk-tag-input')?.addEventListener('keydown', e => {
-    if (e.key==='Enter') doBulkTag();
-    if (e.key==='Escape') closeBulkModal();
-  });
+
+  // restore full-size preview mode before sizing
+  const fullPrev = localStorage.getItem('fullPreview') === '1';
+  if (fullPrev) document.getElementById('photo-grid').classList.add('full-preview');
+  document.querySelectorAll('.full-preview-btn').forEach(b => b.classList.toggle('active', fullPrev));
 
   // restore grid size per platform
   if (isMobile()) {
@@ -727,20 +1088,182 @@ document.addEventListener('DOMContentLoaded', () => {
     setGridSize(saved, 'desktop');
   }
 
-  // restore scroll position after back navigation
-  const savedURL = sessionStorage.getItem('scrollURL');
-  const savedY   = sessionStorage.getItem('scrollY');
-  if (savedURL && savedY && window.location.href === savedURL) {
-    requestAnimationFrame(() => window.scrollTo(0, parseInt(savedY)));
-    sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
+  // restore scroll position after navigation
+  if (SCROLL_MODE) {
+    // infinite mode: re-load pages to the saved depth, then scroll
+    restoreInfiniteScroll().then(() => initInfiniteScroll());
+  } else {
+    const savedURL = sessionStorage.getItem('scrollURL');
+    const savedY   = sessionStorage.getItem('scrollY');
+    if (savedURL && savedY && window.location.href === savedURL) {
+      requestAnimationFrame(() => window.scrollTo(0, parseInt(savedY)));
+      sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
+    }
   }
-
-  // init infinite scroll
-  if (SCROLL_MODE) initInfiniteScroll();
 });
 
 // save grid size to prefs when changed
 const origSetGridSize = setGridSize;
 // (setGridSize already saves to localStorage - keep that + also save to pref_gridSize)
+
+// ── Scroll-to-top/bottom + recently-seen strip ────────────────
+function scrollBottom() { window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'}); }
+function renderRecentStrip() {
+  const host = document.getElementById('recent-strip'); if (!host) return;
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem('recentPosts') || '[]'); } catch(e){}
+  seen = seen.filter(p => p && p.thumb);   // skip entries with no thumbnail
+  if (!seen.length) { host.style.display = 'none'; return; }
+  host.style.display = 'flex';
+  host.innerHTML = '<span class="rs-lbl">recent</span>' + seen.slice(0,20).map(p =>
+    `<a class="rs-item" href="${p.url || ('/post/'+p.id+'/')}" data-pid="${p.id}" title="post #${p.id}">` +
+    `<img src="${p.thumb}" loading="lazy" decoding="async" onerror="recentImgError(${p.id}, this)"></a>`).join('');
+}
+// a deleted post's thumbnail 404s → drop it from the strip and from history
+function recentImgError(pid, img) {
+  const item = img.closest('.rs-item'); if (item) item.remove();
+  try {
+    let seen = JSON.parse(localStorage.getItem('recentPosts') || '[]').filter(p => p.id !== pid);
+    localStorage.setItem('recentPosts', JSON.stringify(seen));
+    if (typeof pushRecentSync !== 'undefined') pushRecentSync();
+  } catch(e){}
+  const host = document.getElementById('recent-strip');
+  if (host && !host.querySelector('.rs-item')) host.style.display = 'none';
+}
+document.addEventListener('DOMContentLoaded', renderRecentStrip);
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('recent-searches');
+  if (el && typeof recentSearchChips !== 'undefined') {
+    const chips = recentSearchChips();
+    if (chips) el.innerHTML = '<span class="quick-lbl">searches</span>' + chips;
+  }
+});
+
+// ── Keyboard shortcuts (gallery) ──────────────────────────────
+function navPage(dir) {
+  const p = new URLSearchParams(window.location.search);
+  const cur = parseInt(p.get('page') || '1');
+  const np = cur + dir;
+  if (np < 1 || np > TOTAL_PAGES) return;
+  p.set('page', np); startProgress();
+  window.location.href = '/?' + p.toString();
+}
+document.addEventListener('keydown', e => {
+  const t = e.target.tagName;
+  if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') {
+    if (e.key === 'Escape') e.target.blur();
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  if (k === bind('focus_search'))     { e.preventDefault(); const s=document.getElementById('tag-search'); if(s){s.focus();s.select();} return; }
+  if (k === bind('cheat_sheet'))      { openCheatSheet(); return; }
+  if (k === bind('scroll_top'))       { window.scrollTo({top:0,behavior:'smooth'}); return; }
+  if (k === bind('scroll_bottom'))    { scrollBottom(); return; }
+  if (k === bind('full_preview'))     { if(typeof toggleFullPreview!=='undefined') toggleFullPreview(); return; }
+  if (k === bind('select_mode'))      { toggleSelectMode(); return; }
+  if (k === bind('select_all'))       { if (selectModeOn) { e.preventDefault(); selectAll(); } return; }
+  if (k === bind('scan_inbox'))       { e.preventDefault(); doScan(); return; }
+  if (k === bind('open_random'))      { window.location.href='/?sort=random'; return; }
+  if (k === bind('random_post'))      { if(typeof goRandom!=='undefined') goRandom(); return; }
+  if (k === 'Escape' || k === bind('detail_back')) { if (selectModeOn) toggleSelectMode(); return; }
+  if (!SCROLL_MODE) {
+    if (k === bind('prev_page'))      navPage(-1);
+    if (k === bind('next_page'))      navPage(1);
+  }
+});
+
+// ── Drag to select — iPhone Photos style range select ─────────
+// Selects the contiguous range from where the drag STARTED to where the
+// finger/cursor is now; backtracking de-selects. Cards outside the range are
+// restored to their state from before the drag.
+(function() {
+  const grid = document.getElementById('photo-grid'); if (!grid) return;
+  const cardAt = (x,y) => { const el = document.elementFromPoint(x,y); return el ? el.closest('.photo-card') : null; };
+  let anchorIdx=null, setVal=true, snapshot=null;
+
+  function setCard(card, on) {
+    if (!card || !card.dataset.id) return;
+    if (on) { selectedIds.add(card.dataset.id); card.classList.add('selected'); }
+    else    { selectedIds.delete(card.dataset.id); card.classList.remove('selected'); }
+  }
+  function applyRange(curIdx) {
+    const cards = orderedCards();
+    const lo = Math.min(anchorIdx, curIdx), hi = Math.max(anchorIdx, curIdx);
+    cards.forEach((card, i) => {
+      if (i >= lo && i <= hi) setCard(card, setVal);
+      else setCard(card, snapshot.has(card.dataset.id));   // restore outside range
+    });
+    updateSelCount();
+  }
+  function beginAt(card) {
+    const cards = orderedCards();
+    anchorIdx = cards.indexOf(card);
+    snapshot  = new Set(selectedIds);
+    setVal    = !selectedIds.has(card.dataset.id);   // direction from the anchor
+    applyRange(anchorIdx);
+  }
+
+  // PC mouse drag
+  let mdCard=null, dragging=false, didDrag=false, mx=0, my=0;
+  grid.addEventListener('mousedown', e => {
+    if (!selectModeOn) return;
+    const card = e.target.closest('.photo-card'); if (!card || !card.dataset.id) return;
+    mdCard=card; dragging=false; didDrag=false; mx=e.clientX; my=e.clientY;
+  });
+  grid.addEventListener('mousemove', e => {
+    if (!selectModeOn || !mdCard) return;
+    if (!dragging) {
+      if (Math.abs(e.clientX-mx) < 6 && Math.abs(e.clientY-my) < 6) return;
+      dragging=true; didDrag=true; beginAt(mdCard);
+    }
+    const c = cardAt(e.clientX, e.clientY);
+    if (c) applyRange(orderedCards().indexOf(c));
+  });
+  document.addEventListener('mouseup', () => { mdCard=null; dragging=false; });
+  grid.addEventListener('click', e => { if (didDrag) { e.preventDefault(); e.stopPropagation(); didDrag=false; } }, true);
+
+  // Phone: horizontal drag range-selects (vertical still scrolls)
+  let tCard=null, tx=0, ty=0, tDrag=false;
+  grid.addEventListener('touchstart', e => {
+    if (!selectModeOn || e.touches.length !== 1) { tCard=null; return; }
+    tCard = e.target.closest('.photo-card'); tx=e.touches[0].clientX; ty=e.touches[0].clientY; tDrag=false;
+  }, {passive:true});
+  grid.addEventListener('touchmove', e => {
+    if (!selectModeOn || !tCard || e.touches.length !== 1) return;
+    const dx=e.touches[0].clientX-tx, dy=e.touches[0].clientY-ty;
+    if (!tDrag) {
+      if (Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy)) { tDrag=true; beginAt(tCard); }
+      else return;
+    }
+    e.preventDefault();
+    const c = cardAt(e.touches[0].clientX, e.touches[0].clientY);
+    if (c) applyRange(orderedCards().indexOf(c));
+  }, {passive:false});
+  grid.addEventListener('touchend', () => { tCard=null; tDrag=false; }, {passive:true});
+})();
+
+// ── Phone: swipe left/right to change page (pages mode only) ──
+(function() {
+  let sx=0, sy=0, st=0, ok=false;
+  function blocked(el) {
+    if (el.closest('button, input, select, textarea, .sidebar, .selection-bar, .scroll-fabs, .recent-strip, .header, .mobile-nav, .mob-menu-sheet, .tag-sheet, .modal')) return true;
+    const a = el.closest('a');
+    if (a && !a.classList.contains('photo-card')) return true;   // allow swipe over cards
+    return false;
+  }
+  document.addEventListener('touchstart', e => {
+    if (selectModeOn || SCROLL_MODE || TOTAL_PAGES <= 1 || e.touches.length !== 1 || blocked(e.target)) { ok=false; return; }
+    sx=e.touches[0].clientX; sy=e.touches[0].clientY; st=Date.now(); ok=true;
+  }, {passive:true});
+  document.addEventListener('touchend', e => {
+    if (!ok) return; ok=false;
+    const t=e.changedTouches[0];
+    const dx=t.clientX-sx, dy=t.clientY-sy, dt=Date.now()-st;
+    if (dt < 600 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+      navPage(dx < 0 ? 1 : -1);   // swipe left → next page
+    }
+  }, {passive:true});
+})();
 </script>
 {% endblock %}
