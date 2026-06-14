@@ -1,4 +1,5 @@
 import os
+from django.utils import timezone
 from django.db import models
 
 
@@ -24,6 +25,8 @@ class Post(models.Model):
     ai_tagged  = models.BooleanField(default=False)
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
+    rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)
+    faved_at   = models.DateTimeField(null=True, blank=True, db_index=True)
     added_at   = models.DateTimeField(auto_now_add=True, db_index=True)
     # posts that this post has been marked "not a duplicate of"
     not_dupes  = models.ManyToManyField('self', blank=True, symmetrical=True)
@@ -109,3 +112,26 @@ class Photo(models.Model):
                 pass
             return url
         return self.media_url
+
+
+class Task(models.Model):
+    """A long-running background job (merge / scan / ai_tag / dupes) whose
+    state is stored in the DB so any gunicorn worker (and any device) can see
+    its progress, and so it survives the user closing the page."""
+    kind        = models.CharField(max_length=32)                  # merge / scan / ai_tag / dupes
+    status      = models.CharField(max_length=16, default='running')  # running / done / error
+    done        = models.IntegerField(default=0)
+    total       = models.IntegerField(default=0)
+    message     = models.CharField(max_length=300, blank=True)
+    error       = models.TextField(blank=True)
+    started_at  = models.DateTimeField(auto_now_add=True)
+    updated_at  = models.DateTimeField(auto_now=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-started_at']
+
+    @property
+    def elapsed(self):
+        end = self.finished_at or timezone.now()
+        return max(0, int((end - self.started_at).total_seconds()))

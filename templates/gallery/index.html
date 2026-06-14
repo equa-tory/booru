@@ -377,8 +377,6 @@ function setGridSize(val, platform) {
     grid.style.gridTemplateColumns = `repeat(auto-fill,minmax(${px}px,1fr))`;
   }
   localStorage.setItem('gridSize', px); // legacy
-  const mobSl = document.getElementById('mob-size-slider');
-  if (mobSl) mobSl.value = px;
 }
 
 // Toggle full-size (true-aspect) previews vs square thumbnails
@@ -985,34 +983,21 @@ async function finalizeMergeQueue() {
   // include any still-selected group
   if (selectedIds.size >= 2) mergeQueue.push([...selectedIds].map(Number));
   if (!mergeQueue.length) return;
-  if (!confirm(`Merge ${mergeQueue.length} group(s)?\nEach group's first post becomes the target.`)) {
+  if (!confirm(`Merge ${mergeQueue.length} group(s) in the background?\nEach group's first post becomes the target. You can keep using (or close) the site while it runs.`)) {
     mergeQueue = []; return;
   }
-  let done = 0, failed = 0;
-  startProgress();
-  const totalGroups = mergeQueue.length;
-  for (const group of mergeQueue) {
-    if (group.length < 2) continue;
-    const target = group[0];
-    try {
-      const r = await fetch('/api/merge/', {
-        method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-        body: JSON.stringify({target, sources: group.slice(1)})
-      });
-      const d = await r.json();
-      if (d.ok) { done++; if (d.failed && d.failed.length) failed += d.failed.length; }
-      else failed++;
-    } catch(e) {
-      // one bad group must not stop the rest of the queue
-      failed++;
-    }
-    setProgress(Math.round((done + failed) / totalGroups * 100));
-  }
-  doneProgress();
+  const groups = mergeQueue.filter(g => g.length >= 2);
   mergeQueue = [];
-  toast(failed ? `merged ${done} group(s), ${failed} issue(s)` : `merged ${done} group(s)`,
-        failed ? 'err' : 'ok');
-  setTimeout(()=>reloadKeepingScroll(), 700);
+  try {
+    await fetch('/api/merge-bg/', {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({groups})
+    });
+    toast(`merging ${groups.length} group(s) in the background…`);
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+    // leave select mode; the task panel shows progress
+    if (selectModeOn) toggleSelectMode();
+  } catch(e) { toast('could not start merge','err'); }
 }
 
 async function bulkVideoThumb() {
@@ -1108,11 +1093,16 @@ const origSetGridSize = setGridSize;
 
 // ── Scroll-to-top/bottom + recently-seen strip ────────────────
 function scrollBottom() { window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'}); }
-function renderRecentStrip() {
+function renderRecentStrip(data) {
   const host = document.getElementById('recent-strip'); if (!host) return;
-  let seen = [];
-  try { seen = JSON.parse(localStorage.getItem('recentPosts') || '[]'); } catch(e){}
+  let seen = data || [];
+  if (!seen.length) {
+    try { seen = JSON.parse(localStorage.getItem('recentPosts') || '[]'); } catch(e){}
+  }
   seen = seen.filter(p => p && p.thumb);   // skip entries with no thumbnail
+  // NOTE: order is taken as-is (server insertion order = true global recency).
+  // We do NOT sort by client timestamp, because PC and phone clocks can differ,
+  // which would cluster each device's posts together instead of interleaving.
   if (!seen.length) { host.style.display = 'none'; return; }
   host.style.display = 'flex';
   host.innerHTML = '<span class="rs-lbl">recent</span>' + seen.slice(0,20).map(p =>
@@ -1130,7 +1120,26 @@ function recentImgError(pid, img) {
   const host = document.getElementById('recent-strip');
   if (host && !host.querySelector('.rs-item')) host.style.display = 'none';
 }
-document.addEventListener('DOMContentLoaded', renderRecentStrip);
+document.addEventListener('DOMContentLoaded', () => {
+  renderRecentStrip(); // immediate render from localStorage (no flicker)
+  // refresh from server so cross-device views show up in correct order
+  let _lastRecentId = null;
+  function pollRecents() {
+    if (localStorage.getItem('notifOff') === '1') return; // respect quiet mode
+    fetch('/api/prefs/').then(r => r.json()).then(d => {
+      const recents = d.prefs && Array.isArray(d.prefs.recentPosts) ? d.prefs.recentPosts : null;
+      if (!recents) return;
+      const firstId = recents[0] && recents[0].id;
+      if (firstId !== _lastRecentId) {
+        _lastRecentId = firstId;
+        localStorage.setItem('recentPosts', JSON.stringify(recents.slice(0, 50)));
+        renderRecentStrip(recents);
+      }
+    }).catch(() => {});
+  }
+  pollRecents(); // immediate on load
+  setInterval(pollRecents, 15000); // then every 15 s
+});
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('recent-searches');
   if (el && typeof recentSearchChips !== 'undefined') {

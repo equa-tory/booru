@@ -47,8 +47,8 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'  # сюда collectstatic
 
 MEDIA_URL = '/media/'
-#MEDIA_ROOT = BASE_DIR / 'media'
-MEDIA_ROOT = '/@/Media_SRV/Photo'
+MEDIA_ROOT = BASE_DIR / 'media'
+#MEDIA_ROOT = '/@/Media_SRV/Photo'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

@@ -52,6 +52,16 @@ body {
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
 }
+/* On mobile: fix the body in place so iOS pull-to-refresh can never fire.
+   The <main> element becomes the actual scroll container.
+   min-height:0 on flex children is required — without it, flex items expand
+   past their parent's bounds and the overflow clipping never activates. */
+@media (max-width: 640px) {
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  .layout { flex: 1; min-height: 0; overflow: hidden; }
+  main { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+         -webkit-overflow-scrolling: touch; overscroll-behavior-y: none; }
+}
 a { color: inherit; text-decoration: none; }
 a:hover { color: var(--text-bright); }
 
@@ -104,6 +114,20 @@ header {
   transition:width .2s ease, opacity .3s;
 }
 #progress-bar-global.active { opacity:1; }
+/* background-task notifications */
+#task-panel { position:fixed; left:.8rem; bottom:.8rem; z-index:9998; display:flex; flex-direction:column; gap:.4rem; max-width:300px; }
+@media (max-width:640px){ #task-panel { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .6rem); left:.6rem; right:.6rem; max-width:none; } }
+.task-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:.5rem .7rem; box-shadow:0 4px 18px rgba(0,0,0,.55); font-family:var(--mono); font-size:.72rem; }
+.task-card.done { border-color:var(--tag-meta); }
+.task-card.error { border-color:var(--danger); }
+.task-card .tc-top { display:flex; justify-content:space-between; gap:.5rem; align-items:center; color:var(--text); }
+.task-card .tc-msg { color:var(--text-dim); margin-top:.2rem; }
+.task-card .tc-bar { height:4px; background:var(--bg3); border-radius:2px; margin-top:.4rem; overflow:hidden; }
+.task-card .tc-fill { height:100%; background:var(--accent); width:0; transition:width .3s; }
+.task-card.done .tc-fill { background:var(--tag-meta); }
+.task-card.error .tc-fill { background:var(--danger); }
+.task-card .tc-x { cursor:pointer; color:var(--text-dim); -webkit-tap-highlight-color:transparent; }
+body.notif-off #task-panel { display:none; }
 
 /* ── Layout ───────────────────────────────────────────── */
 .layout { display: flex; flex: 1; }
@@ -225,7 +249,13 @@ body.reduce-motion .sheet-backdrop > div, body.reduce-motion .swipe-preview, bod
   border-top: 1px solid var(--border);
   padding: .5rem 0;
   padding-bottom: calc(.5rem + var(--safe-bottom));
-  display: none; flex-direction: row; align-items: stretch;
+  flex-direction: row; align-items: stretch;
+  /* keep it pinned on its own compositor layer — without this, iOS Safari
+     detaches fixed + backdrop-filter elements during momentum scroll and the
+     bar appears to float to the middle of the screen. */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
 }
 @media (max-width: 640px) { .mobile-nav { display: flex; } }
 
@@ -351,6 +381,8 @@ input[type=range].size-slider::-moz-range-thumb {
     <button class="btn header-desktop" onclick="goRandom()">&#9684; random</button>
     <a class="btn header-desktop" href="/tags/edit/">&#9998; tags</a>
     <a class="btn header-desktop" href="/shortcuts/" title="keyboard shortcuts">&#9000; keys</a>
+    <button class="btn header-desktop" onclick="organizeSingles()" title="move loose root files into month folders (faster to browse on disk)">&#128193; tidy files</button>
+    <button class="btn header-desktop" onclick="organizeSinglesDeep()" title="re-tidy ALL files (including already in subfolders) into YYYY-MM/DD — run once">&#128194; re-tidy all</button>
     <!-- "fix folders" kept available but hidden from the top bar (run from
          console or re-enable here if needed). Hidden on phone too (no mobile
          menu entry exists for it). -->
@@ -375,14 +407,17 @@ input[type=range].size-slider::-moz-range-thumb {
 
 <!-- Mobile more sheet -->
 <div class="sheet-backdrop" id="mob-menu-backdrop" onclick="closeMobMenu()">
-  <div class="tag-sheet" id="mob-menu-sheet" onclick="event.stopPropagation()" style="padding:1rem;">
+  <div class="tag-sheet" id="mob-menu-sheet" onclick="event.stopPropagation()" style="padding:1rem;overflow-y:auto;-webkit-overflow-scrolling:touch;">
     <div class="sheet-handle"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;padding:.5rem 0;">
+    <div class="mob-action-row" style="display:flex;flex-wrap:wrap;gap:.4rem;padding:.5rem 0;">
+      <button class="btn" onclick="doScan();closeMobMenu()">&#10227; scan</button>
       <button class="btn" onclick="aiTagAll();closeMobMenu()">&#10022; ai tag all</button>
-      <a class="btn" href="/duplicates/" onclick="startProgress()" style="text-align:center;">&#9673; dupes</a>
-      <a class="btn" href="/logout/" style="text-align:center;color:var(--text-dim);">logout</a>
-      <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select posts</button>
-      <a class="btn" href="/tags/edit/" style="text-align:center;">&#9998; edit tags</a>
+      <a class="btn" href="/duplicates/" onclick="startProgress()">&#9673; dupes</a>
+      <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select</button>
+      <a class="btn" href="/tags/edit/">&#9998; edit tags</a>
+      <button class="btn" onclick="organizeSingles();closeMobMenu()">&#128193; tidy files</button>
+      <a class="btn" href="/shortcuts/">&#9000; keys</a>
+      <a class="btn" href="/logout/" style="color:var(--text-dim);">logout</a>
     </div>
     <!-- Preview size -->
     <div style="margin:.5rem 0;">
@@ -420,15 +455,12 @@ input[type=range].size-slider::-moz-range-thumb {
       </div>
       <button class="mode-btn full-preview-btn" id="mob-full-preview" onclick="toggleFullPreview()" style="width:100%;margin-top:.4rem;">&#9647; full-size previews</button>
       <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.4rem;">&#9889; reduce animations (faster)</button>
-    </div>
-    <!-- Zoom mode -->
-    <div style="margin:.5rem 0;">
-      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">pinch zoom (site)</div>
-      <div style="display:flex;gap:.4rem;">
-        <button class="mode-btn" id="mob-zoom-block" onclick="setZoomMode('block')">block page zoom</button>
-        <button class="mode-btn" id="mob-zoom-allow" onclick="setZoomMode('allow')">allow page zoom</button>
+      <button class="mode-btn tap-paged-btn" onclick="toggleTapPaged()" style="width:100%;margin-top:.4rem;">&#128433; tap item → paged mode</button>
+      <button class="mode-btn notif-btn" onclick="toggleNotif()" style="width:100%;margin-top:.4rem;">&#128276; task notifications</button>
+      <div style="margin-top:.55rem;">
+        <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);display:block;margin-bottom:.2rem;">swipe sensitivity</label>
+        <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
       </div>
-      <div style="font-family:var(--mono);font-size:.6rem;color:var(--text-dim);margin-top:.3rem;">block = image pinch-zoom only; allow = browser zoom whole page</div>
     </div>
   </div>
 </div>
@@ -484,6 +516,7 @@ input[type=range].size-slider::-moz-range-thumb {
 
 <div id="toast"></div>
 <div id="progress-bar-global"></div>
+<div id="task-panel"></div>
 
 <!-- Search syntax cheat sheet (shared: gallery sidebar + mobile tag sheet) -->
 <div class="modal-backdrop" id="cheat-modal" onclick="if(event.target===this)this.classList.remove('open')">
@@ -548,6 +581,98 @@ function toggleReduceMotion() {
   applyReduceMotion();
 }
 document.addEventListener('DOMContentLoaded', applyReduceMotion);
+
+/* ── Swipe sensitivity (post-to-post finger swipe) ─────────────
+   commit fraction = how far across the screen you must swipe to change post.
+   slider 1 (needs a big swipe) … 10 (tiny swipe). */
+function swipeCommitFrac() {
+  const v = parseFloat(localStorage.getItem('swipeCommit'));
+  return (v >= 0.10 && v <= 0.60) ? v : 0.28;
+}
+function sensToFrac(s) { s = parseInt(s) || 5; return +(0.45 - (s - 1) * (0.45 - 0.12) / 9).toFixed(3); }
+function fracToSens(f) { return Math.max(1, Math.min(10, Math.round((0.45 - f) / ((0.45 - 0.12) / 9) + 1))); }
+function setSwipeSens(s) {
+  localStorage.setItem('swipeCommit', sensToFrac(s));
+  const sl = document.getElementById('swipe-sens-slider');
+  if (sl && typeof updateSliderFill !== 'undefined') updateSliderFill(sl);
+}
+
+/* toggle: single tap on a scroll-mode item opens it in paged mode (default on) */
+function toggleTapPaged() {
+  const off = localStorage.getItem('disableTapPaged') === '1';
+  localStorage.setItem('disableTapPaged', off ? '0' : '1');   // flip
+  applyTapPagedBtn();
+}
+function applyTapPagedBtn() {
+  const on = localStorage.getItem('disableTapPaged') !== '1';   // active = enabled
+  document.querySelectorAll('.tap-paged-btn').forEach(b => b.classList.toggle('active', on));
+}
+document.addEventListener('DOMContentLoaded', applyTapPagedBtn);
+
+/* ── Background-task notifications ─────────────────────────────── */
+let _taskTimer = null, _hadRunning = false;
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates'};
+function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
+function renderTasks(tasks) {
+  const panel = document.getElementById('task-panel'); if (!panel) return;
+  if (localStorage.getItem('notifOff') === '1') { panel.innerHTML = ''; return; }
+  panel.innerHTML = tasks.map(t => {
+    const pct = t.total ? Math.round(t.done / t.total * 100) : (t.status === 'running' ? null : 100);
+    const label = TASK_LABELS[t.kind] || t.kind;
+    const st = t.status === 'error' ? 'failed' : (t.status === 'done' ? 'done' : 'running');
+    const right = t.status === 'running' ? fmtElapsed(t.elapsed)
+                 : `<span class="tc-x" onclick="clearTasks()">&#10005;</span>`;
+    const msg = (t.status === 'error' ? (t.error || 'error') : (t.message || '')).replace(/</g,'&lt;');
+    return `<div class="task-card ${t.status}">
+      <div class="tc-top"><span>${label} · ${st} · ${fmtElapsed(t.elapsed)}</span><span>${t.status==='running'?'':right}</span></div>
+      <div class="tc-msg">${msg}${t.total?` (${t.done}/${t.total})`:''}</div>
+      <div class="tc-bar"><div class="tc-fill" style="width:${pct==null?35:pct}%"></div></div>
+    </div>`;
+  }).join('');
+}
+async function pollTasks(force) {
+  // when notifications are off, skip polling entirely to reduce background traffic
+  if (!force && localStorage.getItem('notifOff') === '1') {
+    clearTimeout(_taskTimer); _taskTimer = setTimeout(() => pollTasks(), 30000);
+    return;
+  }
+  try {
+    const d = await (await fetch('/api/tasks/')).json();
+    renderTasks(d.tasks);
+    const running = d.tasks.some(t => t.status === 'running');
+    if (_hadRunning && !running && typeof reloadKeepingScroll !== 'undefined'
+        && document.getElementById('photo-grid')) {
+      setTimeout(() => reloadKeepingScroll(), 800);
+    }
+    _hadRunning = running;
+    clearTimeout(_taskTimer);
+    _taskTimer = setTimeout(() => pollTasks(), running ? 1500 : 8000);
+  } catch(e) {
+    clearTimeout(_taskTimer); _taskTimer = setTimeout(() => pollTasks(), 15000);
+  }
+}
+async function clearTasks() {
+  try { await fetch('/api/tasks/clear/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}}); } catch(e){}
+  pollTasks();
+}
+function toggleNotif() {
+  localStorage.setItem('notifOff', localStorage.getItem('notifOff') === '1' ? '0' : '1');
+  applyNotif();
+  // sync across devices
+  try {
+    fetch('/api/pref/set/', {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({key:'notifOff', value: localStorage.getItem('notifOff') === '1'})
+    }).catch(()=>{});
+  } catch(e) {}
+}
+function applyNotif() {
+  const off = localStorage.getItem('notifOff') === '1';
+  document.body.classList.toggle('notif-off', off);
+  document.querySelectorAll('.notif-btn').forEach(b => b.classList.toggle('active', !off));
+  if (off) { const p = document.getElementById('task-panel'); if (p) p.innerHTML = ''; }
+}
+document.addEventListener('DOMContentLoaded', () => { applyNotif(); pollTasks(); });
 
 /* ── Global progress bar ───────────────────────────────────────
    startProgress()  — begin an indeterminate action (creeps to 90%)
@@ -616,24 +741,37 @@ function toast(msg, type='ok') {
 
 /* ── Scan ────────────────────────────────────────────── */
 async function doScan() {
-  const btns = ['scan-btn','mob-scan'];
-  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
-  startProgress();
-  const r = await fetch('/api/scan/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
-  const d = await r.json();
-  doneProgress();
-  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
-  let msg = `+${d.added} added`;
-  if (d.removed > 0) msg += `, -${d.removed} removed`;
-  msg += ` (${d.total} total)`;
-  toast(msg);
-  if (d.added > 0 || d.removed > 0) setTimeout(() => location.reload(), 1000);
+  try {
+    await fetch('/api/scan-bg/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+    toast('scanning inbox in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start scan','err'); }
 }
 
 /* ── AI tag all ──────────────────────────────────────── */
 function goRandom() {
   const p = new URLSearchParams(window.location.search);
   window.location.href = '/random/?' + p.toString();
+}
+
+async function organizeSingles() {
+  if (!confirm('Tidy loose single files in the inbox root into month/day folders (inbox/YYYY-MM/DD/)?\n\nThis moves files on disk and updates their paths. Multi-image posts are left alone. Safe to run anytime.')) return;
+  startProgress();
+  try {
+    const d = await (await fetch('/api/organize-singles/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}})).json();
+    doneProgress();
+    toast(`tidied ${d.moved||0} file(s) into month/day folders`);
+  } catch(e) { doneProgress(); toast('error tidying files','err'); }
+}
+
+async function organizeSinglesDeep() {
+  if (!confirm('Re-tidy ALL files (including ones already in subdirectories) into month/day folders (inbox/YYYY-MM/DD/)?\n\nRun this once after upgrading to day folders. Safe to run again — files already in the right place are skipped.')) return;
+  startProgress();
+  try {
+    const d = await (await fetch('/api/organize-singles-deep/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}})).json();
+    doneProgress();
+    toast(`re-tidied ${d.moved||0} file(s)`);
+  } catch(e) { doneProgress(); toast('error','err'); }
 }
 
 async function organizeMerged() {
@@ -650,15 +788,12 @@ async function organizeMerged() {
 
 
 async function aiTagAll() {
-  const btns = ['ai-all-btn','mob-ai'];
-  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=true;} });
-  startProgress();
-  const r = await fetch('/api/ai-tag-all/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
-  const d = await r.json();
-  doneProgress();
-  btns.forEach(id => { const b=document.getElementById(id); if(b){b.disabled=false;} });
-  toast(`tagged ${d.count} photo(s)`);
-  if (d.count > 0) setTimeout(() => location.reload(), 1200);
+  if (!confirm('AI auto-tag all untagged posts in the background?\nThis can take a while; you can keep using or close the site.')) return;
+  try {
+    await fetch('/api/ai-tag-all-bg/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+    toast('ai tagging in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start ai tagging','err'); }
 }
 
 /* ── Upload modal ────────────────────────────────────── */
@@ -767,13 +902,24 @@ function pushRecentSearch(query) {
   pushRecentSync();
 }
 function recordRecentPost(entry) {
+  // Write to localStorage immediately so THIS device's strip updates right away
+  // without waiting for the network round-trip.
   try {
+    entry.t = Date.now();
     let seen = JSON.parse(localStorage.getItem('recentPosts') || '[]');
-    // append each visit as a new entry (sequential viewing log, no dedup)
-    // cap at 50 so it doesn't grow forever
+    seen = seen.filter(x => x && x.id !== entry.id); // move to front (dedup by id)
     seen.unshift(entry);
     localStorage.setItem('recentPosts', JSON.stringify(seen.slice(0, 50)));
-    pushRecentSync();
+  } catch(e) {}
+  // Then atomically prepend on the server so ALL devices see the correct order.
+  // Using a dedicated endpoint (not a full-array push) means no device can
+  // overwrite another's views — each call just adds one entry at the front.
+  try {
+    fetch('/api/recent/add/', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},
+      body: JSON.stringify(entry)
+    }).catch(() => {});
   } catch(e) {}
 }
 
@@ -784,20 +930,75 @@ async function pullRecent() {
   try {
     const d = await (await fetch('/api/prefs/')).json();
     const p = d.prefs || {};
-    _SYNC_KEYS.forEach(k => { if (p[k] !== undefined) localStorage.setItem(k, JSON.stringify(p[k])); });
+    // recentPosts: server is the source of truth (atomic appends keep true
+    // global order). Take the SERVER order as-is — do not sort by client
+    // timestamp (device clock skew would cluster posts by device). Any local
+    // view that hasn't synced yet is prepended (it's the most recent here).
+    {
+      let local = []; try { local = JSON.parse(localStorage.getItem('recentPosts') || '[]'); } catch(e){}
+      const server = Array.isArray(p.recentPosts) ? p.recentPosts : [];
+      const serverIds = new Set(server.map(x => x && x.id));
+      const localOnly = local.filter(x => x && x.id && !serverIds.has(x.id));
+      const combined = [...localOnly, ...server];
+      const seen = new Set(); const out = [];
+      for (const x of combined) { if (!x || !x.id || seen.has(x.id)) continue; seen.add(x.id); out.push(x); }
+      localStorage.setItem('recentPosts', JSON.stringify(out.slice(0, 50)));
+      // push any local-only entries up to the server so it's complete
+      for (const x of localOnly) {
+        fetch('/api/recent/add/', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},
+          body: JSON.stringify(x)
+        }).catch(() => {});
+      }
+    }
+    // recentSearches / recentTags: dedup-by-value lists → union, local first.
+    if (Array.isArray(p.recentSearches)) {
+      let local = []; try { local = JSON.parse(localStorage.getItem('recentSearches') || '[]'); } catch(e){}
+      const out = []; const seen = new Set();
+      for (const q of [...local, ...p.recentSearches]) { if (!q || seen.has(q)) continue; seen.add(q); out.push(q); }
+      localStorage.setItem('recentSearches', JSON.stringify(out.slice(0, 12)));
+    }
+    if (Array.isArray(p.recentTags)) {
+      let local = []; try { local = JSON.parse(localStorage.getItem('recentTags') || '[]'); } catch(e){}
+      const out = []; const seen = new Set();
+      for (const t of [...local, ...p.recentTags]) { if (!t || !t.name || seen.has(t.name)) continue; seen.add(t.name); out.push(t); }
+      localStorage.setItem('recentTags', JSON.stringify(out.slice(0, 16)));
+    }
+    // synced UI toggle: notifications on/off (disabling on phone hides on PC too)
+    if (p.notifOff !== undefined) {
+      localStorage.setItem('notifOff', p.notifOff ? '1' : '0');
+      if (typeof applyNotif !== 'undefined') applyNotif();
+    }
+  } catch(e) {}
+}
+// push one key to the server.
+// keepalive=true only when called during page-unload (navigation away);
+// for normal in-page pushes (page load, consolidation) use keepalive=false
+// so iOS Safari doesn't silently drop the request.
+function pushRecentKey(k, keepalive) {
+  let v; try { v = JSON.parse(localStorage.getItem(k) || '[]'); } catch(e) { v = []; }
+  const url = '/api/pref/set/';
+  const body = JSON.stringify({key: k, value: v});
+  const csrf = getCsrf();
+  if (keepalive && navigator.sendBeacon) {
+    // sendBeacon is the most reliable way to fire a request during unload
+    const fd = new FormData();
+    fd.append('_json', body);
+    // our endpoint expects JSON body → fall back to fetch+keepalive if sendBeacon can't carry it
+  }
+  try {
+    fetch(url, {
+      method: 'POST',
+      keepalive: !!keepalive,
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf},
+      body: body
+    }).catch(() => {});
   } catch(e) {}
 }
 function pushRecentSync() {
   clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(() => {
-    _SYNC_KEYS.forEach(k => {
-      let v; try { v = JSON.parse(localStorage.getItem(k) || '[]'); } catch(e) { v = []; }
-      fetch('/api/pref/set/', {
-        method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-        body: JSON.stringify({key:k, value:v})
-      }).catch(()=>{});
-    });
-  }, 900);
+  _syncTimer = setTimeout(() => { _SYNC_KEYS.forEach(k => pushRecentKey(k, true)); }, 250);
 }
 async function initRecentSync() {
   await pullRecent();
@@ -979,6 +1180,9 @@ function openMobMenu() {
     if (typeof toggleFullPreview === 'undefined') { fpBtn.style.display = 'none'; }
     else { fpBtn.style.display = ''; fpBtn.classList.toggle('active', localStorage.getItem('fullPreview') === '1'); }
   }
+  // swipe sensitivity slider reflects the stored value
+  const ss = document.getElementById('swipe-sens-slider');
+  if (ss) { ss.value = fracToSens(swipeCommitFrac()); if (typeof updateSliderFill !== 'undefined') updateSliderFill(ss); }
   // fav filter
   const favEl = document.getElementById('mob-fav-filter');
   if (favEl) favEl.classList.toggle('active', p.get('fav')==='1');
@@ -994,10 +1198,6 @@ function openMobMenu() {
   const saved = localStorage.getItem('gridSize');
   const sl = document.getElementById('mob-size-slider');
   if (sl && saved) sl.value = saved;
-  // zoom mode buttons
-  const zMode = localStorage.getItem('zoomMode') || 'block';
-  document.getElementById('mob-zoom-block')?.classList.toggle('active', zMode === 'block');
-  document.getElementById('mob-zoom-allow')?.classList.toggle('active', zMode === 'allow');
   document.getElementById('mob-menu-backdrop').classList.add('open');
   setTimeout(() => { const sl=document.getElementById('mob-size-slider'); if(sl&&typeof updateSliderFill!=='undefined') updateSliderFill(sl); }, 50);
 }
@@ -1034,31 +1234,6 @@ function closeUploadModal() {
   inner.addEventListener('touchend', ()=>{ tracking=false; },{passive:true});
 })();
 
-function setZoomMode(mode) {
-  localStorage.setItem('zoomMode', mode);
-  applyZoomMode(mode);
-  const blockBtn = document.getElementById('mob-zoom-block');
-  const allowBtn = document.getElementById('mob-zoom-allow');
-  if (blockBtn) blockBtn.classList.toggle('active', mode === 'block');
-  if (allowBtn) allowBtn.classList.toggle('active', mode === 'allow');
-}
-
-function applyZoomMode(mode) {
-  const meta = document.querySelector('meta[name="viewport"]');
-  if (!meta) return;
-  if (mode === 'allow') {
-    meta.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
-  } else {
-    meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover';
-  }
-}
-
-// Apply saved zoom mode on load
-(function() {
-  const saved = localStorage.getItem('zoomMode') || 'block';
-  applyZoomMode(saved);
-})();
-
 function filterSheetTags(q) {  // kept for back-compat (unused)
   q = (q||'').toLowerCase();
   document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
@@ -1072,7 +1247,7 @@ function filterSheetTags(q) {  // kept for back-compat (unused)
 function _attachSheetDismiss(sheetId, scrollSel, closeFn) {
   const sheet = document.getElementById(sheetId);
   if (!sheet) return;
-  const scroller = scrollSel ? sheet.querySelector(scrollSel) : null;
+  const scroller = scrollSel === 'self' ? sheet : (scrollSel ? sheet.querySelector(scrollSel) : null);
   let startY = 0, atTop = false, tracking = false;
   sheet.addEventListener('touchstart', e => {
     if (e.touches.length !== 1) { tracking = false; return; }
@@ -1089,7 +1264,7 @@ function _attachSheetDismiss(sheetId, scrollSel, closeFn) {
 }
 document.addEventListener('DOMContentLoaded', () => {
   _attachSheetDismiss('tag-sheet', '#sheet-tag-list', closeTagSheet);
-  _attachSheetDismiss('mob-menu-sheet', null, closeMobMenu);
+  _attachSheetDismiss('mob-menu-sheet', 'self', closeMobMenu);
 });
 </script>
 

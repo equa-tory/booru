@@ -10,7 +10,7 @@ from django.db.models import Q, Case, When, IntegerField, F
 from django.db.models.functions import Mod
 from django.conf import settings
 
-from .models import Post, Photo, Tag
+from .models import Post, Photo, Tag, Task
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos)
@@ -190,6 +190,12 @@ def _build_post_qs(request):
         posts = posts.order_by('-rating', '-added_at')
     elif sort_by == 'fav':
         posts = posts.order_by('-fav', '-added_at')
+    elif sort_by == 'rated_time':
+        # most recently rated first; unrated posts fall to the bottom
+        posts = posts.filter(rated_at__isnull=False).order_by('-rated_at')
+    elif sort_by == 'faved_time':
+        # most recently favorited first; only favorited posts
+        posts = posts.filter(fav=True, faved_at__isnull=False).order_by('-faved_at')
     elif sort_by == 'random':
         seed = request.GET.get('seed', '')
         if seed.isdigit():
@@ -295,7 +301,7 @@ def index(request):
         'sort_by': sort_by,
         'multi_only': request.GET.get('multi_only',''),
         'single_only': request.GET.get('single_only',''),
-        'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('random','random')],
+        'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
     })
 
 
@@ -447,7 +453,12 @@ def duplicates(request):
             if not _comparable(p, q): continue
             pair = tuple(sorted([p['post_id'], q['post_id']]))
             if pair in ignored_pairs: continue
-            if phash_distance(p['phash'], q['phash']) <= 8:
+            # Video thumbnails (often dark/title frames) collide far too easily,
+            # so require a near-exact match for video-vs-video; images/gifs keep
+            # the looser perceptual threshold.
+            both_video = p['is_video'] and q['is_video']
+            threshold = 2 if both_video else 8
+            if phash_distance(p['phash'], q['phash']) <= threshold:
                 group.append(q)
                 used.add(q['post_id'])
         if len(group) > 1:
@@ -458,6 +469,191 @@ def duplicates(request):
 
 
 # ── Scan / upload ──────────────────────────────────────────────
+
+# ── Background tasks ────────────────────────────────────────────
+import threading
+import traceback
+from django.utils import timezone
+
+
+def _start_task(kind, fn, total=0, message=''):
+    """Create a Task row and run `fn(task)` in a background thread so the work
+    survives the page being closed and its progress is visible to every worker
+    (state lives in the DB)."""
+    task = Task.objects.create(kind=kind, total=total, message=message)
+    tid = task.id
+
+    def runner():
+        from django.db import connection
+        try:
+            t = Task.objects.get(pk=tid)
+            fn(t)
+            t.refresh_from_db()
+            if t.status == 'running':
+                t.status = 'done'
+                t.finished_at = timezone.now()
+                t.save()
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                t = Task.objects.get(pk=tid)
+                t.status = 'error'
+                t.error = str(e)[:2000]
+                t.finished_at = timezone.now()
+                t.save()
+            except Exception:
+                pass
+        finally:
+            connection.close()
+
+    threading.Thread(target=runner, daemon=True).start()
+    return task
+
+
+def tasks_list(request):
+    """Active tasks + recently finished ones (last few minutes), with elapsed
+    time. The frontend polls this to show progress / notifications."""
+    cutoff = timezone.now() - timezone.timedelta(minutes=5)
+    qs = Task.objects.filter(Q(status='running') | Q(finished_at__gte=cutoff))[:20]
+    out = []
+    for t in qs:
+        out.append({
+            'id': t.id, 'kind': t.kind, 'status': t.status,
+            'done': t.done, 'total': t.total, 'message': t.message,
+            'error': t.error, 'elapsed': t.elapsed,
+            'finished': bool(t.finished_at),
+        })
+    return JsonResponse({'tasks': out})
+
+
+@require_POST
+def tasks_clear(request):
+    """Dismiss finished/errored tasks from the list."""
+    Task.objects.exclude(status='running').delete()
+    return JsonResponse({'ok': True})
+
+
+# ── Background variants of the heavy operations ─────────────────
+def _do_scan(task):
+    removed = 0
+    for photo in Photo.objects.all():
+        if not os.path.exists(photo.file_path):
+            if photo.thumb_path and os.path.exists(photo.thumb_path):
+                try: os.remove(photo.thumb_path)
+                except OSError: pass
+            photo.delete(); removed += 1
+    empty = Post.objects.filter(images__isnull=True)
+    removed += empty.count(); empty.delete()
+    for tag in Tag.objects.all(): tag.update_count()
+    Tag.objects.filter(count=0).delete()
+
+    task.message = 'scanning inbox…'; task.save(update_fields=['message'])
+    new_posts, extend_posts = scan_inbox()
+    task.total = len(new_posts) + len(extend_posts); task.save(update_fields=['total'])
+    added = 0
+    for i, (title, paths) in enumerate(new_posts):
+        create_post_from_files(paths, title=title)
+        added += len(paths)
+        task.done = i + 1; task.message = f'added {added} file(s)'; task.save(update_fields=['done', 'message'])
+    base = len(new_posts)
+    for j, (post, paths) in enumerate(extend_posts):
+        start_order = post.images.count()
+        for k, path in enumerate(sorted(paths)):
+            ingest_photo(path, post, order=start_order + k)
+        added += len(paths)
+        task.done = base + j + 1; task.save(update_fields=['done'])
+    # fix placeholder video/pdf thumbs
+    for photo in Photo.objects.filter(is_video=True):
+        if not photo.thumb_path or not os.path.exists(photo.thumb_path) or os.path.getsize(photo.thumb_path) < 5000:
+            thumb = make_video_thumb(photo.file_path)
+            if thumb: photo.thumb_path = thumb; photo.save(update_fields=['thumb_path'])
+    task.message = f'added {added}, removed {removed} (total {Post.objects.count()})'
+    task.save(update_fields=['message'])
+
+
+@require_POST
+def scan_bg(request):
+    return JsonResponse({'task_id': _start_task('scan', _do_scan, message='scan starting…').id})
+
+
+def _merge_one_group(group):
+    from .utils import move_post_to_folder
+    group = [g for g in group if g]
+    if len(group) < 2:
+        return
+    target_id, source_ids = group[0], group[1:]
+    try:
+        target = Post.objects.get(pk=target_id)
+    except Post.DoesNotExist:
+        return
+    max_order = target.images.count()
+    for src_id in source_ids:
+        try:
+            src = Post.objects.get(pk=src_id)
+        except Post.DoesNotExist:
+            continue
+        try:
+            n = src.images.count()
+            for i, photo in enumerate(src.images.order_by('order', 'id')):
+                photo.post = target; photo.order = max_order + i
+                photo.save(update_fields=['post', 'order'])
+            max_order += n
+            for tag in src.tags.all(): target.tags.add(tag)
+            src.delete()
+        except Exception as e:
+            print(f'merge error src {src_id}: {e}')
+    for tag in target.tags.all(): tag.update_count()
+    cover = target.cover
+    if cover:
+        folder_base = os.path.splitext(os.path.basename(cover.file_path))[0]
+        if not target.title:
+            target.title = folder_base; target.save(update_fields=['title'])
+        try: move_post_to_folder(target, folder_base)
+        except Exception as e: print(f'merge folder move error: {e}')
+
+
+@require_POST
+def merge_bg(request):
+    """Merge many groups in the background. body: {groups: [[target, src,…], …]}"""
+    data = json.loads(request.body)
+    groups = [g for g in data.get('groups', []) if len(g) >= 2]
+    if not groups:
+        return JsonResponse({'error': 'no groups'}, status=400)
+
+    def work(task):
+        import time as _t
+        for i, group in enumerate(groups):
+            _merge_one_group(group)
+            task.done = i + 1
+            task.message = f'merged {i + 1}/{len(groups)} group(s)'
+            task.save(update_fields=['done', 'message'])
+            _t.sleep(0)   # let other requests (and the progress poll) interleave
+
+    return JsonResponse({'task_id': _start_task('merge', work, total=len(groups),
+                                                message='merging…').id})
+
+
+@require_POST
+def ai_tag_all_bg(request):
+    def work(task):
+        import time as _t
+        posts = list(Post.objects.filter(ai_tagged=False))
+        task.total = len(posts); task.save(update_fields=['total'])
+        for i, post in enumerate(posts):
+            cover = post.images.order_by('order', 'id').first()
+            if cover:
+                try:
+                    tags = run_ai_tagger(cover.file_path, cover.thumb_path)
+                    add_tags_to_post(post, tags, category='ai')
+                    post.ai_tagged = True; post.save(update_fields=['ai_tagged'])
+                except Exception as e:
+                    print(f'ai-tag error post {post.id}: {e}')
+            task.done = i + 1
+            task.message = f'tagged {i + 1}/{len(posts)} post(s)'
+            task.save(update_fields=['done', 'message'])
+            _t.sleep(0)
+    return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…').id})
+
 
 @require_POST
 def scan(request):
@@ -636,11 +832,22 @@ def rate_post(request, pk):
     data   = json.loads(request.body)
     rating = data.get('rating', None)
     fav    = data.get('fav', None)
+    fields = []
     if rating is not None:
-        post.rating = max(0, min(5, int(rating)))
+        new_rating = max(0, min(5, int(rating)))
+        if new_rating != post.rating:
+            post.rated_at = timezone.now()
+            fields.append('rated_at')
+        post.rating = new_rating
+        fields.append('rating')
     if fav is not None:
-        post.fav = bool(fav)
-    post.save(update_fields=['rating', 'fav'])
+        new_fav = bool(fav)
+        if new_fav and not post.fav:
+            post.faved_at = timezone.now()   # stamp only when newly favorited
+            fields.append('faved_at')
+        post.fav = new_fav
+        fields.append('fav')
+    post.save(update_fields=fields or ['rating', 'fav'])
     return JsonResponse({'rating': post.rating, 'fav': post.fav})
 
 
@@ -975,6 +1182,105 @@ def organize_existing_merged(request):
             moved += 1
         except Exception as e:
             print(f"organize error post {post.pk}: {e}")
+    return JsonResponse({'ok': True, 'moved': moved})
+
+
+@require_POST
+def organize_singles(request):
+    """Tidy loose single-image files sitting directly in the inbox ROOT into
+    per-month folders (inbox/YYYY-MM/) so the root isn't one giant directory
+    that's slow to open in a file manager. Multi-image posts (inbox/_/…) and
+    files already inside a subfolder are left alone. Idempotent + safe: it just
+    moves the file and updates its stored path (thumbnails are unaffected)."""
+    inbox = os.path.join(settings.MEDIA_ROOT, 'inbox')
+    inbox_norm = os.path.normpath(inbox)
+    moved = 0
+    for post in Post.objects.prefetch_related('images').all():
+        imgs = list(post.images.all())
+        if len(imgs) != 1:
+            continue                       # only loose single-image posts
+        photo = imgs[0]
+        fp = photo.file_path
+        if not fp or not os.path.exists(fp):
+            continue
+        if os.path.normpath(os.path.dirname(fp)) != inbox_norm:
+            continue                       # already in a subfolder (or _/)
+        # bucket by the file's own modified date (the real capture/download
+        # date). Nested as YYYY-MM/DD so the top level stays a short list of
+        # months and each month splits into day folders.
+        try:
+            import datetime as _dt
+            d = _dt.datetime.fromtimestamp(os.path.getmtime(fp))
+            bucket = os.path.join(d.strftime('%Y-%m'), d.strftime('%d'))
+        except OSError:
+            bucket = (post.added_at.strftime('%Y-%m') if post.added_at else 'misc')
+        dest_dir = os.path.join(inbox, bucket)
+        os.makedirs(dest_dir, exist_ok=True)
+        base = os.path.basename(fp)
+        dest = os.path.join(dest_dir, base)
+        if os.path.exists(dest):           # name collision → numeric suffix
+            stem, ext = os.path.splitext(base)
+            i = 1
+            while os.path.exists(os.path.join(dest_dir, f'{stem}_{i}{ext}')):
+                i += 1
+            dest = os.path.join(dest_dir, f'{stem}_{i}{ext}')
+        try:
+            os.rename(fp, dest)
+            photo.file_path = dest
+            photo.save(update_fields=['file_path'])
+            moved += 1
+        except OSError as e:
+            print(f"organize_singles error post {post.pk}: {e}")
+    return JsonResponse({'ok': True, 'moved': moved})
+
+
+@require_POST
+def organize_singles_deep(request):
+    """One-shot deep retidy: moves files that are ALREADY in subdirectories
+    (e.g. inbox/YYYY-MM/ from a previous tidy run) into the full
+    inbox/YYYY-MM/DD/ structure. Skips inbox/_/ (multi-post folders) and files
+    already in the correct 3-part path. Run once after upgrading to day folders."""
+    inbox = os.path.join(settings.MEDIA_ROOT, 'inbox')
+    multi_root = os.path.normpath(os.path.join(inbox, '_'))
+    moved = 0
+    for post in Post.objects.prefetch_related('images').all():
+        imgs = list(post.images.all())
+        if len(imgs) != 1:
+            continue
+        photo = imgs[0]
+        fp = photo.file_path
+        if not fp or not os.path.exists(fp):
+            continue
+        fp_norm = os.path.normpath(fp)
+        fp_dir = os.path.normpath(os.path.dirname(fp_norm))
+        # skip anything inside inbox/_/
+        if fp_dir.startswith(multi_root + os.sep) or fp_dir == multi_root:
+            continue
+        try:
+            import datetime as _dt
+            d = _dt.datetime.fromtimestamp(os.path.getmtime(fp))
+            target_dir = os.path.normpath(os.path.join(inbox, d.strftime('%Y-%m'), d.strftime('%d')))
+        except OSError:
+            continue
+        # already in the right place
+        if fp_dir == target_dir:
+            continue
+        os.makedirs(target_dir, exist_ok=True)
+        base = os.path.basename(fp)
+        dest = os.path.join(target_dir, base)
+        if os.path.exists(dest):
+            stem, ext = os.path.splitext(base)
+            i = 1
+            while os.path.exists(os.path.join(target_dir, f'{stem}_{i}{ext}')):
+                i += 1
+            dest = os.path.join(target_dir, f'{stem}_{i}{ext}')
+        try:
+            os.rename(fp, dest)
+            photo.file_path = dest
+            photo.save(update_fields=['file_path'])
+            moved += 1
+        except OSError as e:
+            print(f'organize_singles_deep error post {post.pk}: {e}')
     return JsonResponse({'ok': True, 'moved': moved})
 
 
@@ -1334,6 +1640,37 @@ def set_pref(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'ok': True})
+
+
+@require_POST
+def recent_add(request):
+    """Atomically prepend a post-view event to the server-side recents list.
+    Because this is a read-modify-write on the server (not a client push of the
+    full local array), multiple devices can call it simultaneously without one
+    overwriting the other's data — each POST just adds one entry at the front."""
+    data = json.loads(request.body)
+    entry = {k: data[k] for k in ('id', 'thumb', 'url', 't') if k in data}
+    if not entry.get('id'):
+        return JsonResponse({'error': 'no id'}, status=400)
+    entry['t'] = entry.get('t') or int(__import__('time').time() * 1000)
+    try:
+        with open(_prefs_path()) as f:
+            prefs = json.load(f)
+    except Exception:
+        prefs = {}
+    recents = prefs.get('recentPosts', [])
+    if not isinstance(recents, list):
+        recents = []
+    # remove any existing entry for this post (so it moves to front)
+    recents = [r for r in recents if r.get('id') != entry['id']]
+    recents.insert(0, entry)
+    prefs['recentPosts'] = recents[:50]
+    try:
+        with open(_prefs_path(), 'w') as f:
+            json.dump(prefs, f)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+    return JsonResponse({'ok': True, 'recents': prefs['recentPosts']})
 
 
 def login_view(request):

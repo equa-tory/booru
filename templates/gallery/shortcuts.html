@@ -80,7 +80,10 @@ function renderGroups() {
       ${g.actions.map(([id,lbl]) => `
         <div class="sc-row">
           <span class="lbl">${lbl}</span>
-          <button class="sc-key" id="sck_${id}" onclick="capture('${id}', this)">${keyLabel(CUR[id])}</button>
+          <span style="display:flex;gap:.4rem;align-items:center;">
+            <button class="sc-key" id="sck_${id}" onclick="capture('${id}', this)">${keyLabel(CUR[id])}</button>
+            <button class="sc-key" style="min-width:0;padding:.35rem .5rem;color:var(--danger);" title="clear this shortcut" onclick="clearOne('${id}')">&#10005;</button>
+          </span>
         </div>`).join('')}
     </div>`).join('');
 }
@@ -108,6 +111,11 @@ function saveBindings() {
     method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
     body: JSON.stringify({key:'keyBindings', value:CUR})
   }).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS, CUR); toast('saved'); });
+}
+function clearOne(id) {
+  CUR[id] = '';
+  renderGroups();
+  saveBindings();
 }
 function resetBindings() {
   if (!confirm('Reset all shortcuts to defaults?')) return;

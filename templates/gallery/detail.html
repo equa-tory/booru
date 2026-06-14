@@ -74,8 +74,37 @@
 @media (max-width:640px) {
   .view-scroll .filmstrip { display:flex; }
   .view-scroll #filmstrip-controls { display:flex; }
+
+  /* ── Three on-phone UI behaviors ────────────────────────────────
+     • scroll mode (multi): all UI shown (handled elsewhere) — no rules here.
+     • paged mode (multi): image fullscreen, all chrome hidden; a tap reveals
+       ONLY the rating panel + scroll-mode button (body.tapped).
+     • single-image post: all UI shown by default; a tap hides everything for a
+       fullscreen image (body.is-single.tapped). The mode button is pointless
+       for a single image, so it's hidden there. */
+
+  /* paged + multi: chrome always hidden */
+  body.mode-paged:not(.is-single) header,
+  body.mode-paged:not(.is-single) .mobile-nav,
+  body.mode-paged:not(.is-single) .mob-float-btns,
+  body.mode-paged:not(.is-single) .img-topbar,
+  body.mode-paged:not(.is-single) .filmstrip,
+  body.mode-paged:not(.is-single) #filmstrip-controls { display:none !important; }
+  /* paged + multi: rating + mode button hidden until a tap */
+  body.mode-paged:not(.is-single):not(.tapped) .mob-rate-pop,
+  body.mode-paged:not(.is-single):not(.tapped) #mode-toggle-fixed { display:none !important; }
+
+  /* single post: no mode toggle (nothing to switch to) */
+  body.is-single #mode-toggle-fixed { display:none !important; }
+  /* single post: a tap hides EVERYTHING for a clean fullscreen image */
+  body.is-single.tapped header,
+  body.is-single.tapped .mobile-nav,
+  body.is-single.tapped .mob-float-btns,
+  body.is-single.tapped .img-topbar,
+  body.is-single.tapped .mob-rate-pop,
+  body.is-single.tapped .nav-arrow { display:none !important; }
 }
-.view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:20vh 8px 45vh; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y pinch-zoom; }
+.view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:20vh 8px 45vh; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y; }
 .scroll-img { max-width:100%; display:block; border-radius:2px; }
 
 /* Topbar */
@@ -559,10 +588,6 @@ function renderPdfContainer(url) {
   }
 }
 
-function isBrowserZoomAllowed() {
-  return localStorage.getItem('zoomMode') === 'allow';
-}
-
 function applyViewMode(mode) {
   viewMode = mode;
   localStorage.setItem('viewMode', mode);
@@ -577,17 +602,40 @@ function applyViewMode(mode) {
   const fixedBtn = document.getElementById('mode-toggle-fixed');
   if (fixedBtn) fixedBtn.textContent = label;
   const topbar = document.getElementById('img-topbar');
+  // post type drives which UI-hiding behavior applies
+  document.body.classList.toggle('is-single', !IS_MULTI);
+  document.body.classList.toggle('mode-paged', mode === 'paged');
+  document.body.classList.toggle('mode-scroll', mode === 'scroll');
+  document.body.classList.remove('tapped');   // reset tap state on mode change
   if (mode === 'scroll') {
     topbar.style.position = 'relative';
     topbar.style.background = 'rgba(0,0,0,.85)';
     topbar.style.padding = '.5rem .6rem';
+    // Position the scroll container BEFORE the IntersectionObserver starts
+    // watching. If we set scrollTop after setupScrollLazy, the observer fires
+    // for items at position 0, then the sudden jump to paddingTop triggers
+    // another wave of callbacks → rapid load/unload → visible trembling.
+    const sc = document.getElementById('scroll-container');
+    if (sc) {
+      const pt = parseFloat(getComputedStyle(sc).paddingTop) || 0;
+      sc.scrollTop = pt;
+    }
     setupScrollLazy();
     setTimeout(initScrollZoom, 50);
   } else {
+    // paged: image fills the screen (chrome handled by body classes + CSS)
     topbar.style.position = 'absolute';
     topbar.style.background = '';
     topbar.style.padding = '';
   }
+}
+
+// tap in paged mode toggles the UI:
+//  • multi post → reveals/hides the rating panel + scroll-mode button
+//  • single post → UI is always shown; this function is a no-op (guard)
+function togglePagedChrome() {
+  if (!IS_MULTI) return;   // single posts always show UI — never hide it
+  document.body.classList.toggle('tapped');
 }
 
 // Lazy-load scroll-mode images as they near the viewport and UNLOAD them once
@@ -626,6 +674,16 @@ function toggleViewMode() {
   }).catch(()=>{});
 }
 function isMobileDetail() { return window.innerWidth <= 640; }
+
+// open a single item (tapped in scroll mode) in paged mode, without changing
+// the saved default (scroll stays the default for future posts)
+function openPagedAt(el) {
+  const all = [...document.querySelectorAll('.scroll-container .scroll-img')];
+  const idx = all.indexOf(el);
+  if (idx < 0) return;
+  applyViewMode('paged');
+  selectImage(idx, document.querySelectorAll('.filmstrip-item')[idx]);
+}
 
 function setScrollImgSizeMobile(val) {
   // val: 0=50%(tiny), 50=100%(default), 100=200%(zoomed)
@@ -696,6 +754,21 @@ function selectImage(idx, thumbEl) {
   if (thumbEl) { const el = thumbEl.closest ? thumbEl.closest('.filmstrip-item') : thumbEl; el.scrollIntoView({behavior:'smooth', inline:'nearest', block:'nearest'}); }
   updateArrows();
   updateFilePath();
+  preloadNeighbors(idx);
+}
+
+// Warm the browser cache with adjacent full-res images so swiping to the next
+// item in a post shows it instantly instead of a brief blank/load after the
+// swipe animation. Videos/PDFs are skipped (too heavy to prefetch).
+const _preloadedUrls = new Set();
+function preloadNeighbors(idx) {
+  [idx - 1, idx + 1, idx + 2].forEach(i => {
+    if (i < 0 || i >= IMAGES.length) return;
+    const it = IMAGES[i];
+    if (!it || it.is_video || it.is_pdf || !it.url || _preloadedUrls.has(it.url)) return;
+    _preloadedUrls.add(it.url);
+    const im = new Image(); im.decoding = 'async'; im.src = it.url;
+  });
 }
 
 function updateArrows() {
@@ -714,17 +787,13 @@ function prevImage() {
 /* ── Pinch-zoom + pan + double-tap ────────────────────────── */
 let zoomScale = 1;
 
+// Double-tap to zoom + pan. No pinch — pinch is disabled.
 function attachZoom(el, wrapper, lockPointer=true) {
   if (!el) return;
-  if (isBrowserZoomAllowed()) return;
   el.style.transformOrigin = 'center center';
-  let scale=1, startDist=0, panX=0, panY=0, panSX=0, panSY=0, panning=false;
-  let wasPinching=false; // track if last gesture was a pinch
+  let scale=1, panX=0, panY=0, panSX=0, panSY=0, panning=false;
 
   function apply() {
-    // Clamp panning so you can't drag the image past its own edges. The on-
-    // screen offset is scale*pan (translate happens inside the scale), so the
-    // max pan in element units is overflow/scale on each axis.
     const contW = (el.parentElement ? el.parentElement.clientWidth : el.clientWidth) || 1;
     const contH = (el.parentElement ? el.parentElement.clientHeight : el.clientHeight) || 1;
     const elW = el.clientWidth  || contW;
@@ -739,74 +808,47 @@ function attachZoom(el, wrapper, lockPointer=true) {
     el.style.touchAction = scale > 1 ? 'none' : '';
   }
 
+  // Pan when zoomed in
   el.addEventListener('touchstart', e => {
-    if (e.touches.length===2) {
-      wasPinching = true;
-      panning = false;
-      startDist = Math.hypot(
-        e.touches[0].clientX-e.touches[1].clientX,
-        e.touches[0].clientY-e.touches[1].clientY
-      );
+    if (e.touches.length !== 1) return;
+    if (scale > 1) {
+      panning = true;
+      panSX = e.touches[0].clientX - panX;
+      panSY = e.touches[0].clientY - panY;
       el.style.touchAction = 'none';
-    } else if (e.touches.length===1) {
-      wasPinching = false;
-      if (scale>1) {
-        panning=true;
-        panSX=e.touches[0].clientX-panX;
-        panSY=e.touches[0].clientY-panY;
-        el.style.touchAction = 'none';
-      }
     }
   }, {passive:true});
 
   el.addEventListener('touchmove', e => {
-    if (e.touches.length===2) {
-      e.preventDefault();          // own the pinch; stop page/swipe interference
-      const d=Math.hypot(
-        e.touches[0].clientX-e.touches[1].clientX,
-        e.touches[0].clientY-e.touches[1].clientY
-      );
-      scale = Math.max(1, Math.min(5, scale * d / startDist));
-      startDist = d;
-      apply();
-    } else if (panning && scale>1 && e.touches.length===1) {
+    if (panning && scale > 1 && e.touches.length === 1) {
       e.preventDefault();
-      panX=e.touches[0].clientX-panSX;
-      panY=e.touches[0].clientY-panSY;
+      panX = e.touches[0].clientX - panSX;
+      panY = e.touches[0].clientY - panSY;
       apply();
     }
   }, {passive:false});
 
   el.addEventListener('touchend', e => {
-    if (e.touches.length===0) {
+    if (e.touches.length === 0) {
       panning = false;
-      wasPinching = false;
-      // NEVER auto-reset scale on finger lift — only double-tap can reset
-      // (clamp below 1 only, to prevent negative scale)
       if (scale < 1) { scale=1; apply(); }
-      // hand touch-action back when not zoomed so scrolling works again
       el.style.touchAction = scale > 1 ? 'none' : '';
-    } else if (e.touches.length===1 && wasPinching) {
-      // 2 fingers -> 1: seamlessly switch to pan mode
-      wasPinching = false;
-      panning = true;
-      panSX = e.touches[0].clientX - panX;
-      panSY = e.touches[0].clientY - panY;
     }
   }, {passive:true});
 
-  // Double-tap to zoom/reset
-  let lastTap=0;
-  (wrapper||el).addEventListener('touchend', e => {
-    if (e.changedTouches.length!==1) return;
-    const now=Date.now();
-    if (now-lastTap<280) {
+  // Double-tap: toggle 2× zoom / reset
+  let lastTap = 0;
+  (wrapper || el).addEventListener('touchend', e => {
+    if (e.changedTouches.length !== 1) return;
+    const now = Date.now();
+    if (now - lastTap < 280) {
       e.preventDefault();
-      if (scale>1) { scale=1; panX=0; panY=0; }
+      e.stopPropagation(); // don't let the main gesture handler see this as a tap
+      if (scale > 1) { scale=1; panX=0; panY=0; }
       else { scale=2; }
-      zoomScale=scale; apply();
+      zoomScale = scale; apply();
     }
-    lastTap=now;
+    lastTap = now;
   }, {passive:false});
 }
 
@@ -1224,9 +1266,13 @@ document.addEventListener('keydown', e => {
 
     const isTap = absDx<12 && absDy<12 && dt<300;
 
-    // When zoomed in: a tap toggles the filmstrip/buttons overlay (no nav)
+    // When zoomed in: a tap toggles the UI (clean fullscreen) in paged mode,
+    // or the filmstrip overlay in scroll mode. No navigation.
     if (zoomScale > 1.05) {
-      if (isTap && IS_MULTI) toggleFilmstripOverlay();
+      if (isTap) {
+        if (viewMode === 'paged') togglePagedChrome();
+        else if (IS_MULTI) toggleFilmstripOverlay();
+      }
       return;
     }
 
@@ -1235,19 +1281,28 @@ document.addEventListener('keydown', e => {
     const vidPlaying = vid && !vid.paused && !vid.ended;
 
     if (viewMode === 'paged') {
-      if (dt<700 && dy>55 && absDy>absDx*1.15) { goBack(); return; }
+      // swipe down: multi-item posts → switch to scroll mode (browse the post);
+      // single posts → close the post (go back).
+      if (dt<700 && dy>55 && absDy>absDx*1.15) {
+        if (IS_MULTI) { toggleViewMode(); } else { goBack(); }
+        return;
+      }
       // horizontal swipes in paged mode are handled by the finger-follow module
       if (isTap) {
         if (infoPanelOpen) { toggleInfoPanel(false); return; }
-        if (IS_MULTI) toggleFilmstripOverlay();
+        togglePagedChrome();   // reveal/hide top bar, filmstrip, info button
       }
     } else {
       // SCROLL MODE
-      if (!vidPlaying && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev'); return; }
+      if (!vidPlaying && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev','last'); return; }
       const sc = document.getElementById('scroll-container');
       if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { goBack(); return; }
-      // tap toggles filmstrip/buttons overlay in scroll mode too
-      if (isTap && IS_MULTI) toggleFilmstripOverlay();
+      // single tap on an item → open it in paged mode (unless disabled)
+      if (isTap && IS_MULTI) {
+        const tappedImg = topEl && topEl.closest('.scroll-img');
+        if (tappedImg && tappedImg.tagName === 'IMG' && localStorage.getItem('disableTapPaged') !== '1') { openPagedAt(tappedImg); return; }
+        toggleFilmstripOverlay();
+      }
     }
   }
 
@@ -1265,7 +1320,13 @@ document.addEventListener('keydown', e => {
   const main = document.getElementById('img-main');
   const mc   = document.getElementById('media-container');
   if (!main || !mc) return;
-  let sx=0, sy=0, W=1, active=false, decided=false, dir=0, preview=null, targetIdx=null, isPost=false;
+  let sx=0, sy=0, W=1, active=false, decided=false, dir=0, preview=null, targetIdx=null, isPost=false, stT=0;
+  // swipe sensitivity → activation distance (how far before a swipe engages).
+  // higher sensitivity (smaller commit fraction) = smaller activation distance.
+  function activationPx() {
+    const frac = (typeof swipeCommitFrac!=='undefined') ? swipeCommitFrac() : 0.28;
+    return Math.max(5, Math.round(16 * frac / 0.28));
+  }
   const RM = () => document.body.classList.contains('reduce-motion');
 
   function clearPreview() { if (preview) { preview.remove(); preview = null; } }
@@ -1275,21 +1336,43 @@ document.addEventListener('keydown', e => {
   }
   function computeTarget(d) {
     let url = '';
+    // In a multi-item post, paged swipes only move between items of THIS post —
+    // never to a neighboring post (use swipe-down → scroll, or the arrows).
+    const allowPostNav = !IS_MULTI;
     if (d < 0) { // swipe left → next
-      if (currentImgIdx < IMAGES.length - 1) { isPost=false; targetIdx=currentImgIdx+1; url=IMAGES[targetIdx].thumb || IMAGES[targetIdx].url; }
-      else if (nextId) { isPost=true; url=nextPreviewUrl; }
+      if (currentImgIdx < IMAGES.length - 1) { isPost=false; targetIdx=currentImgIdx+1;
+        // use full-res URL for within-post preview: preloadNeighbors() already
+        // warmed the cache, so it renders at the correct size immediately.
+        url=IMAGES[targetIdx].url || IMAGES[targetIdx].thumb; }
+      else if (nextId && allowPostNav) { isPost=true; url=nextPreviewUrl; }
       else return false;
     } else {     // swipe right → prev
-      if (currentImgIdx > 0) { isPost=false; targetIdx=currentImgIdx-1; url=IMAGES[targetIdx].thumb || IMAGES[targetIdx].url; }
-      else if (prevId) { isPost=true; url=prevPreviewUrl; }
+      if (currentImgIdx > 0) { isPost=false; targetIdx=currentImgIdx-1;
+        url=IMAGES[targetIdx].url || IMAGES[targetIdx].thumb; }
+      else if (prevId && allowPostNav) { isPost=true; url=prevPreviewUrl; }
       else return false;
     }
     dir = d;
     return url;
   }
   function commitTarget() {
-    if (isPost) { navTo(dir < 0 ? 'next' : 'prev'); }
-    else { selectImage(targetIdx, document.querySelectorAll('.filmstrip-item')[targetIdx]); resetTransforms(); }
+    if (isPost) { navTo(dir < 0 ? 'next' : 'prev', dir < 0 ? undefined : 'last'); }
+    else {
+      selectImage(targetIdx, document.querySelectorAll('.filmstrip-item')[targetIdx]);
+      // Keep the preview overlay visible until the actual full-res image reports
+      // loaded — this eliminates the blank flash between the swipe landing and
+      // the image rendering (especially on cache miss).
+      const newImg = document.getElementById('main-img');
+      if (newImg && !newImg.complete) {
+        const done = () => resetTransforms();
+        newImg.addEventListener('load',  done, {once: true});
+        newImg.addEventListener('error', done, {once: true});
+        // safety: if the image hasn't loaded after 800ms, clear anyway
+        setTimeout(done, 800);
+      } else {
+        resetTransforms();
+      }
+    }
   }
   function begin(d) {
     const url = computeTarget(d);
@@ -1307,6 +1390,7 @@ document.addEventListener('keydown', e => {
     if (e.target.closest('video')) { active=false; return; }
     if (viewMode !== 'paged' || e.touches.length !== 1 || zoomScale > 1.05) { active=false; return; }
     sx=e.touches[0].clientX; sy=e.touches[0].clientY; W=main.clientWidth || 1;
+    stT=Date.now();
     active=true; decided=false; mc.classList.remove('swipe-snap');
   }, {passive:true});
   main.addEventListener('touchmove', e => {
@@ -1314,7 +1398,8 @@ document.addEventListener('keydown', e => {
     if (zoomScale > 1.05) { resetTransforms(); return; }
     const dx=e.touches[0].clientX-sx, dy=e.touches[0].clientY-sy;
     if (!decided) {
-      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+      const act = activationPx();
+      if (Math.abs(dx) > act && Math.abs(dx) > Math.abs(dy)) {
         // reduce-motion: just detect a target, no live preview / animation
         if (RM() ? (computeTarget(dx < 0 ? -1 : 1) === false) : !begin(dx < 0 ? -1 : 1)) { active=false; return; }
         decided=true;
@@ -1330,7 +1415,14 @@ document.addEventListener('keydown', e => {
     if (!active || !decided) { active=false; return; }
     const dx = e.changedTouches[0].clientX - sx;
     active=false;
-    const commit = Math.abs(dx) > W * 0.28;
+    const frac = (typeof swipeCommitFrac!=='undefined' ? swipeCommitFrac() : 0.28);
+    const dtMove = Math.max(Date.now() - stT, 1);
+    const vel = Math.abs(dx) / dtMove;                 // px per ms
+    // commit if dragged far enough OR flicked quickly. Both thresholds scale
+    // with the sensitivity slider so it has a real, noticeable effect.
+    const distCommit  = Math.abs(dx) > W * frac;
+    const flickCommit = vel > (0.45 * (frac / 0.28)) && Math.abs(dx) > 24;
+    const commit = distCommit || flickCommit;
     if (RM()) {                       // no animation — act (or cancel) immediately
       if (commit) commitTarget(); else resetTransforms();
       return;
@@ -1701,6 +1793,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('#new-tag')&&!e.targe
 /* ── Init ────────────────────────────────────────────────── */
 applyViewMode(viewMode);
 loadNeighbors();
+if (IS_MULTI && typeof preloadNeighbors !== 'undefined') preloadNeighbors(currentImgIdx || 0);
 if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
 
 // record this post in the "recently seen" strip (synced across devices)
@@ -1772,6 +1865,16 @@ if (window.location.hash === '#last' && IMAGES.length > 1) {
     selectImage(lastIdx, document.querySelectorAll('.filmstrip-item')[lastIdx]);
   }
   history.replaceState(null, '', window.location.href.replace('#last', ''));
+} else if (viewMode === 'scroll') {
+  // scrollTop is already set synchronously in applyViewMode before the
+  // IntersectionObserver starts — nothing more needed here.
+  const sc = document.getElementById('scroll-container');
+  if (sc) {
+    let mem = {}; try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
+    const saved = mem[POST_ID];
+    const hasRecent = saved && Date.now() - saved.t < 3000;
+    if (hasRecent) { sc.scrollTop = saved.y; } // restore position if navigated back quickly
+  }
 }
 loadNotDupes();
 updateFilePath();

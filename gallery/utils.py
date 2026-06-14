@@ -9,8 +9,8 @@ from django.conf import settings
 def natural_key(path):
     """Sort key for human/natural filename ordering so that
     pageRandName_2 < pageRandName_10, and 2 < 10 (not '10' < '2').
-    Only ASCII [0-9] runs are treated as numbers  characters like the
-    superscript '' satisfy str.isdigit() but blow up int(), so we guard
+    Only ASCII [0-9] runs are treated as numbers — characters like the
+    superscript '⁹' satisfy str.isdigit() but blow up int(), so we guard
     with isascii() and use a tuple key to avoid int-vs-str comparisons."""
     base = os.path.basename(str(path)).lower()
     out = []
@@ -50,7 +50,7 @@ def is_pdf(path):
 def make_pdf_thumb(src_path, max_size=360):
     """Render first page of a PDF to a JPEG thumbnail.
 
-    Tries PyMuPDF (pip install pymupdf) first  it needs no system binary 
+    Tries PyMuPDF (pip install pymupdf) first — it needs no system binary —
     then falls back to the `pdftoppm` CLI (poppler-utils). If neither is
     available a placeholder is produced instead of raising.
     """
@@ -59,7 +59,7 @@ def make_pdf_thumb(src_path, max_size=360):
         print(f"PDF thumb skip (missing file): {src_path}")
         return _make_placeholder(src_path, max_size)
 
-    # 1) PyMuPDF (fitz)  pure wheel, no system dependency.
+    # 1) PyMuPDF (fitz) — pure wheel, no system dependency.
     try:
         import fitz  # PyMuPDF
         doc = fitz.open(src_path)
@@ -77,7 +77,7 @@ def make_pdf_thumb(src_path, max_size=360):
             return thumb_path
         doc.close()
     except ImportError:
-        pass  # PyMuPDF not installed  fall through to pdftoppm
+        pass  # PyMuPDF not installed — fall through to pdftoppm
     except Exception as e:
         print(f"PyMuPDF thumb error {src_path}: {e}")
 
@@ -136,7 +136,7 @@ def phash_distance(a, b):
 
 
 def _thumb_path_for(src_path):
-    """Canonical thumb path for any file  always the same name."""
+    """Canonical thumb path for any file — always the same name."""
     h = hashlib.md5(src_path.encode()).hexdigest()[:16]
     return os.path.join(settings.MEDIA_ROOT, 'thumbs', f'{h}.jpg')
 
@@ -155,7 +155,7 @@ def _video_duration(src_path):
 
 def make_video_thumb(src_path, max_size=360, pct=0):
     """Extract a frame from the video for the thumbnail.
-    pct = where in the video to grab the frame (0-100). 0  first usable frame."""
+    pct = where in the video to grab the frame (0-100). 0 → first usable frame."""
     thumb_path = _thumb_path_for(src_path)
     seeks = []
     try:
@@ -195,7 +195,7 @@ def make_video_thumb(src_path, max_size=360, pct=0):
 
 
 def _make_placeholder(src_path, max_size=360):
-    """Dark placeholder with play icon  uses same canonical path as ffmpeg."""
+    """Dark placeholder with play icon — uses same canonical path as ffmpeg."""
     thumb_path = _thumb_path_for(src_path)
     try:
         from PIL import ImageDraw
