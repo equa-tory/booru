@@ -269,8 +269,10 @@ def index(request):
     # tags into every gallery page made paging back to the gallery slow on the
     # phone (the markup is parsed even though the sidebar is hidden on mobile).
     tag_total    = popular_tags.count()
-    popular_tags = list(popular_tags[:300])
-
+    # fast mode (cookie set from the more menu) renders far fewer tags so the
+    # gallery page is lighter to parse on a phone.
+    tag_cap = 40 if request.COOKIES.get('fastMode') == '1' else 300
+    popular_tags = list(popular_tags[:tag_cap])
     is_htmx = request.headers.get('HX-Request')
     scroll_mode = request.GET.get('scroll', '0') == '1'
     if is_htmx:
@@ -289,6 +291,7 @@ def index(request):
         'page_obj': page_obj,
         'popular_tags': popular_tags,
         'tag_total': tag_total,
+        'tag_cap': tag_cap,
         'q_tags': q_tags,
         'nav_qs': nav_qs,
         'min_rating': request.GET.get('min_rating', ''),

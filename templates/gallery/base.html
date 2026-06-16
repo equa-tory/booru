@@ -166,8 +166,10 @@ aside {
    instead of stacking vertically. */
 #tag-pills { display: contents; }
 /* performance: kill transitions/animations site-wide when enabled */
-body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
-body.reduce-motion .sheet-backdrop > div, body.reduce-motion .swipe-preview, body.reduce-motion #media-container { transition: none !important; }
+body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after,
+body.fast-mode *, body.fast-mode *::before, body.fast-mode *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+body.reduce-motion .sheet-backdrop > div, body.reduce-motion .swipe-preview, body.reduce-motion #media-container,
+body.fast-mode .sheet-backdrop > div, body.fast-mode .swipe-preview, body.fast-mode #media-container { transition: none !important; }
 .active-tag {
   background: var(--accent-dim); border: 1px solid var(--accent);
   color: var(--text-bright); padding: .2rem .6rem; border-radius: 3px;
@@ -457,6 +459,9 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.4rem;">&#9889; reduce animations (faster)</button>
       <button class="mode-btn tap-paged-btn" onclick="toggleTapPaged()" style="width:100%;margin-top:.4rem;">&#128433; tap item → paged mode</button>
       <button class="mode-btn notif-btn" onclick="toggleNotif()" style="width:100%;margin-top:.4rem;">&#128276; task notifications</button>
+      <button class="mode-btn swipe-vid-btn" onclick="toggleSwipeVideos()" style="width:100%;margin-top:.4rem;">&#127909; swipe videos too</button>
+      <button class="mode-btn scroll-jump-btn" onclick="toggleScrollJump()" style="width:100%;margin-top:.4rem;">&#128205; scroll opens at current item</button>
+      <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
       <div style="margin-top:.55rem;">
         <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);display:block;margin-bottom:.2rem;">swipe sensitivity</label>
         <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
@@ -609,6 +614,43 @@ function applyTapPagedBtn() {
 }
 document.addEventListener('DOMContentLoaded', applyTapPagedBtn);
 
+/* toggle: allow horizontal swipes that start on a video element */
+function toggleSwipeVideos() {
+  localStorage.setItem('swipeVideos', localStorage.getItem('swipeVideos') === '1' ? '0' : '1');
+  applySwipeVideosBtn();
+}
+function applySwipeVideosBtn() {
+  const on = localStorage.getItem('swipeVideos') === '1';
+  document.querySelectorAll('.swipe-vid-btn').forEach(b => b.classList.toggle('active', on));
+}
+function toggleScrollJump() {
+  localStorage.setItem('noScrollJump', localStorage.getItem('noScrollJump') === '1' ? '0' : '1');
+  applyScrollJumpBtn();
+}
+function applyScrollJumpBtn() {
+  const on = localStorage.getItem('noScrollJump') !== '1'; // active = feature ON
+  document.querySelectorAll('.scroll-jump-btn').forEach(b => b.classList.toggle('active', on));
+}
+
+/* toggle: fast mode — disables image preloading, background polling, smooth
+   animations, and trims the sidebar tag list (via a cookie the server reads). */
+function toggleFastMode() {
+  const on = localStorage.getItem('fastMode') === '1';
+  const next = on ? '0' : '1';
+  localStorage.setItem('fastMode', next);
+  // cookie so the server can render fewer tags
+  document.cookie = 'fastMode=' + next + ';path=/;max-age=31536000;samesite=lax';
+  applyFastModeBtn();
+  // reload so the server-side trimming + reduce-motion take effect everywhere
+  setTimeout(() => location.reload(), 150);
+}
+function applyFastModeBtn() {
+  const on = localStorage.getItem('fastMode') === '1';
+  document.body.classList.toggle('fast-mode', on);
+  document.querySelectorAll('.fast-mode-btn').forEach(b => b.classList.toggle('active', on));
+}
+document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); });
+
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
 const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates'};
@@ -631,8 +673,8 @@ function renderTasks(tasks) {
   }).join('');
 }
 async function pollTasks(force) {
-  // when notifications are off, skip polling entirely to reduce background traffic
-  if (!force && localStorage.getItem('notifOff') === '1') {
+  // when notifications are off OR fast mode is on, skip polling to cut traffic
+  if (!force && (localStorage.getItem('notifOff') === '1' || localStorage.getItem('fastMode') === '1')) {
     clearTimeout(_taskTimer); _taskTimer = setTimeout(() => pollTasks(), 30000);
     return;
   }

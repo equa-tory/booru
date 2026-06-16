@@ -96,9 +96,9 @@
 
   /* single post: no mode toggle (nothing to switch to) */
   body.is-single #mode-toggle-fixed { display:none !important; }
-  /* single post: a tap hides EVERYTHING for a clean fullscreen image */
-  body.is-single.tapped header,
-  body.is-single.tapped .mobile-nav,
+  /* single post: a tap hides only the in-image overlays (rating panel, info
+     button, back button + post-number bar, arrows). The global header and
+     bottom nav stay so the page is still usable. */
   body.is-single.tapped .mob-float-btns,
   body.is-single.tapped .img-topbar,
   body.is-single.tapped .mob-rate-pop,
@@ -129,7 +129,8 @@
   }
   .img-panel.filmstrip-visible .img-counter { opacity:1; }
 }
-.view-scroll .img-counter { display:none; }
+/* scroll-mode counter: fixed at top so you can see which item you're on */
+.view-scroll .img-counter { display:block; top:calc(var(--safe-top) + .5rem); bottom:auto; opacity:1; }
 .mode-toggle {
   font-family:var(--mono); font-size:.78rem;
   background:rgba(0,0,0,.75); border:1px solid rgba(255,255,255,.2);
@@ -611,17 +612,36 @@ function applyViewMode(mode) {
     topbar.style.position = 'relative';
     topbar.style.background = 'rgba(0,0,0,.85)';
     topbar.style.padding = '.5rem .6rem';
-    // Position the scroll container BEFORE the IntersectionObserver starts
-    // watching. If we set scrollTop after setupScrollLazy, the observer fires
-    // for items at position 0, then the sudden jump to paddingTop triggers
-    // another wave of callbacks → rapid load/unload → visible trembling.
     const sc = document.getElementById('scroll-container');
     if (sc) {
       const pt = parseFloat(getComputedStyle(sc).paddingTop) || 0;
+      const wantJump = IS_MULTI && currentImgIdx > 0 && localStorage.getItem('noScrollJump') !== '1';
+      if (wantJump) {
+        // Eagerly load images 0…currentImgIdx so they have real heights before
+        // we ask for their position. Without this, lazy images are 0px tall and
+        // scrollIntoView lands at the wrong offset (causing the twitching).
+        document.querySelectorAll('img.scroll-img').forEach((im, i) => {
+          if (i <= currentImgIdx && im.dataset.src) {
+            im.src = im.dataset.src; im.removeAttribute('data-src'); im.style.minHeight = '';
+          }
+        });
+        setupScrollLazy();
+        // Wait until the eagerly-loaded images have laid out before scrolling.
+        const doJump = () => {
+          const imgs = document.querySelectorAll('.scroll-img');
+          if (imgs[currentImgIdx]) imgs[currentImgIdx].scrollIntoView({behavior:'instant', block:'start'});
+          updateScrollCounter();
+        };
+        // rAF → rAF chain gives the browser two layout passes to size the images.
+        requestAnimationFrame(() => requestAnimationFrame(doJump));
+        setTimeout(initScrollZoom, 80);
+        return;
+      }
       sc.scrollTop = pt;
     }
     setupScrollLazy();
     setTimeout(initScrollZoom, 50);
+    setTimeout(updateScrollCounter, 60);
   } else {
     // paged: image fills the screen (chrome handled by body classes + CSS)
     topbar.style.position = 'absolute';
@@ -632,9 +652,8 @@ function applyViewMode(mode) {
 
 // tap in paged mode toggles the UI:
 //  • multi post → reveals/hides the rating panel + scroll-mode button
-//  • single post → UI is always shown; this function is a no-op (guard)
+//  • single post → hides/shows the in-image overlays (rating/info/back/counter)
 function togglePagedChrome() {
-  if (!IS_MULTI) return;   // single posts always show UI — never hide it
   document.body.classList.toggle('tapped');
 }
 
@@ -762,6 +781,7 @@ function selectImage(idx, thumbEl) {
 // swipe animation. Videos/PDFs are skipped (too heavy to prefetch).
 const _preloadedUrls = new Set();
 function preloadNeighbors(idx) {
+  if (localStorage.getItem('fastMode') === '1') return; // fast mode: no prefetch
   [idx - 1, idx + 1, idx + 2].forEach(i => {
     if (i < 0 || i >= IMAGES.length) return;
     const it = IMAGES[i];
@@ -1385,14 +1405,32 @@ document.addEventListener('keydown', e => {
     return true;
   }
   main.addEventListener('touchstart', e => {
-    // Touches that begin on the <video> belong to its native controls (seek /
-    // play-pause) — never start a post swipe there, whether playing or paused.
-    if (e.target.closest('video')) { active=false; return; }
+    // touches starting on a <video> are left to native controls (seek/play),
+    // UNLESS the "swipe videos" toggle is on — then we allow swiping them too.
+    if (e.target.closest('video') && localStorage.getItem('swipeVideos') !== '1') { active=false; return; }
     if (viewMode !== 'paged' || e.touches.length !== 1 || zoomScale > 1.05) { active=false; return; }
     sx=e.touches[0].clientX; sy=e.touches[0].clientY; W=main.clientWidth || 1;
     stT=Date.now();
     active=true; decided=false; mc.classList.remove('swipe-snap');
   }, {passive:true});
+
+  // When "swipe videos" is on, attach a non-passive touchstart to video
+  // elements so we can preventDefault() and stop the browser from claiming
+  // the gesture for seeking — this lets touchmove drive the swipe animation.
+  function attachVideoSwipeIntercept() {
+    document.querySelectorAll('#img-main video').forEach(vid => {
+      if (vid._swipeIntercepted) return;
+      vid._swipeIntercepted = true;
+      vid.addEventListener('touchstart', e => {
+        if (localStorage.getItem('swipeVideos') !== '1') return;
+        if (e.touches.length === 1) e.preventDefault(); // hand gesture to our swipe handler
+      }, {passive: false});
+    });
+  }
+  attachVideoSwipeIntercept();
+  // Re-attach after selectImage replaces the video element
+  const _origSelect = window.selectImage;
+  if (_origSelect) window.selectImage = function(idx, el) { _origSelect(idx, el); setTimeout(attachVideoSwipeIntercept, 50); };
   main.addEventListener('touchmove', e => {
     if (!active || e.touches.length !== 1) return;
     if (zoomScale > 1.05) { resetTransforms(); return; }
@@ -1840,6 +1878,23 @@ function restoreScrollPosition() {
     if (sc) setTimeout(() => sc.scrollTo(0, saved.y), 80);
   }
 }
+// Update the "N / total" counter in scroll mode based on the item nearest the
+// vertical centre of the viewport.
+function updateScrollCounter() {
+  const sc = document.getElementById('scroll-container');
+  const counter = document.getElementById('img-counter');
+  if (!sc || !counter || viewMode !== 'scroll') return;
+  const imgs = document.querySelectorAll('.scroll-img');
+  if (!imgs.length) return;
+  const mid = sc.scrollTop + sc.clientHeight / 2;
+  let best = 0, bestDist = Infinity;
+  imgs.forEach((im, i) => {
+    const c = im.offsetTop + im.offsetHeight / 2;
+    const d = Math.abs(c - mid);
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  counter.textContent = `${best + 1} / ${IMAGES.length}`;
+}
 (function() {
   const sc = document.getElementById('scroll-container');
   if (sc) {
@@ -1847,6 +1902,7 @@ function restoreScrollPosition() {
     sc.addEventListener('scroll', () => {
       clearTimeout(t);
       t = setTimeout(saveScrollPosition, 200);
+      updateScrollCounter();
     }, {passive:true});
   }
   window.addEventListener('beforeunload', saveScrollPosition);

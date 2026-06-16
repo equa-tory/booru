@@ -198,7 +198,7 @@ body.select-mode .scroll-fabs { display:none; }
 
   <div class="sidebar-section">
     <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;gap:.3rem;">
-      <span>tags ({{ tag_total }}{% if filtering_active %} related{% endif %}){% if tag_total > 300 %} · top 300{% endif %}</span>
+      <span>tags ({{ tag_total }}{% if filtering_active %} related{% endif %}){% if tag_total > tag_cap %} · top {{ tag_cap }}{% endif %}</span>
       <div style="display:flex;gap:.3rem;align-items:center;">
         <button onclick="setSortTags('{% if sort_tags == "name" %}count{% else %}name{% endif %}')" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">{% if sort_tags == "name" %}#{% else %}az{% endif %}</button>
         <button onclick="toggleSelectMode()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;" id="sel-toggle">sel</button>
@@ -1125,7 +1125,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // refresh from server so cross-device views show up in correct order
   let _lastRecentId = null;
   function pollRecents() {
-    if (localStorage.getItem('notifOff') === '1') return; // respect quiet mode
+    if (localStorage.getItem('notifOff') === '1' || localStorage.getItem('fastMode') === '1') return; // quiet/fast mode
     fetch('/api/prefs/').then(r => r.json()).then(d => {
       const recents = d.prefs && Array.isArray(d.prefs.recentPosts) ? d.prefs.recentPosts : null;
       if (!recents) return;
