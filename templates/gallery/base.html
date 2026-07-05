@@ -462,6 +462,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn swipe-vid-btn" onclick="toggleSwipeVideos()" style="width:100%;margin-top:.4rem;">&#127909; swipe videos too</button>
       <button class="mode-btn scroll-jump-btn" onclick="toggleScrollJump()" style="width:100%;margin-top:.4rem;">&#128205; scroll opens at current item</button>
       <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
+      <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.4rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
       <div style="margin-top:.55rem;">
         <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);display:block;margin-bottom:.2rem;">swipe sensitivity</label>
         <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
@@ -649,7 +650,18 @@ function applyFastModeBtn() {
   document.body.classList.toggle('fast-mode', on);
   document.querySelectorAll('.fast-mode-btn').forEach(b => b.classList.toggle('active', on));
 }
-document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); });
+document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); });
+
+/* toggle: show newly-scanned posts live at the top of the grid while a scan
+   task is running, instead of waiting for the single completion reload. */
+function toggleLiveScan() {
+  localStorage.setItem('liveScan', localStorage.getItem('liveScan') === '1' ? '0' : '1');
+  applyLiveScanBtn();
+}
+function applyLiveScanBtn() {
+  const on = localStorage.getItem('liveScan') === '1';
+  document.querySelectorAll('.live-scan-btn').forEach(b => b.classList.toggle('active', on));
+}
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
@@ -682,6 +694,9 @@ async function pollTasks(force) {
     const d = await (await fetch('/api/tasks/')).json();
     renderTasks(d.tasks);
     const running = d.tasks.some(t => t.status === 'running');
+    const scanRunning = d.tasks.some(t => t.kind === 'scan' && t.status === 'running');
+    if (scanRunning && localStorage.getItem('liveScan') === '1'
+        && typeof liveScanPrepend !== 'undefined') { liveScanPrepend(); }
     if (_hadRunning && !running && typeof reloadKeepingScroll !== 'undefined'
         && document.getElementById('photo-grid')) {
       setTimeout(() => reloadKeepingScroll(), 800);

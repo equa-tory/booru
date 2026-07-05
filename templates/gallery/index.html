@@ -165,6 +165,13 @@ body.select-mode .scroll-fabs { display:none; }
   </div>
 
   <div class="sidebar-section">
+    <div class="sidebar-title">settings</div>
+    <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.3rem;">&#9889; reduce animations</button>
+    <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.3rem;">&#9889; fast mode</button>
+    <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.3rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
+  </div>
+
+  <div class="sidebar-section">
     <div class="sidebar-title">filter</div>
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem;">
       <button class="fav-filter-btn {% if fav_only == '1' %}active{% endif %}" onclick="toggleFav(this)">&#9829; favs</button>
@@ -497,6 +504,35 @@ async function loadNextPage() {
   }
   if (typeof doneProgress!=='undefined') doneProgress();
   infiniteLoading = false;
+}
+
+// ── Live items during scan ────────────────────────────────────
+// Polled from base.html's pollTasks() while a scan task is running and the
+// "live items during scan" toggle is on. Fetches the current page-1 query
+// and prepends any post not already in the grid, so newly-scanned posts show
+// up immediately instead of waiting for the single completion reload.
+let _liveScanBusy = false;
+async function liveScanPrepend() {
+  if (_liveScanBusy) return;
+  _liveScanBusy = true;
+  try {
+    const grid = document.getElementById('photo-grid');
+    if (!grid) return;
+    const r = await fetch(buildApiUrl(1));
+    const d = await r.json();
+    const seen = new Set(Array.from(grid.querySelectorAll('[data-id]')).map(el => el.dataset.id));
+    // d.posts is newest-first; prepend in reverse so the newest ends up on top
+    const fresh = d.posts.filter(post => !seen.has(String(post.id))).reverse();
+    if (fresh.length) {
+      const empty = document.getElementById('grid-empty-state');
+      if (empty) empty.remove();
+    }
+    fresh.forEach(post => grid.insertBefore(makeCard(post), grid.firstChild));
+    if (fresh.length && selectModeOn) wireCards();
+  } catch(e) { /* silent — next poll retries */
+  } finally {
+    _liveScanBusy = false;
+  }
 }
 
 function initInfiniteScroll() {

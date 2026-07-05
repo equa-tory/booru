@@ -1260,12 +1260,13 @@ document.addEventListener('keydown', e => {
 
 /* ── Touch gestures ──────────────────────────────────────── */
 (function() {
-  let startX=0, startY=0, startT=0, multiTouch=false;
+  let startX=0, startY=0, startT=0, multiTouch=false, startEl=null;
 
   function onStart(e) {
     multiTouch = e.touches.length > 1;
     if (e.touches.length !== 1) return;
     startX=e.touches[0].clientX; startY=e.touches[0].clientY; startT=Date.now();
+    startEl = e.target;
   }
   function toggleFilmstripOverlay() {
     const imgPanel = document.getElementById('img-panel');
@@ -1296,9 +1297,12 @@ document.addEventListener('keydown', e => {
       return;
     }
 
-    // if video is playing, don't intercept horizontal swipes (let user seek)
-    const vid = document.getElementById('main-video');
-    const vidPlaying = vid && !vid.paused && !vid.ended;
+    // A touch that started on the <video> (e.g. dragging its native seek bar)
+    // must not also trigger a post-change swipe — even after the drag pauses
+    // the video (which used to slip past the old "!vidPlaying" check). Same
+    // "swipe videos too" opt-in as the paged finger-follow module respects.
+    const startedOnVideo = startEl && startEl.closest && startEl.closest('video');
+    const blockVidSwipe = startedOnVideo && localStorage.getItem('swipeVideos') !== '1';
 
     if (viewMode === 'paged') {
       // swipe down: multi-item posts → switch to scroll mode (browse the post);
@@ -1314,7 +1318,7 @@ document.addEventListener('keydown', e => {
       }
     } else {
       // SCROLL MODE
-      if (!vidPlaying && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev','last'); return; }
+      if (!blockVidSwipe && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev','last'); return; }
       const sc = document.getElementById('scroll-container');
       if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { goBack(); return; }
       // single tap on an item → open it in paged mode (unless disabled)
