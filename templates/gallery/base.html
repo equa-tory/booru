@@ -417,6 +417,7 @@ input[type=range].size-slider::-moz-range-thumb {
   <div class="tag-sheet" id="mob-menu-sheet" onclick="event.stopPropagation()" style="padding:1rem;overflow-y:auto;-webkit-overflow-scrolling:touch;">
     <div class="sheet-handle"></div>
     <div class="mob-action-row" style="display:flex;flex-wrap:wrap;gap:.4rem;padding:.5rem 0;">
+      <button class="btn" onclick="openUploadModal();closeMobMenu()">&#11014; upload</button>
       <button class="btn" onclick="doScan();closeMobMenu()">&#10227; scan</button>
       <button class="btn" onclick="aiTagAll();closeMobMenu()">&#10022; ai tag all</button>
       <a class="btn" href="/duplicates/" onclick="startProgress()">&#9673; dupes</a>
@@ -479,6 +480,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn scroll-jump-btn" onclick="toggleScrollJump()" style="width:100%;margin-top:.4rem;">&#128205; scroll opens at current item</button>
       <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
       <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.4rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
+      <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.4rem;" title="in-post only: hides the header + bottom nav, replaces them with one slim thumb-reachable bar (rating, fav, info, more, prev/next arrows)">&#9707; minimal post UI</button>
       <div style="margin-top:.55rem;">
         <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);display:block;margin-bottom:.2rem;">swipe sensitivity</label>
         <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
@@ -761,7 +763,20 @@ function applyFastModeBtn() {
   document.body.classList.toggle('fast-mode', on);
   document.querySelectorAll('.fast-mode-btn').forEach(b => b.classList.toggle('active', on));
 }
-document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); });
+document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); applyMinimalUiBtn(); });
+
+/* toggle: redesigned thumb-friendly in-post mobile layout (post detail page
+   only — see detail.html's own CSS/markup for the actual bar; this just
+   flips the body class + settings-sheet button state everywhere). */
+function toggleMinimalUi() {
+  localStorage.setItem('minimalUi', localStorage.getItem('minimalUi') === '1' ? '0' : '1');
+  applyMinimalUiBtn();
+}
+function applyMinimalUiBtn() {
+  const on = localStorage.getItem('minimalUi') === '1';
+  document.body.classList.toggle('minimal-ui', on);
+  document.querySelectorAll('.minimal-ui-btn').forEach(b => b.classList.toggle('active', on));
+}
 
 /* toggle: show newly-scanned posts live at the top of the grid while a scan
    task is running, instead of waiting for the single completion reload. */

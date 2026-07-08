@@ -191,6 +191,40 @@
 @media (max-width:640px) {
   body.showing-video:not(.tapped) .nav-arrow:not(.disabled) { opacity:1 !important; pointer-events:auto !important; }
 }
+
+/* ── Minimal post UI (toggle, phone only) ──────────────────────
+   Replaces the header + global bottom nav + floating rating/info
+   with one slim bottom bar so everything (rating, fav, info, more,
+   prev/next) sits in the thumb zone. Toggled via base.html's
+   minimal-ui-btn; the class itself is applied on every page, but
+   these rules only exist here so only the post view is affected. */
+@media (max-width:640px) {
+  body.minimal-ui { --mobile-nav-h: 46px; --header-h: 0px; }
+  body.minimal-ui .detail-wrap { padding-top: var(--safe-top); }
+  body.minimal-ui header,
+  body.minimal-ui .mobile-nav,
+  body.minimal-ui .nav-arrow,
+  body.minimal-ui .mob-rate-pop,
+  body.minimal-ui .mob-float-btns { display:none !important; }
+
+  .mini-bar { display:none; }
+  body.minimal-ui .mini-bar {
+    display:flex; align-items:center; gap:.2rem;
+    position:fixed; left:0; right:0; bottom:0; z-index:119;
+    height:var(--mobile-nav-h);
+    padding:0 .3rem calc(var(--safe-bottom));
+    background:var(--bg2); border-top:1px solid var(--border);
+  }
+  .mini-arrow, .mini-icon {
+    background:none; border:none; color:var(--text); font-size:1.25rem;
+    width:32px; height:32px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+    -webkit-tap-highlight-color:transparent; cursor:pointer; padding:0;
+  }
+  .mini-arrow.disabled { opacity:.25; pointer-events:none; }
+  .mini-stars { display:flex; flex:1; justify-content:center; }
+  .mini-bar .mob-rate-star { font-size:1.2rem; padding:.1rem; }
+  .mini-bar .mob-rate-fav { font-size:1.1rem; background:none; border:none; padding:0 .3rem; flex:none; }
+}
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
 .swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
 
@@ -550,7 +584,22 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   </div>
 </div>
 <div class="mob-float-btns">
-  <button class="mob-float-btn accent" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
+  <button class="mob-float-btn accent mob-info-btn" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
+</div>
+
+<!-- Minimal post UI: one slim bottom bar (rating, fav, info, more, prev/next).
+     Always in the DOM; only shown when body.minimal-ui is active (phone). -->
+<div class="mini-bar" id="mini-bar">
+  <button class="mini-arrow" id="mini-prev" onclick="navTo('prev')">&#8249;</button>
+  <div class="mini-stars">
+    {% for n in "12345" %}
+    <button class="mob-rate-star {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
+    {% endfor %}
+  </div>
+  <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="mobFav()">&#9829;</button>
+  <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
+  <button class="mini-icon" onclick="openMobMenu()">&#8943;</button>
+  <button class="mini-arrow" id="mini-next" onclick="navTo('next')">&#8250;</button>
 </div>
 
 {% if images|length > 1 %}
@@ -805,6 +854,8 @@ function updateArrows() {
   const atEnd   = currentImgIdx === IMAGES.length - 1;
   document.getElementById('arrow-prev').classList.toggle('disabled', atStart && !prevId);
   document.getElementById('arrow-next').classList.toggle('disabled', atEnd  && !nextId);
+  document.getElementById('mini-prev')?.classList.toggle('disabled', atStart && !prevId);
+  document.getElementById('mini-next')?.classList.toggle('disabled', atEnd  && !nextId);
   document.body.classList.toggle('showing-video', !!(IMAGES[currentImgIdx] && IMAGES[currentImgIdx].is_video));
 }
 
@@ -1507,7 +1558,7 @@ let infoPanelOpen = false;
 function toggleInfoPanel(force) {
   infoPanelOpen = force !== undefined ? force : !infoPanelOpen;
   document.getElementById('info-panel').classList.toggle('open', infoPanelOpen);
-  document.getElementById('mob-info-btn').textContent = infoPanelOpen ? 'x' : 'i';
+  document.querySelectorAll('.mob-info-btn').forEach(b => b.textContent = infoPanelOpen ? 'x' : 'i');
 }
 // drag handle to close
 (function() {
@@ -1569,7 +1620,7 @@ async function toggleFav() {
 function syncMobRatePop() {
   document.querySelectorAll('.mob-rate-star').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.v) <= currentRating));
-  document.getElementById('mob-rate-fav')?.classList.toggle('active', currentFav);
+  document.querySelectorAll('.mob-rate-fav').forEach(b => b.classList.toggle('active', currentFav));
 }
 function mobRate(n) { setRating(n); }
 async function mobClear() {
