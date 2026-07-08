@@ -114,6 +114,30 @@ class Photo(models.Model):
         return self.media_url
 
 
+class Folder(models.Model):
+    """A named collection of posts shown in the sidebar.
+
+    Manual folders (is_smart=False) hold an explicit set of posts (added via
+    the select-mode "folder" bulk action). Smart folders (is_smart=True)
+    instead store a gallery query string (tags/rating/fav/sort) captured at
+    creation time; opening one just re-runs that query, so its contents
+    update automatically as posts are added/edited — no separate filter
+    engine needed, it reuses `_build_post_qs`.
+    """
+    name       = models.CharField(max_length=200)
+    is_smart   = models.BooleanField(default=False)
+    query      = models.CharField(max_length=500, blank=True)  # smart folders only
+    posts      = models.ManyToManyField(Post, blank=True, related_name='folders')  # manual folders only
+    order      = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
 class Task(models.Model):
     """A long-running background job (merge / scan / ai_tag / dupes) whose
     state is stored in the DB so any gunicorn worker (and any device) can see

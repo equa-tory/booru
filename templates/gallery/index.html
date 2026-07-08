@@ -165,6 +165,26 @@ body.select-mode .scroll-fabs { display:none; }
   </div>
 
   <div class="sidebar-section">
+    <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;gap:.3rem;">
+      <span>folders</span>
+      <div style="display:flex;gap:.3rem;">
+        <button onclick="newManualFolder()" title="new empty folder" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">+folder</button>
+        <button onclick="newSmartFolder()" title="save the current search/filters as a smart folder" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">+smart</button>
+      </div>
+    </div>
+    <div class="tag-list" id="folder-list">
+      {% for f in folders %}
+      <div class="tag-item tag-entry">
+        <a class="tag-link" href="{% if f.is_smart %}/?{{ f.query }}{% else %}?folder={{ f.id }}{% endif %}" title="{{ f.name }}">{% if f.is_smart %}&#9733; {% endif %}{{ f.name }}</a>
+        <span class="tag-add-btn" onclick="deleteFolder({{ f.id }}, '{{ f.name|escapejs }}')" title="delete folder">&times;</span>
+      </div>
+      {% empty %}
+      <div style="font-size:.7rem;color:var(--text-dim);padding:.2rem 0;">no folders yet</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="sidebar-section">
     <div class="sidebar-title">settings</div>
     <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.3rem;">&#9889; reduce animations</button>
     <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.3rem;">&#9889; fast mode</button>
@@ -303,7 +323,19 @@ body.select-mode .scroll-fabs { display:none; }
     <button class="sel-act" onclick="bulkMerge()"><span class="sa-i">&#9135;</span><span>queue merge</span></button>
     <button class="sel-act" onclick="finalizeMergeQueue()" id="merge-go-btn"><span class="sa-i">&#8694;</span><span>merge now</span></button>
     <button class="sel-act" onclick="bulkVideoThumb()"><span class="sa-i">&#9654;</span><span>vid thumb&nbsp;%</span></button>
+    <button class="sel-act" onclick="openFolderPicker()"><span class="sa-i">&#128193;</span><span>add to folder</span></button>
+    {% if active_folder %}<button class="sel-act" onclick="bulkRemoveFromFolder()"><span class="sa-i">&#8722;</span><span>remove from folder</span></button>{% endif %}
     <button class="sel-act danger" onclick="bulkDelete()"><span class="sa-i">&#128465;</span><span>delete</span></button>
+  </div>
+</div>
+
+<!-- Folder picker modal -->
+<div class="modal-backdrop" id="folder-modal">
+  <div class="bulk-modal">
+    <div class="modal-handle"></div>
+    <h3>add to folder</h3>
+    <div id="folder-picker-list" style="display:flex;flex-direction:column;gap:.4rem;max-height:260px;overflow-y:auto;"></div>
+    <div style="margin-top:.6rem;text-align:right;"><button class="btn" onclick="closeFolderPicker()">cancel</button></div>
   </div>
 </div>
 
@@ -356,6 +388,10 @@ const TOTAL_PAGES  = {{ page_obj.paginator.num_pages }};
 window.SORT_OPTIONS = [{% for val, label in sort_options %}['{{ val|escapejs }}','{{ label|escapejs }}']{% if not forloop.last %},{% endif %}{% endfor %}];
 // raw search tokens (incl. (, ~, ), -tag) so we can render readable pills
 window.Q_TOKENS = [{% for t in q_tags %}'{{ t|escapejs }}'{% if not forloop.last %},{% endif %}{% endfor %}];
+// manual folders only (smart folders aren't a valid bulk "add to folder" target —
+// their contents come from their saved query, not manual membership)
+window.MANUAL_FOLDERS = [{% for f in folders %}{% if not f.is_smart %}{id:{{ f.id }}, name:'{{ f.name|escapejs }}'}{% if not forloop.last %},{% endif %}{% endif %}{% endfor %}];
+window.CURRENT_QUERY = '{{ current_query|escapejs }}';
 
 // ── Grid size ─────────────────────────────────────────────────
 function isMobile() { return window.innerWidth <= 640; }
@@ -1060,6 +1096,59 @@ async function bulkDelete() {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'delete',delete_file:alsoFile})});
   doneProgress();
   toast(`deleted ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
+}
+
+// ── Folders ────────────────────────────────────────────────────
+async function newManualFolder() {
+  const name = prompt('Folder name:');
+  if (!name) return;
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:false})});
+  location.reload();
+}
+async function newSmartFolder() {
+  const name = prompt('Smart folder name (saves the current search/filters — its contents update automatically):');
+  if (!name) return;
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:true, query: window.CURRENT_QUERY})});
+  location.reload();
+}
+async function deleteFolder(id, name) {
+  if (!confirm(`Delete folder "${name}"? (the posts inside are not deleted)`)) return;
+  await fetch(`/api/folder/${id}/delete/`, {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+  location.reload();
+}
+function openFolderPicker() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  const list = document.getElementById('folder-picker-list');
+  list.innerHTML = '';
+  if (!window.MANUAL_FOLDERS.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:.8rem;color:var(--text-dim);';
+    empty.textContent = 'no folders yet — make one with "+folder" in the sidebar first';
+    list.appendChild(empty);
+  } else {
+    window.MANUAL_FOLDERS.forEach(f => {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.style.textAlign = 'left';
+      btn.textContent = f.name;  // textContent, not innerHTML — folder names are untrusted user input
+      btn.onclick = () => doAddToFolder(f.id);
+      list.appendChild(btn);
+    });
+  }
+  document.getElementById('folder-modal').classList.add('open');
+}
+function closeFolderPicker() { document.getElementById('folder-modal').classList.remove('open'); }
+async function doAddToFolder(folderId) {
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'add_to_folder',folder_id:folderId})});
+  closeFolderPicker();
+  toast(`added ${selectedIds.size} posts to folder`);
+}
+async function bulkRemoveFromFolder() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  const folderId = new URLSearchParams(location.search).get('folder');
+  if (!folderId) return;
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'remove_from_folder',folder_id:folderId})});
+  toast(`removed ${selectedIds.size} posts from folder`); setTimeout(()=>reloadKeepingScroll(), 600);
 }
 
 // ── Preferences ──────────────────────────────────────────────

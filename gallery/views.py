@@ -10,7 +10,7 @@ from django.db.models import Q, Case, When, IntegerField, F
 from django.db.models.functions import Mod
 from django.conf import settings
 
-from .models import Post, Photo, Tag, Task
+from .models import Post, Photo, Tag, Task, Folder
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos)
@@ -142,6 +142,7 @@ def _build_post_qs(request):
     fav_only   = request.GET.get('fav', '')
     multi_only  = request.GET.get('multi_only', '')
     single_only = request.GET.get('single_only', '')
+    folder_id   = request.GET.get('folder', '')   # manual folder filter (smart folders redirect via their saved query instead)
     sort_by     = request.GET.get('sort', 'new')   # new | old | rating | fav | random
 
     # Explicit id list (used by "find similar") — show exactly these posts in
@@ -172,6 +173,9 @@ def _build_post_qs(request):
 
     if fav_only == '1':
         posts = posts.filter(fav=True)
+
+    if folder_id.isdigit():
+        posts = posts.filter(folders__id=int(folder_id)).distinct()
 
     if multi_only == '1':
         from django.db.models import Count as _Count
@@ -305,6 +309,9 @@ def index(request):
         'multi_only': request.GET.get('multi_only',''),
         'single_only': request.GET.get('single_only',''),
         'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
+        'folders': Folder.objects.all(),
+        'active_folder': request.GET.get('folder', ''),
+        'current_query': p.urlencode(),  # current filters, minus page — used by "save as smart folder"
     })
 
 
@@ -372,7 +379,7 @@ def post_detail(request, pk):
     # Full search query string (tags + filters + sort) for neighbor navigation
     search_params = []
     for key in ('tag', 'sort', 'min_rating', 'rating', 'fav',
-                'multi_only', 'single_only', 'seed', 'ids'):
+                'multi_only', 'single_only', 'folder', 'seed', 'ids'):
         for val in request.GET.getlist(key):
             search_params.append(f'{key}={val}')
     search_qs = '&'.join(search_params)
@@ -921,7 +928,42 @@ def bulk_action(request):
             delete_post(post, also_files=also_file)
         return JsonResponse({'ok': True})
 
+    if action == 'add_to_folder':
+        try:
+            folder = Folder.objects.get(pk=data.get('folder_id'), is_smart=False)
+        except Folder.DoesNotExist:
+            return JsonResponse({'error': 'folder not found'}, status=404)
+        folder.posts.add(*posts)
+        return JsonResponse({'ok': True})
+
+    if action == 'remove_from_folder':
+        try:
+            folder = Folder.objects.get(pk=data.get('folder_id'), is_smart=False)
+        except Folder.DoesNotExist:
+            return JsonResponse({'error': 'folder not found'}, status=404)
+        folder.posts.remove(*posts)
+        return JsonResponse({'ok': True})
+
     return JsonResponse({'error': 'unknown action'}, status=400)
+
+
+@require_POST
+def folder_create(request):
+    data     = json.loads(request.body)
+    name     = data.get('name', '').strip()
+    is_smart = bool(data.get('is_smart', False))
+    query    = data.get('query', '').strip() if is_smart else ''
+    if not name:
+        return JsonResponse({'error': 'name required'}, status=400)
+    folder = Folder.objects.create(name=name, is_smart=is_smart, query=query)
+    return JsonResponse({'id': folder.id, 'name': folder.name,
+                          'is_smart': folder.is_smart, 'query': folder.query})
+
+
+@require_POST
+def folder_delete(request, pk):
+    Folder.objects.filter(pk=pk).delete()
+    return JsonResponse({'ok': True})
 
 
 @require_POST

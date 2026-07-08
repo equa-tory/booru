@@ -47,6 +47,8 @@ urlpatterns = [
     path('api/images/split-to-one/', views.split_images_to_one, name='split_images_to_one'),
     path('api/images/split-to-separate/', views.split_images_to_separate, name='split_images_to_separate'),
     path('api/post/<int:pk>/reorder/', views.reorder_images, name='reorder_images'),
+    path('api/folder/create/', views.folder_create, name='folder_create'),
+    path('api/folder/<int:pk>/delete/', views.folder_delete, name='folder_delete'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
 ]
