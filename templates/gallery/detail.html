@@ -184,6 +184,13 @@
 .nav-arrow.disabled { opacity:0 !important; pointer-events:none !important; }
 .nav-arrow.left  { left:.4rem; }
 .nav-arrow.right { right:.4rem; }
+/* Mobile: when the currently-displayed item is a video, force the nav arrows
+   on so post-switching still works without swiping over the video's native
+   seek bar (see the swipeVideos opt-in). Hides in sync with the rest of the
+   tap-to-hide chrome (body.tapped) same as everything else. */
+@media (max-width:640px) {
+  body.showing-video:not(.tapped) .nav-arrow:not(.disabled) { opacity:1 !important; pointer-events:auto !important; }
+}
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
 .swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
 
@@ -457,6 +464,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="findSimilar()" id="similar-btn" title="open the gallery filtered to visually + tag-similar posts">&#9783; find similar</button>
         <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="regenThumb()" id="regen-btn" title="rebuild the thumbnail for the current image">&#10227; regen thumb</button>
       </div>
+
+      <button class="btn" style="width:100%;justify-content:center;font-size:.78rem;margin-bottom:.5rem;" onclick="openFolderPicker([{{ post.pk }}])">&#128193; add to folder</button>
 
       {% if images|length > 1 %}
       <div style="margin-bottom:.5rem;">
@@ -796,6 +805,7 @@ function updateArrows() {
   const atEnd   = currentImgIdx === IMAGES.length - 1;
   document.getElementById('arrow-prev').classList.toggle('disabled', atStart && !prevId);
   document.getElementById('arrow-next').classList.toggle('disabled', atEnd  && !nextId);
+  document.body.classList.toggle('showing-video', !!(IMAGES[currentImgIdx] && IMAGES[currentImgIdx].is_video));
 }
 
 function nextImage() { if (currentImgIdx < IMAGES.length-1) selectImage(currentImgIdx+1, document.querySelectorAll('.filmstrip-item')[currentImgIdx+1]); else navTo('next'); }

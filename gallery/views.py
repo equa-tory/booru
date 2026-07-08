@@ -967,6 +967,29 @@ def folder_delete(request, pk):
 
 
 @require_POST
+def folder_rename(request, pk):
+    data = json.loads(request.body)
+    name = data.get('name', '').strip()
+    if not name:
+        return JsonResponse({'error': 'name required'}, status=400)
+    folder = get_object_or_404(Folder, pk=pk)
+    folder.name = name
+    folder.save(update_fields=['name'])
+    return JsonResponse({'ok': True, 'name': folder.name})
+
+
+def folders_list(request):
+    """JSON list of all folders — used by the mobile "more" sheet and the
+    detail-page "add to folder" picker, neither of which has the gallery
+    index view's server-rendered context."""
+    folders = Folder.objects.all()
+    return JsonResponse({'folders': [
+        {'id': f.id, 'name': f.name, 'is_smart': f.is_smart, 'query': f.query}
+        for f in folders
+    ]})
+
+
+@require_POST
 def ai_tag_all(request):
     posts   = Post.objects.filter(ai_tagged=False)
     results = []

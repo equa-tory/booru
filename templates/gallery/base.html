@@ -228,6 +228,11 @@ body.fast-mode .sheet-backdrop > div, body.fast-mode .swipe-preview, body.fast-m
 }
 @media (min-width: 641px) { .modal { border-radius: 12px; padding-bottom: 1.5rem; } }
 .modal-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 1.2rem; }
+/* Folder picker: a small floating card centered on screen instead of a
+   bottom sheet — it's a quick pick-one-and-go action, not worth the reach
+   to the bottom of a phone screen. */
+#folder-modal { align-items: center; }
+#folder-modal .modal { border-radius: 14px; max-width: 320px; }
 .modal h2 { font-family: var(--mono); font-size: 1rem; margin-bottom: 1rem; color: var(--text-bright); }
 .drop-zone {
   border: 2px dashed var(--border); border-radius: 8px;
@@ -448,6 +453,17 @@ input[type=range].size-slider::-moz-range-thumb {
       <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.4rem 0 .2rem;">exactly:</div>
       <div style="display:flex;gap:.3rem;flex-wrap:wrap;align-items:center;" id="mob-exact-filters"></div>
     </div>
+    <!-- Folders -->
+    <div style="margin:.5rem 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
+        <span style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;">folders</span>
+        <div style="display:flex;gap:.3rem;">
+          <button onclick="newManualFolder()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">+folder</button>
+          <button onclick="newSmartFolder()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">+smart</button>
+        </div>
+      </div>
+      <div id="mob-folder-list" style="display:flex;flex-direction:column;gap:.35rem;"></div>
+    </div>
     <!-- Browse mode -->
     <div style="margin:.5rem 0;">
       <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">browse mode</div>
@@ -468,6 +484,16 @@ input[type=range].size-slider::-moz-range-thumb {
         <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Folder picker modal (shared: gallery select-mode, post detail, mobile more sheet) -->
+<div class="modal-backdrop" id="folder-modal">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>add to folder</h2>
+    <div id="folder-picker-list" style="display:flex;flex-direction:column;gap:.4rem;max-height:260px;overflow-y:auto;"></div>
+    <div style="margin-top:.6rem;text-align:right;"><button class="btn" onclick="closeFolderPicker()">cancel</button></div>
   </div>
 </div>
 
@@ -546,6 +572,91 @@ input[type=range].size-slider::-moz-range-thumb {
 <script>
 function getCsrf() { return document.querySelector('meta[name="csrf-token"]').content; }
 function openCheatSheet() { document.getElementById('cheat-modal').classList.add('open'); }
+
+// ── Folders (shared: gallery sidebar, mobile more sheet, post detail) ──
+let _folderPickerIds = [];
+async function newManualFolder() {
+  const name = prompt('Folder name:');
+  if (!name) return;
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:false})});
+  location.reload();
+}
+async function newSmartFolder() {
+  const name = prompt('Smart folder name (saves the current search/filters — its contents update automatically):');
+  if (!name) return;
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:true, query: window.CURRENT_QUERY || ''})});
+  location.reload();
+}
+async function deleteFolder(id, name) {
+  if (!confirm(`Delete folder "${name}"? (the posts inside are not deleted)`)) return;
+  await fetch(`/api/folder/${id}/delete/`, {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+  location.reload();
+}
+async function renameFolder(id, oldName) {
+  const name = prompt('Rename folder:', oldName);
+  if (!name || name === oldName) return;
+  await fetch(`/api/folder/${id}/rename/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name})});
+  location.reload();
+}
+async function openFolderPicker(ids) {
+  if (!ids || !ids.length) { toast('select posts first','err'); return; }
+  _folderPickerIds = ids;
+  const list = document.getElementById('folder-picker-list');
+  list.innerHTML = '';
+  const d = await (await fetch('/api/folders/')).json();
+  const manual = d.folders.filter(f => !f.is_smart);
+  if (!manual.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:.8rem;color:var(--text-dim);';
+    empty.textContent = 'no folders yet — make one with "+folder" first';
+    list.appendChild(empty);
+  } else {
+    manual.forEach(f => {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.style.textAlign = 'left';
+      btn.textContent = f.name;  // textContent, not innerHTML — folder names are untrusted user input
+      btn.onclick = () => doAddToFolder(f.id);
+      list.appendChild(btn);
+    });
+  }
+  document.getElementById('folder-modal').classList.add('open');
+}
+function closeFolderPicker() { document.getElementById('folder-modal').classList.remove('open'); }
+async function doAddToFolder(folderId) {
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'add_to_folder',folder_id:folderId})});
+  closeFolderPicker();
+  toast(`added ${_folderPickerIds.length} post(s) to folder`);
+}
+// Populates the mobile "more" sheet folder list — called from openMobMenu().
+async function renderMobFolders() {
+  const list = document.getElementById('mob-folder-list');
+  if (!list) return;
+  const d = await (await fetch('/api/folders/')).json();
+  list.innerHTML = '';
+  if (!d.folders.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:.75rem;color:var(--text-dim);';
+    empty.textContent = 'no folders yet';
+    list.appendChild(empty);
+  }
+  d.folders.forEach(f => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.4rem;';
+    const a = document.createElement('a');
+    a.className = 'btn'; a.style.cssText = 'flex:1;text-align:left;';
+    a.href = f.is_smart ? ('/?' + f.query) : ('/?folder=' + f.id);
+    a.textContent = (f.is_smart ? '★ ' : '') + f.name;
+    const ren = document.createElement('button');
+    ren.className = 'btn'; ren.textContent = '✎';
+    ren.onclick = () => renameFolder(f.id, f.name);
+    const del = document.createElement('button');
+    del.className = 'btn'; del.textContent = '×';
+    del.onclick = () => deleteFolder(f.id, f.name);
+    row.append(a, ren, del);
+    list.appendChild(row);
+  });
+}
 
 /* ── Keyboard bindings ─────────────────────────────────────────
    Handlers check BINDINGS[action] so users can customise everything. */
@@ -1257,6 +1368,7 @@ function openMobMenu() {
   if (sl && saved) sl.value = saved;
   document.getElementById('mob-menu-backdrop').classList.add('open');
   setTimeout(() => { const sl=document.getElementById('mob-size-slider'); if(sl&&typeof updateSliderFill!=='undefined') updateSliderFill(sl); }, 50);
+  renderMobFolders();
 }
 function closeMobMenu() { document.getElementById('mob-menu-backdrop').classList.remove('open'); document.body.style.overflow = ''; }
 
