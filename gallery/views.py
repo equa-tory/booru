@@ -1167,9 +1167,16 @@ def random_post(request):
     if not ids:
         return JsonResponse({'error': 'no posts'}, status=404)
     pk = random.choice(ids)
-    tag_qs = '?' + '&'.join(f'tag={t}' for t in q_tags) if q_tags else ''
+    # Carry the FULL filter set (tags, rating, fav, sort, ...) into the post
+    # page's query string, not just tags — otherwise a second "random" press
+    # from the post page (which reads its own URL's query string) silently
+    # loses every filter but tags.
+    np = request.GET.copy()
+    np.pop('page', None)
+    np.pop('scroll', None)
+    nav_qs = np.urlencode()
     from django.shortcuts import redirect
-    return redirect(f'/post/{pk}/{tag_qs}')
+    return redirect(f'/post/{pk}/{"?" + nav_qs if nav_qs else ""}')
 
 
 
