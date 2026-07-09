@@ -605,7 +605,7 @@ async function openFolderPicker(ids) {
   _folderPickerIds = ids;
   const list = document.getElementById('folder-picker-list');
   list.innerHTML = '';
-  const d = await (await fetch('/api/folders/')).json();
+  const d = await (await fetch('/api/folders/?ids=' + ids.join(','))).json();
   const manual = d.folders.filter(f => !f.is_smart);
   if (!manual.length) {
     const empty = document.createElement('div');
@@ -615,10 +615,12 @@ async function openFolderPicker(ids) {
   } else {
     manual.forEach(f => {
       const btn = document.createElement('button');
-      btn.className = 'btn';
+      btn.className = 'btn' + (f.contains ? ' primary' : '');
       btn.style.textAlign = 'left';
-      btn.textContent = f.name;  // textContent, not innerHTML — folder names are untrusted user input
-      btn.onclick = () => doAddToFolder(f.id);
+      btn.title = f.contains ? 'already in this folder — click to remove' : '';
+      // textContent, not innerHTML — folder names are untrusted user input
+      btn.textContent = (f.contains ? '✓ ' : '') + f.name;
+      btn.onclick = () => f.contains ? doRemoveFromFolder(f.id) : doAddToFolder(f.id);
       list.appendChild(btn);
     });
   }
@@ -629,6 +631,11 @@ async function doAddToFolder(folderId) {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'add_to_folder',folder_id:folderId})});
   closeFolderPicker();
   toast(`added ${_folderPickerIds.length} post(s) to folder`);
+}
+async function doRemoveFromFolder(folderId) {
+  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'remove_from_folder',folder_id:folderId})});
+  closeFolderPicker();
+  toast(`removed ${_folderPickerIds.length} post(s) from folder`);
 }
 // Populates the mobile "more" sheet folder list — called from openMobMenu().
 async function renderMobFolders() {

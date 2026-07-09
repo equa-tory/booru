@@ -981,12 +981,19 @@ def folder_rename(request, pk):
 def folders_list(request):
     """JSON list of all folders — used by the mobile "more" sheet and the
     detail-page "add to folder" picker, neither of which has the gallery
-    index view's server-rendered context."""
+    index view's server-rendered context.
+
+    Optional ?ids=1,2,3 — marks each folder 'contains': True if it already
+    holds ALL of the given post ids, so the picker can highlight it (and
+    switch its button to a remove action) instead of blindly re-adding."""
     folders = Folder.objects.all()
-    return JsonResponse({'folders': [
-        {'id': f.id, 'name': f.name, 'is_smart': f.is_smart, 'query': f.query}
-        for f in folders
-    ]})
+    ids_param = request.GET.get('ids', '')
+    ids = [int(i) for i in ids_param.split(',') if i.strip().isdigit()]
+    result = []
+    for f in folders:
+        contains = bool(ids) and not f.is_smart and f.posts.filter(pk__in=ids).count() == len(ids)
+        result.append({'id': f.id, 'name': f.name, 'is_smart': f.is_smart, 'query': f.query, 'contains': contains})
+    return JsonResponse({'folders': result})
 
 
 @require_POST
