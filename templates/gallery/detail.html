@@ -129,13 +129,10 @@
   }
   .img-panel.filmstrip-visible .img-counter { opacity:1; }
 }
-/* paged-mode counter: always at top-right of image area */
+/* paged-mode counter: always at top-right of viewport */
 .view-paged .img-counter {
-  position:absolute; top:.6rem; right:.6rem; z-index:10;
+  position:fixed; top:calc(var(--safe-top) + .6rem); right:.6rem; z-index:10;
   opacity:1 !important; transition:none;
-}
-@media (max-width:640px) {
-  .view-paged .img-counter { position:fixed; top:calc(var(--safe-top) + .5rem); }
 }
 /* scroll-mode counter: fixed at top so you can see which item you're on */
 .view-scroll .img-counter { display:block; top:calc(var(--safe-top) + .5rem); bottom:auto; opacity:1; }
