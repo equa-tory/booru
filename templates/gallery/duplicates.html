@@ -28,8 +28,20 @@
 .dg-thumb-wrap { position:relative; background:var(--bg3); }
 .dg-card img { width:100%; aspect-ratio:1; object-fit:cover; display:block; }
 .dg-badge { position:absolute; top:.3rem; left:.3rem; background:rgba(0,0,0,.7); color:#fff; font-family:var(--mono); font-size:.62rem; padding:1px 4px; border-radius:3px; }
-.dg-keeper-badge { position:absolute; top:.3rem; right:.3rem; background:var(--tag-meta); color:#0d0d0f; font-family:var(--mono); font-size:.62rem; font-weight:600; padding:1px 5px; border-radius:3px; }
+.dg-crown {
+  position:absolute; top:.3rem; right:.3rem; z-index:3; width:22px; height:22px; border-radius:50%;
+  background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.35);
+  display:flex; align-items:center; justify-content:center; font-size:.72rem; color:rgba(255,255,255,.7);
+  cursor:pointer; -webkit-tap-highlight-color:transparent; transition:all .15s;
+}
+.dg-crown:hover { border-color:var(--tag-meta); }
+.dg-crown.active { background:var(--tag-meta); border-color:var(--tag-meta); color:#0d0d0f; }
 .dg-num { position:absolute; bottom:.3rem; left:.3rem; background:rgba(0,0,0,.7); color:#fff; font-family:var(--mono); font-size:.62rem; padding:0 5px; border-radius:3px; }
+.dg-action-badge { position:absolute; bottom:.3rem; right:.3rem; font-family:var(--mono); font-size:.6rem; padding:1px 5px; border-radius:3px; border:1px solid; }
+.dg-action-badge.merge  { border-color:var(--tag-general); color:var(--tag-general); background:rgba(138,180,248,.15); }
+.dg-action-badge.delete { border-color:var(--danger);      color:var(--danger);      background:rgba(248,114,114,.15); }
+.dg-action-badge.leave  { border-color:var(--text-dim);    color:var(--text-dim);    background:rgba(255,255,255,.06); }
+.dg-action-badge.ignore { border-color:var(--tag-meta);    color:var(--tag-meta);    background:rgba(152,216,168,.15); }
 .dg-meta { padding:.3rem .5rem; font-family:var(--mono); font-size:.66rem; color:var(--text-dim); display:flex; justify-content:space-between; gap:.3rem; }
 .dg-meta a { color:var(--tag-general); }
 
@@ -59,10 +71,6 @@
 .rv-thumbs { display:flex; gap:3px; }
 .rv-thumbs img { width:40px; height:40px; object-fit:cover; border-radius:4px; }
 .rv-info { flex:1; min-width:160px; font-family:var(--mono); font-size:.72rem; color:var(--text-dim); }
-.rv-action-badge { font-family:var(--mono); font-size:.68rem; padding:.15rem .5rem; border-radius:4px; border:1px solid var(--border); }
-.rv-action-badge.merge { border-color:var(--tag-general); color:var(--tag-general); }
-.rv-action-badge.delete { border-color:var(--danger); color:var(--danger); }
-.rv-action-badge.ignore { border-color:var(--tag-meta); color:var(--tag-meta); }
 .rv-controls { display:flex; gap:.4rem; align-items:center; }
 .rv-summary { font-family:var(--mono); font-size:.8rem; color:var(--text-dim); margin-bottom:1rem; }
 .rv-empty { text-align:center; padding:3rem 1rem; font-family:var(--mono); color:var(--text-dim); }
@@ -108,9 +116,9 @@
     </div>
     <div class="mg-group" id="mg-group"></div>
     <div class="mg-actions">
-      <button class="btn primary" onclick="mgAction('merge')">merge (m)</button>
-      <button class="btn danger" onclick="mgAction('delete')">delete rest (d)</button>
-      <button class="btn" onclick="mgAction('ignore')">not dupes (i)</button>
+      <button class="btn primary" onclick="mgAction('merge')" title="merge everyone not explicitly set to delete/leave">merge rest (m)</button>
+      <button class="btn danger" onclick="mgAction('delete')" title="delete everyone not explicitly set to merge/leave">delete rest (d)</button>
+      <button class="btn" onclick="mgAction('ignore')" title="mark the whole group as not duplicates">not dupes (i)</button>
       <button class="btn" onclick="mgAction('skip')">skip (space)</button>
       <button class="btn" onclick="mgUndo()">↺ undo (u)</button>
     </div>
@@ -118,7 +126,7 @@
       <button class="btn" onclick="advanceGroup(-1)">&larr; prev</button>
       <button class="btn" onclick="advanceGroup(1)">next &rarr;</button>
     </div>
-    <div class="mg-hint">tap a thumbnail (or press 1–9) to change which post is kept</div>
+    <div class="mg-hint">tap a thumbnail to cycle merge → delete → leave for that post · tap ♛ (or press 1–9) to make it the keeper</div>
   </div>
 
   <!-- ── List (lazy + full share this) ────────────────────────── -->
@@ -143,7 +151,7 @@
       <button class="btn primary" onclick="applyDecisions()">✓ apply</button>
     </div>
     <div class="rv-summary">Only groups you made a decision on are listed here — nothing else was touched.
-      Untick a row to leave it as-is, or change its action before applying.</div>
+      Untick a row to leave it as-is, or tap edit to fine-tune which post gets merged/deleted/left alone.</div>
     <div id="rv-body"></div>
   </div>
 </div>
@@ -156,14 +164,17 @@ let DUPE_GROUPS      = [];      // groups from the last scan, each tagged with a
 let lastComputedAt   = null;
 let appliedThisSession = false;
 let dupeIdx           = 0;      // current group index in minigame
-let decisions         = new Map();   // gid -> {action, keeperId, apply}
-let undoStack         = [];     // [{gid, prev}] — prev is the decision before this change (or null)
+// gid -> {fallback: 'merge'|'delete'|'ignore', overrides: {post_id: 'merge'|'delete'|'leave'}, apply}
+// fallback applies to every non-keeper post that has no explicit override.
+// 'ignore' is a whole-group fallback (marks every pair not-dupe) and ignores per-post overrides.
+let decisions         = new Map();
+let undoStack         = [];     // [{gid, before: {decision, keeper}}] — snapshot before the change
 let keeperOverride    = {};     // gid -> post_id, overrides the server-picked keeper
 let currentMode       = null;   // 'minigame' | 'lazy' | 'full'
 let listRendered      = 0;
 let reviewFrom         = 'landing';
 const LIST_PAGE = 20;
-const ACTION_CYCLE = ['merge', 'delete', 'ignore'];
+const POST_ACTION_CYCLE = ['merge', 'delete', 'leave'];
 
 function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
 function fmtSize(n) {
@@ -282,20 +293,75 @@ function enterMode(mode) {
   }
 }
 
-// ── Shared card rendering ──────────────────────────────────────
+// ── Decision helpers ─────────────────────────────────────────────
+// A group's decision has a `fallback` action (merge/delete/ignore) applied to
+// every non-keeper post, plus per-post `overrides` for the exceptions — so
+// "merge most of these, but delete this one and leave that one alone" is a
+// single group with three different per-post outcomes, not three decisions.
 function keeperFor(g) {
   return (keeperOverride[g.gid] != null) ? keeperOverride[g.gid] : g.keeper_id;
 }
+function resolvedAction(g, postId) {
+  if (postId === keeperFor(g)) return 'keep';
+  const d = decisions.get(g.gid);
+  if (!d) return 'merge';                    // default before any decision exists
+  if (d.fallback === 'ignore') return 'ignore';
+  if (d.overrides && d.overrides[postId] != null) return d.overrides[postId];
+  return d.fallback || 'merge';
+}
+function summarizeDecision(g) {
+  const d = decisions.get(g.gid);
+  if (!d) return '';
+  if (d.fallback === 'ignore') return 'not dupes — group left alone';
+  const keeperId = keeperFor(g);
+  const buckets = {merge: [], delete: [], leave: []};
+  g.posts.forEach(p => {
+    if (p.post_id === keeperId) return;
+    const a = resolvedAction(g, p.post_id);
+    if (buckets[a]) buckets[a].push(p.post_id);
+  });
+  const parts = [`keep #${keeperId}`];
+  if (buckets.merge.length)  parts.push(`merge #${buckets.merge.join(', #')}`);
+  if (buckets.delete.length) parts.push(`delete #${buckets.delete.join(', #')}`);
+  if (buckets.leave.length)  parts.push(`leave #${buckets.leave.join(', #')}`);
+  return parts.join(' · ');
+}
+
+// ── Undo (snapshot-based, works for keeper changes AND decision changes) ──
+function snapshot(gid) {
+  return {
+    decision: decisions.has(gid) ? decisions.get(gid) : null,
+    keeper: Object.prototype.hasOwnProperty.call(keeperOverride, gid) ? keeperOverride[gid] : undefined,
+  };
+}
+function restoreSnapshot(gid, snap) {
+  if (snap.decision) decisions.set(gid, snap.decision); else decisions.delete(gid);
+  if (snap.keeper === undefined) delete keeperOverride[gid]; else keeperOverride[gid] = snap.keeper;
+}
+function pushUndo(gid, before) { undoStack.push({gid, before}); }
+function mgUndo() {
+  const entry = undoStack.pop();
+  if (!entry) { toast('nothing to undo', 'err'); return; }
+  restoreSnapshot(entry.gid, entry.before);
+  refreshGroupUI(entry.gid, true);
+  toast('undone');
+}
+
+// ── Shared card rendering ──────────────────────────────────────
 function cardHtml(post, g, opts = {}) {
-  const keeperId = (opts.keeperId != null) ? opts.keeperId : keeperFor(g);
+  const keeperId = keeperFor(g);
   const isKeeper = post.post_id === keeperId;
+  const action = isKeeper ? 'keep' : resolvedAction(g, post.post_id);
   return `<div class="dg-card ${isKeeper ? 'dg-keeper' : ''}" data-post="${post.post_id}"
-      title="${escAttr(post.file_path)}" onclick="pickKeeper(${g.gid}, ${post.post_id})">
+      title="${escAttr(post.file_path)}" onclick="cyclePostAction(${g.gid}, ${post.post_id})">
     <div class="dg-thumb-wrap">
       <img src="${post.thumb_url}" loading="lazy" alt="">
       ${post.img_count > 1 ? `<span class="dg-badge">${post.img_count} imgs</span>` : ''}
-      ${isKeeper ? `<span class="dg-keeper-badge">keep</span>` : ''}
+      <span class="dg-crown ${isKeeper ? 'active' : ''}"
+            onclick="event.stopPropagation(); pickKeeper(${g.gid}, ${post.post_id})"
+            title="${isKeeper ? 'kept' : 'make this the keeper'}">&#9819;</span>
       ${opts.num ? `<span class="dg-num">${opts.num}</span>` : ''}
+      ${!isKeeper ? `<span class="dg-action-badge ${action}">${action}</span>` : ''}
     </div>
     <div class="dg-meta">
       <a href="/post/${post.post_id}/" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${post.post_id}</a>
@@ -305,17 +371,51 @@ function cardHtml(post, g, opts = {}) {
 }
 
 function pickKeeper(gid, postId) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid); if (!g) return;
+  if (keeperFor(g) === postId) return;
+  const before = snapshot(gid);
   keeperOverride[gid] = postId;
-  if (decisions.has(gid)) {
-    const d = decisions.get(gid);
-    decisions.set(gid, {...d, keeperId: postId});
+  // the new keeper can't also carry a per-post override
+  const d = decisions.get(gid);
+  if (d && d.overrides && d.overrides[postId] != null) {
+    const overrides = {...d.overrides};
+    delete overrides[postId];
+    decisions.set(gid, {...d, overrides});
   }
-  if (activeView() === 'minigame') {
-    renderMinigame();
-  } else {
-    const g = DUPE_GROUPS.find(x => x.gid === gid);
+  pushUndo(gid, before);
+  refreshGroupUI(gid);
+}
+
+function cyclePostAction(gid, postId) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid); if (!g) return;
+  if (postId === keeperFor(g)) return;   // keeper isn't cycled by tapping
+  const before = snapshot(gid);
+  const cur = resolvedAction(g, postId);
+  const curIdx = POST_ACTION_CYCLE.indexOf(cur);
+  // breaking out of a whole-group 'ignore' resets everyone else to the 'merge'
+  // fallback too, so landing this tap on 'merge' would look like nothing
+  // happened — jump straight to 'delete' so the tapped card visibly changes.
+  const next = curIdx === -1 ? POST_ACTION_CYCLE[1] : POST_ACTION_CYCLE[(curIdx + 1) % POST_ACTION_CYCLE.length];
+  const prevDecision = decisions.get(gid);
+  const base = (prevDecision && prevDecision.fallback !== 'ignore')
+    ? prevDecision : {fallback: 'merge', overrides: {}, apply: true};
+  decisions.set(gid, {...base, overrides: {...base.overrides, [postId]: next}, apply: true});
+  pushUndo(gid, before);
+  refreshGroupUI(gid);
+}
+
+function refreshGroupUI(gid, jumpToIt) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid);
+  const view = activeView();
+  if (view === 'minigame') {
+    if (jumpToIt) {
+      const idx = DUPE_GROUPS.findIndex(x => x.gid === gid);
+      if (idx >= 0) dupeIdx = idx;
+    }
+    if (!g || (DUPE_GROUPS[dupeIdx] && DUPE_GROUPS[dupeIdx].gid === gid) || jumpToIt) renderMinigame();
+  } else if (view === 'list' && g) {
     const row = document.getElementById(`dg-row-${gid}`);
-    if (g && row) row.outerHTML = groupRowHtml(g);
+    if (row) row.outerHTML = groupRowHtml(g);
   }
 }
 
@@ -332,41 +432,31 @@ function renderMinigame() {
   }
   distEl.textContent = `hash distance ${g.min_distance}`;
   const cards = g.posts.map((p, i) => cardHtml(p, g, {num: i + 1})).join('');
-  const decided = decisions.get(g.gid);
+  const summary = summarizeDecision(g);
   document.getElementById('mg-group').innerHTML = `<div><div class="dg-cards">${cards}</div>` +
-    (decided ? `<div class="mg-decided">queued: ${decided.action} — keep #${decided.keeperId}</div>` : '') +
-    `</div>`;
+    (summary ? `<div class="mg-decided">${summary}</div>` : '') + `</div>`;
 }
 
-function recordAndAdvance(gid, newDecision) {
-  const prev = decisions.has(gid) ? decisions.get(gid) : null;
-  undoStack.push({gid, prev});
-  if (newDecision) decisions.set(gid, newDecision);
-  else decisions.delete(gid);
+function applyGroupAction(gid, kind) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid); if (!g) return;
+  const before = snapshot(gid);
+  if (kind === 'skip') {
+    decisions.delete(gid);
+  } else if (kind === 'ignore') {
+    decisions.set(gid, {fallback: 'ignore', overrides: {}, apply: true});
+  } else {   // 'merge' or 'delete' — sets the fallback, keeps any per-post overrides
+    const prev = decisions.get(gid);
+    const overrides = (prev && prev.fallback !== 'ignore') ? prev.overrides : {};
+    decisions.set(gid, {fallback: kind, overrides, apply: true});
+  }
+  pushUndo(gid, before);
+  refreshGroupUI(gid);
 }
 function mgAction(kind) {
   const g = DUPE_GROUPS[dupeIdx];
   if (!g) { toast('no more groups — review & apply', 'err'); return; }
-  if (kind === 'skip') recordAndAdvance(g.gid, null);
-  else recordAndAdvance(g.gid, {action: kind, keeperId: keeperFor(g), apply: true});
+  applyGroupAction(g.gid, kind);
   advanceGroup(1);
-}
-function mgUndo() {
-  const entry = undoStack.pop();
-  if (!entry) { toast('nothing to undo', 'err'); return; }
-  if (entry.prev) decisions.set(entry.gid, entry.prev);
-  else decisions.delete(entry.gid);
-  const g = DUPE_GROUPS.find(x => x.gid === entry.gid);
-  const view = activeView();
-  if (view === 'minigame') {
-    const idx = DUPE_GROUPS.findIndex(x => x.gid === entry.gid);
-    if (idx >= 0) dupeIdx = idx;
-    renderMinigame();
-  } else if (view === 'list' && g) {
-    const row = document.getElementById(`dg-row-${g.gid}`);
-    if (row) row.outerHTML = groupRowHtml(g);
-  }
-  toast('undone');
 }
 function advanceGroup(delta) {
   dupeIdx = Math.max(0, Math.min(DUPE_GROUPS.length, dupeIdx + delta));
@@ -374,25 +464,16 @@ function advanceGroup(delta) {
 }
 
 // ── List mode (lazy + full) ─────────────────────────────────────
-function queueAction(gid, kind) {
-  const g = DUPE_GROUPS.find(x => x.gid === gid);
-  if (!g) return;
-  if (kind === 'skip') recordAndAdvance(gid, null);
-  else recordAndAdvance(gid, {action: kind, keeperId: keeperFor(g), apply: true});
-  const row = document.getElementById(`dg-row-${gid}`);
-  if (row) row.outerHTML = groupRowHtml(g);
-  toast(`queued: ${kind}`);
-}
 function groupRowHtml(g) {
-  const decided = decisions.get(g.gid);
+  const summary = summarizeDecision(g);
   const cards = g.posts.map(p => cardHtml(p, g)).join('');
   return `<div class="dg-group-row" id="dg-row-${g.gid}">
     <div class="dg-group-head">
-      <span>group · ${g.posts.length} posts · dist ${g.min_distance}${decided ? ` · queued: <b>${decided.action}</b>` : ''}</span>
+      <span>group · ${g.posts.length} posts · dist ${g.min_distance}${summary ? ` · ${summary}` : ''}</span>
       <div class="dg-group-actions">
-        <button class="btn primary" onclick="queueAction(${g.gid}, 'merge')">merge all</button>
-        <button class="btn danger" onclick="queueAction(${g.gid}, 'delete')">delete rest</button>
-        <button class="btn" onclick="queueAction(${g.gid}, 'ignore')">not dupes</button>
+        <button class="btn primary" onclick="applyGroupAction(${g.gid}, 'merge')">merge rest</button>
+        <button class="btn danger" onclick="applyGroupAction(${g.gid}, 'delete')">delete rest</button>
+        <button class="btn" onclick="applyGroupAction(${g.gid}, 'ignore')">not dupes</button>
       </div>
     </div>
     <div class="dg-cards">${cards}</div>
@@ -413,11 +494,11 @@ function loadMoreGroups() { renderListBatch(LIST_PAGE); }
 function openReview() {
   reviewFrom = activeView();
   const body = document.getElementById('rv-body');
-  const entries = [...decisions.entries()];
-  document.getElementById('rv-count').textContent = `${entries.length} decision(s)`;
-  body.innerHTML = entries.length
-    ? entries.map(([gid, d]) => reviewRowHtml(gid, d)).join('')
-    : `<div class="rv-empty">no decisions yet — go back and merge / delete / ignore some groups first</div>`;
+  const gids = [...decisions.keys()];
+  document.getElementById('rv-count').textContent = `${gids.length} decision(s)`;
+  body.innerHTML = gids.length
+    ? gids.map(reviewRowHtml).join('')
+    : `<div class="rv-empty">no decisions yet — go back and merge / delete / ignore / tap some groups first</div>`;
   showView('review');
 }
 function closeReview() {
@@ -428,34 +509,34 @@ function closeReview() {
   showView(reviewFrom === 'minigame' ? 'minigame' : (reviewFrom === 'list' ? 'list' : 'landing'));
   if (reviewFrom === 'minigame') renderMinigame();
 }
-function reviewRowHtml(gid, d) {
+function reviewRowHtml(gid) {
   const g = DUPE_GROUPS.find(x => x.gid === gid);
-  if (!g) return '';
+  const d = decisions.get(gid);
+  if (!g || !d) return '';
   const thumbs = g.posts.slice(0, 4).map(p => `<img src="${p.thumb_url}" loading="lazy" alt="">`).join('');
   return `<div class="rv-row ${d.apply === false ? 'rv-off' : ''}" id="rv-row-${gid}">
     <label style="display:flex;align-items:center;">
       <input type="checkbox" ${d.apply === false ? '' : 'checked'} onchange="toggleApply(${gid}, this.checked)">
     </label>
     <div class="rv-thumbs">${thumbs}</div>
-    <div class="rv-info">group of ${g.posts.length} · keep #${d.keeperId} · dist ${g.min_distance}</div>
-    <span class="rv-action-badge ${d.action}">${d.action}</span>
+    <div class="rv-info">${escAttr(summarizeDecision(g))} · dist ${g.min_distance}</div>
     <div class="rv-controls">
-      <button class="btn" onclick="cycleAction(${gid})" title="change action">⟳ change</button>
+      <button class="btn" onclick="editGroup(${gid})" title="fine-tune which post gets merged/deleted/left alone">✎ edit</button>
       <button class="btn" onclick="removeDecision(${gid})" title="leave as-is, drop from this list">✕ leave</button>
     </div>
   </div>`;
 }
 function toggleApply(gid, checked) {
   const d = decisions.get(gid); if (!d) return;
-  d.apply = checked; decisions.set(gid, d);
+  decisions.set(gid, {...d, apply: checked});
   document.getElementById(`rv-row-${gid}`)?.classList.toggle('rv-off', !checked);
 }
-function cycleAction(gid) {
-  const d = decisions.get(gid); if (!d) return;
-  d.action = ACTION_CYCLE[(ACTION_CYCLE.indexOf(d.action) + 1) % ACTION_CYCLE.length];
-  decisions.set(gid, d);
-  const row = document.getElementById(`rv-row-${gid}`);
-  if (row) row.outerHTML = reviewRowHtml(gid, d);
+function editGroup(gid) {
+  const idx = DUPE_GROUPS.findIndex(x => x.gid === gid);
+  if (idx < 0) return;
+  dupeIdx = idx;
+  renderMinigame();
+  showView('minigame');
 }
 function removeDecision(gid) {
   decisions.delete(gid);
@@ -467,7 +548,7 @@ function removeDecision(gid) {
 async function applyDecisions() {
   const entries = [...decisions.entries()].filter(([, d]) => d.apply !== false);
   if (!entries.length) { toast('nothing ticked to apply', 'err'); return; }
-  if (!confirm(`Apply ${entries.length} change(s) now?\nMerges/deletes/ignores run immediately and can't be undone from here.`)) return;
+  if (!confirm(`Apply ${entries.length} group change(s) now?\nThis runs immediately and can't be undone from here.`)) return;
 
   startProgress();
   const summary = {merge: 0, delete: 0, ignore: 0, failed: 0};
@@ -475,25 +556,8 @@ async function applyDecisions() {
   for (const [gid, d] of entries) {
     const g = DUPE_GROUPS.find(x => x.gid === gid);
     if (!g) continue;
-    const others = g.posts.map(p => p.post_id).filter(id => id !== d.keeperId);
     try {
-      if (d.action === 'merge') {
-        const r = await (await fetch('/api/merge/', {
-          method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-          body: JSON.stringify({target: d.keeperId, sources: others})
-        })).json();
-        r.ok ? summary.merge++ : summary.failed++;
-      } else if (d.action === 'delete') {
-        let allOk = true;
-        for (const id of others) {
-          const r = await (await fetch(`/api/post/${id}/delete/`, {
-            method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-            body: JSON.stringify({delete_file: true})
-          })).json();
-          if (!r.ok) allOk = false;
-        }
-        allOk ? summary.delete++ : summary.failed++;
-      } else if (d.action === 'ignore') {
+      if (d.fallback === 'ignore') {
         for (let i = 0; i < g.posts.length; i++) {
           for (let j = i + 1; j < g.posts.length; j++) {
             await fetch('/api/not-dupe/', {
@@ -503,6 +567,34 @@ async function applyDecisions() {
           }
         }
         summary.ignore++;
+      } else {
+        const keeperId = keeperFor(g);
+        const mergeIds = [], deleteIds = [];
+        g.posts.forEach(p => {
+          if (p.post_id === keeperId) return;
+          const a = resolvedAction(g, p.post_id);
+          if (a === 'merge') mergeIds.push(p.post_id);
+          else if (a === 'delete') deleteIds.push(p.post_id);
+          // 'leave' -> nothing to do
+        });
+        if (mergeIds.length) {
+          const r = await (await fetch('/api/merge/', {
+            method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+            body: JSON.stringify({target: keeperId, sources: mergeIds})
+          })).json();
+          if (r.ok) summary.merge++; else summary.failed++;
+        }
+        if (deleteIds.length) {
+          let allOk = true;
+          for (const id of deleteIds) {
+            const r = await (await fetch(`/api/post/${id}/delete/`, {
+              method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+              body: JSON.stringify({delete_file: true})
+            })).json();
+            if (!r.ok) allOk = false;
+          }
+          allOk ? summary.delete++ : summary.failed++;
+        }
       }
     } catch (e) { summary.failed++; }
     appliedGids.add(gid);
