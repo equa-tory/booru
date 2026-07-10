@@ -30,6 +30,8 @@
   </div>
   <div class="sc-note">
     Number keys <b>0–5</b> always set a post's rating (0 clears) and aren't rebindable.
+    In the duplicates minigame, number keys <b>1–9</b> pick which post in the group to keep
+    and aren't rebindable either.
     Leave a binding empty to disable that shortcut. Shortcuts never fire while typing in a text box.
   </div>
 </div>
@@ -62,6 +64,16 @@ const SC_GROUPS = [
     ['ai_tag',        'AI auto-tag'],
     ['find_similar',  'Find similar'],
     ['regen_thumb',   'Regenerate thumbnail'],
+  ]},
+  { title: 'duplicates minigame', actions: [
+    ['dupe_merge',    'Merge group into the kept post'],
+    ['dupe_delete',   'Delete the other post(s) + files'],
+    ['dupe_ignore',   'Mark all as not duplicates'],
+    ['dupe_skip',     'Skip this group (no action)'],
+    ['dupe_undo',     'Undo last decision (repeatable)'],
+    ['dupe_review',   'Open review & apply screen'],
+    ['dupe_prev',     'Previous group'],
+    ['dupe_next',     'Next group'],
   ]},
 ];
 

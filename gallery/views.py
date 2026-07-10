@@ -391,24 +391,43 @@ def post_detail(request, pk):
     })
 
 
-def duplicates(request):
-    # Compare at POST level using cover image phash.
-    # - Only different posts are ever compared (within-post images are never
-    #   treated as duplicates of each other).
-    # - GIFs are never compared against non-GIF images (animated vs still).
-    # - not_dupes relationships between posts are respected.
+def _net_path(file_path):
+    r"""Build the same \\server\share path the detail page shows."""
+    rel = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
+    prefix = '\\\\192.168.1.50\\@\\Media_SRV\\Photo\\'
+    return prefix + rel.replace('/', '\\')
+
+
+def _dupe_keeper_id(group):
+    """Pick which post in a duplicate group to keep by default: biggest file
+    first (assume it's the highest quality), then multi-image posts, then more
+    images, then lowest id as a stable tiebreak."""
+    ranked = sorted(group, key=lambda p: (
+        -p['file_size'], -(1 if p['img_count'] > 1 else 0), -p['img_count'], p['post_id'],
+    ))
+    return ranked[0]['post_id']
+
+
+def _compute_dupe_groups(progress=None):
+    """Compare every post's cover image pHash against every other post's and
+    group the near-matches.
+    - Only different posts are ever compared (within-post images are never
+      treated as duplicates of each other).
+    - GIFs are never compared against non-GIF images (animated vs still).
+    - not_dupes relationships between posts are respected.
+    Still O(n^2), but each comparison is now a precomputed-int XOR + popcount
+    instead of re-parsing two hex strings (phash_distance) on every pair —
+    that re-parsing was the main cost once the library grew large.
+
+    progress(done, total), if given, is called periodically while building the
+    per-post data (used to drive a Task's progress bar).
+    """
     posts = list(Post.objects.prefetch_related('not_dupes', 'images').all())
 
-    def _net_path(file_path):
-        r"""Build the same \\server\share path the detail page shows."""
-        rel = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
-        prefix = '\\\\192.168.1.50\\@\\Media_SRV\\Photo\\'
-        return prefix + rel.replace('/', '\\')
-
-    # Build a list of post_id -> cover info
     from .utils import compute_phash
     post_data = []
-    for post in posts:
+    total = len(posts)
+    for i, post in enumerate(posts):
         cover = post.cover
         if not cover:
             continue
@@ -423,12 +442,15 @@ def duplicates(request):
                     cover.save(update_fields=['phash'])
         if not cover.phash:
             continue
+        try:
+            ph_int = int(cover.phash, 16)
+        except ValueError:
+            continue
         src = cover.thumb_path or cover.file_path
         rel = os.path.relpath(src, settings.MEDIA_ROOT)
         post_data.append({
             'post_id':   post.pk,
-            'post':      post,
-            'phash':     cover.phash,
+            'phash_int': ph_int,
             'is_gif':    cover.is_gif,
             'is_video':  cover.is_video,
             'thumb_url': '/media/' + rel.replace(os.sep, '/'),
@@ -437,13 +459,16 @@ def duplicates(request):
             'file_size': cover.file_size,
             'file_path': _net_path(cover.file_path),
         })
+        if progress and i % 25 == 0:
+            progress(i, total)
+    if progress:
+        progress(total, total)
 
     # Build ignored pairs set for O(1) lookup
     ignored_pairs = set()
     for post in posts:
         for other in post.not_dupes.all():
-            pair = tuple(sorted([post.pk, other.pk]))
-            ignored_pairs.add(pair)
+            ignored_pairs.add(tuple(sorted([post.pk, other.pk])))
 
     def _comparable(a, b):
         # video only ever compares with video; image/gif cross-compare freely.
@@ -453,29 +478,54 @@ def duplicates(request):
 
     groups = []
     used   = set()
-    for i, p in enumerate(post_data):
-        if p['post_id'] in used: continue
+    n = len(post_data)
+    for i in range(n):
+        p = post_data[i]
+        if p['post_id'] in used:
+            continue
         group = [p]
-        for j, q in enumerate(post_data):
-            if i == j or q['post_id'] in used: continue
-            # never compare two photos from the same post
-            if p['post_id'] == q['post_id']: continue
-            if not _comparable(p, q): continue
+        best_dist = None
+        for j in range(n):
+            if i == j:
+                continue
+            q = post_data[j]
+            if q['post_id'] in used or p['post_id'] == q['post_id']:
+                continue
+            if not _comparable(p, q):
+                continue
             pair = tuple(sorted([p['post_id'], q['post_id']]))
-            if pair in ignored_pairs: continue
+            if pair in ignored_pairs:
+                continue
             # Video thumbnails (often dark/title frames) collide far too easily,
             # so require a near-exact match for video-vs-video; images/gifs keep
             # the looser perceptual threshold.
             both_video = p['is_video'] and q['is_video']
             threshold = 2 if both_video else 8
-            if phash_distance(p['phash'], q['phash']) <= threshold:
+            dist = bin(p['phash_int'] ^ q['phash_int']).count('1')
+            if dist <= threshold:
                 group.append(q)
                 used.add(q['post_id'])
+                best_dist = dist if best_dist is None else min(best_dist, dist)
         if len(group) > 1:
             used.add(p['post_id'])
-            groups.append(group)
+            for g in group:
+                g.pop('phash_int', None)   # internal only, not needed client-side
+            groups.append({
+                'min_distance': best_dist,
+                'keeper_id':    _dupe_keeper_id(group),
+                'posts':        group,
+            })
 
-    return render(request, 'gallery/duplicates.html', {'groups': groups})
+    groups.sort(key=lambda g: g['min_distance'])   # most-certain duplicates first
+    return groups
+
+
+def duplicates(request):
+    """Lightweight shell page — the actual comparison runs in the background
+    (see dupes_scan/_do_dupes) and results are fetched as JSON, so this view
+    never has to render every group's markup into one page (that's what made
+    the old all-at-once list unusable on a phone with a large library)."""
+    return render(request, 'gallery/duplicates.html', {})
 
 
 # ── Scan / upload ──────────────────────────────────────────────
@@ -663,6 +713,47 @@ def ai_tag_all_bg(request):
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
     return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…').id})
+
+
+def _dupes_cache_path():
+    return os.path.join(settings.BASE_DIR, '.dupes_cache.json')
+
+
+def _do_dupes(task):
+    def on_progress(done, total):
+        task.total = total
+        task.done = done
+        task.message = f'comparing {done}/{total} post(s)…'
+        task.save(update_fields=['total', 'done', 'message'])
+
+    task.message = 'scanning posts…'
+    task.save(update_fields=['message'])
+    groups = _compute_dupe_groups(progress=on_progress)
+    data = {'computed_at': timezone.now().isoformat(), 'groups': groups}
+    with open(_dupes_cache_path(), 'w') as f:
+        json.dump(data, f)
+    task.message = f'found {len(groups)} group(s)'
+    task.save(update_fields=['message'])
+
+
+@require_POST
+def dupes_scan(request):
+    """Kick off duplicate detection in the background — see _do_dupes. The
+    frontend polls the existing /api/tasks/ endpoint for progress, then fetches
+    the cached result from dupes_result once the task finishes."""
+    return JsonResponse({'task_id': _start_task('dupes', _do_dupes,
+                                                 message='scanning for duplicates…').id})
+
+
+def dupes_result(request):
+    """Last computed duplicate-group results (from _do_dupes), or an empty
+    result if a scan has never run."""
+    try:
+        with open(_dupes_cache_path()) as f:
+            data = json.load(f)
+    except Exception:
+        data = {'computed_at': None, 'groups': []}
+    return JsonResponse(data)
 
 
 @require_POST

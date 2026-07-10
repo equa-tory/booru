@@ -3,283 +3,552 @@
 
 {% block extra_head %}
 <style>
-.dup-group {
-  margin-bottom: 2rem; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
-}
-.dup-header {
-  background: var(--bg2); padding: .6rem 1rem;
-  font-family: var(--mono); font-size: .78rem; color: var(--text-dim);
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .4rem;
-}
-.dup-header-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
-.dup-grid { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--bg3); }
-.dup-card { width: 200px; flex-shrink: 0; position: relative; background: var(--bg); }
-@media (max-width: 640px) { .dup-card { width: calc(50% - 2px); } }
-.dup-card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
-.dup-card-footer {
-  padding: .3rem .5rem; background: var(--bg2);
-  font-family: var(--mono); font-size: .68rem; color: var(--text-dim);
-  display: flex; justify-content: space-between; align-items: center; gap: .3rem; flex-wrap: wrap;
-}
-.dup-card-footer a { color: var(--tag-general); font-size: .68rem; }
-.dup-del { color: var(--danger); cursor: pointer; font-size: .75rem; -webkit-tap-highlight-color: transparent; padding: .1rem .3rem; border: 1px solid transparent; border-radius: 3px; }
-.dup-del:hover, .dup-del:active { border-color: var(--danger); background: rgba(248,114,114,.1); }
+.dupes-wrap { max-width: 900px; margin: 0 auto; }
+.dupes-topbar { display:flex; align-items:center; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+.dupes-topbar h1 { font-family:var(--mono); font-size:1rem; color:var(--text-bright); }
+.dupes-sub { font-family:var(--mono); font-size:.78rem; color:var(--text-dim); }
 
-/* Not-dupe pair toggle — per card */
-.not-dupe-btn {
-  font-size: .68rem; padding: .15rem .4rem; border-radius: 3px;
-  border: 1px solid var(--border); background: none; color: var(--text-dim);
-  cursor: pointer; font-family: var(--mono); -webkit-tap-highlight-color: transparent;
-  transition: all .15s; white-space: nowrap;
-}
-.not-dupe-btn:hover { border-color: var(--tag-meta); color: var(--tag-meta); }
-.not-dupe-btn.active { border-color: var(--tag-meta); color: var(--tag-meta); background: rgba(152,216,168,.1); }
+/* landing */
+.dupes-landing { text-align:center; padding: 3rem 1rem; }
+.dupes-landing .status { font-family:var(--mono); color:var(--text-dim); margin-bottom:1.2rem; font-size:.9rem; }
+.dupes-pending-note { margin-top:.8rem; font-family:var(--mono); font-size:.72rem; color:var(--accent); display:none; }
+.dupes-pending-note a { color:var(--accent); }
+.mode-grid { display:flex; flex-wrap:wrap; gap:.7rem; justify-content:center; margin-top:1.2rem; }
+.mode-card { width:200px; padding:1.1rem .8rem; border:1px solid var(--border); border-radius:10px; background:var(--bg2); cursor:pointer; transition:all .15s; -webkit-tap-highlight-color:transparent; }
+.mode-card:hover, .mode-card:active { border-color:var(--accent); background:var(--accent-dim); }
+.mode-card .ico { font-size:1.8rem; margin-bottom:.4rem; }
+.mode-card .ttl { font-family:var(--mono); font-size:.85rem; color:var(--text-bright); margin-bottom:.3rem; }
+.mode-card .dsc { font-family:var(--mono); font-size:.68rem; color:var(--text-dim); line-height:1.4; }
 
-.no-dupes { text-align: center; padding: 4rem; color: var(--text-dim); font-family: var(--mono); }
-.dup-img-count { position: absolute; top: .3rem; left: .3rem; background: rgba(0,0,0,.7); color: #fff; font-family: var(--mono); font-size: .65rem; padding: 1px 4px; border-radius: 3px; }
+/* card grid shared by minigame + list views */
+.dg-cards { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+.dg-card { width:190px; flex-shrink:0; position:relative; background:var(--bg2); border:2px solid transparent; border-radius:8px; overflow:hidden; cursor:pointer; transition:border-color .15s; -webkit-tap-highlight-color:transparent; }
+.dg-card.dg-keeper { border-color:var(--tag-meta); }
+@media (max-width:640px) { .dg-card { width:calc(50% - 4px); } }
+.dg-thumb-wrap { position:relative; background:var(--bg3); }
+.dg-card img { width:100%; aspect-ratio:1; object-fit:cover; display:block; }
+.dg-badge { position:absolute; top:.3rem; left:.3rem; background:rgba(0,0,0,.7); color:#fff; font-family:var(--mono); font-size:.62rem; padding:1px 4px; border-radius:3px; }
+.dg-keeper-badge { position:absolute; top:.3rem; right:.3rem; background:var(--tag-meta); color:#0d0d0f; font-family:var(--mono); font-size:.62rem; font-weight:600; padding:1px 5px; border-radius:3px; }
+.dg-num { position:absolute; bottom:.3rem; left:.3rem; background:rgba(0,0,0,.7); color:#fff; font-family:var(--mono); font-size:.62rem; padding:0 5px; border-radius:3px; }
+.dg-meta { padding:.3rem .5rem; font-family:var(--mono); font-size:.66rem; color:var(--text-dim); display:flex; justify-content:space-between; gap:.3rem; }
+.dg-meta a { color:var(--tag-general); }
 
-/* Per-card selection for "merge selected" */
-.dup-sel-check {
-  position: absolute; top: .3rem; right: .3rem; z-index: 3;
-  width: 24px; height: 24px; border-radius: 50%;
-  border: 2px solid rgba(255,255,255,.7); background: rgba(0,0,0,.45);
-  display: flex; align-items: center; justify-content: center;
-  font-size: .75rem; color: #fff; cursor: pointer;
-  -webkit-tap-highlight-color: transparent; transition: all .15s;
-}
-.dup-card.dup-selected .dup-sel-check { background: var(--accent); border-color: var(--accent); }
-.dup-card.dup-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
-.dup-path {
-  padding: .3rem .5rem; background: var(--bg); border-top: 1px solid var(--border);
-  font-family: var(--mono); font-size: .6rem; color: var(--text-dim);
-  word-break: break-all; line-height: 1.35; cursor: pointer;
-}
-.dup-path:active { color: var(--text-bright); }
-.dup-sel-count { font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+/* minigame */
+.mg-wrap { display:flex; flex-direction:column; gap:1rem; }
+.mg-top { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; font-family:var(--mono); font-size:.8rem; color:var(--text-dim); }
+.mg-dist { font-size:.7rem; color:var(--text-dim); }
+.mg-group { min-height:260px; display:flex; align-items:center; justify-content:center; }
+.mg-done { padding:3rem 1rem; text-align:center; font-family:var(--mono); color:var(--text-dim); line-height:1.6; }
+.mg-decided { text-align:center; margin-top:.6rem; font-family:var(--mono); font-size:.72rem; color:var(--accent); }
+.mg-actions { display:flex; gap:.5rem; flex-wrap:wrap; justify-content:center; position:sticky; bottom:0; background:var(--bg); padding:.7rem 0; border-top:1px solid var(--border); z-index:5; }
+.mg-actions .btn { flex:1 1 100px; justify-content:center; padding:.6rem .5rem; font-size:.78rem; }
+@media (max-width:640px) { .mg-actions { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom)); } }
+.mg-hint { text-align:center; font-family:var(--mono); font-size:.68rem; color:var(--text-dim); }
+.mg-nav { display:flex; gap:.4rem; justify-content:center; }
+
+/* list mode (lazy + full) */
+.dg-group-row { border:1px solid var(--border); border-radius:8px; padding:.7rem; margin-bottom:.8rem; background:var(--bg2); }
+.dg-group-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.5rem; font-family:var(--mono); font-size:.72rem; color:var(--text-dim); flex-wrap:wrap; gap:.4rem; }
+.dg-group-actions { display:flex; gap:.35rem; flex-wrap:wrap; }
+.dg-group-actions .btn { font-size:.68rem; padding:.2rem .5rem; }
+.load-more-wrap { text-align:center; margin:1.2rem 0; }
+
+/* review */
+.rv-row { display:flex; align-items:center; gap:.7rem; border:1px solid var(--border); border-radius:8px; padding:.5rem .7rem; margin-bottom:.5rem; background:var(--bg2); flex-wrap:wrap; }
+.rv-row.rv-off { opacity:.45; }
+.rv-thumbs { display:flex; gap:3px; }
+.rv-thumbs img { width:40px; height:40px; object-fit:cover; border-radius:4px; }
+.rv-info { flex:1; min-width:160px; font-family:var(--mono); font-size:.72rem; color:var(--text-dim); }
+.rv-action-badge { font-family:var(--mono); font-size:.68rem; padding:.15rem .5rem; border-radius:4px; border:1px solid var(--border); }
+.rv-action-badge.merge { border-color:var(--tag-general); color:var(--tag-general); }
+.rv-action-badge.delete { border-color:var(--danger); color:var(--danger); }
+.rv-action-badge.ignore { border-color:var(--tag-meta); color:var(--tag-meta); }
+.rv-controls { display:flex; gap:.4rem; align-items:center; }
+.rv-summary { font-family:var(--mono); font-size:.8rem; color:var(--text-dim); margin-bottom:1rem; }
+.rv-empty { text-align:center; padding:3rem 1rem; font-family:var(--mono); color:var(--text-dim); }
 </style>
 {% endblock %}
 
 {% block content %}
-<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.2rem;flex-wrap:wrap;">
-  <h1 style="font-family:var(--mono);font-size:1rem;color:var(--text-bright);">duplicate detection</h1>
-  <span style="font-family:var(--mono);font-size:.78rem;color:var(--text-dim);">
-    {{ groups|length }} group(s) &mdash; post-level, cover image comparison
-  </span>
-  <a href="/" class="btn" style="margin-left:auto;">back to gallery</a>
-</div>
-
-{% if not groups %}
-<div class="no-dupes">
-  <p style="font-size:1.1rem;">no duplicates found</p>
-  <p style="margin-top:.5rem;font-size:.85rem;">all posts have unique cover image hashes</p>
-</div>
-{% endif %}
-
-{% for group in groups %}
-<div class="dup-group" id="group-{{ forloop.counter }}">
-  <div class="dup-header">
-    <span>group {{ forloop.counter }} &mdash; {{ group|length }} similar posts</span>
-    <div class="dup-header-actions">
-      <span class="dup-sel-count" id="dup-sel-count-{{ forloop.counter }}"></span>
-      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;"
-              onclick="mergeAll({{ forloop.counter }}, [{% for p in group %}{{p.post_id}}{% if not forloop.last %},{% endif %}{% endfor %}])">
-        merge all &rarr; 1
-      </button>
-      <button class="btn" id="dup-merge-sel-{{ forloop.counter }}" disabled style="font-size:.72rem;padding:.2rem .5rem;"
-              onclick="mergeSelected({{ forloop.counter }})">
-        merge selected
-      </button>
-      <button class="btn" style="font-size:.72rem;padding:.2rem .5rem;"
-              onclick="ignoreGroup({{ forloop.counter }}, [{% for p in group %}{{p.post_id}}{% if not forloop.last %},{% endif %}{% endfor %}])">
-        ignore all pairs
-      </button>
-      <button class="btn danger" style="font-size:.72rem;padding:.2rem .5rem;"
-              onclick="deleteGroup({{ forloop.counter }}, [{% for p in group %}{{p.post_id}}{% if not forloop.last %},{% endif %}{% endfor %}])">
-        delete all but first
-      </button>
-    </div>
+<div class="dupes-wrap">
+  <div class="dupes-topbar">
+    <h1>duplicate detection</h1>
+    <span class="dupes-sub" id="dupes-topinfo"></span>
+    <a href="/" class="btn" style="margin-left:auto;">back to gallery</a>
   </div>
-  <div class="dup-grid" id="dup-grid-{{ forloop.counter }}">
-    {% for post in group %}
-    <div class="dup-card" id="dup-post-{{ post.post_id }}" data-group="{{ forloop.parentloop.counter }}" data-post="{{ post.post_id }}">
-      <div class="dup-sel-check" onclick="toggleDupSelect({{ forloop.parentloop.counter }}, {{ post.post_id }}, this)" title="select for merge">&#10003;</div>
-      <a href="/post/{{ post.post_id }}/"><img src="{{ post.thumb_url }}" loading="lazy"></a>
-      {% if post.img_count > 1 %}
-      <div class="dup-img-count">{{ post.img_count }} imgs</div>
-      {% endif %}
-      <div class="dup-card-footer">
-        <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
-          <a href="/post/{{ post.post_id }}/" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;" title="{{ post.title }}">
-            {% if post.title %}{{ post.title }}{% else %}post #{{ post.post_id }}{% endif %}
-          </a>
-          <span>{{ post.file_size|filesizeformat }}</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;">
-          <span class="dup-del" onclick="deletePost({{ post.post_id }}, false)" title="remove from DB">DB</span>
-          <span class="dup-del" onclick="deletePost({{ post.post_id }}, true)"  title="delete files">files</span>
-        </div>
+
+  <!-- ── Landing / mode picker ─────────────────────────────────── -->
+  <div id="dv-landing" class="dupes-landing">
+    <div class="status" id="dupes-status">checking for a previous scan…</div>
+    <button class="btn primary" id="dupes-scan-btn" onclick="startDupeScan()">⟳ scan for duplicates</button>
+    <div class="mode-grid" id="dupes-mode-picker" style="display:none;">
+      <div class="mode-card" onclick="enterMode('minigame')">
+        <div class="ico">🎮</div><div class="ttl">minigame</div>
+        <div class="dsc">one group at a time · keyboard or tap · no confirmations · best on phone</div>
       </div>
-      <!-- File path (click to copy) -->
-      <div class="dup-path" onclick="copyDupPath(this)" data-path="{{ post.file_path }}" title="click to copy">{{ post.file_path }}</div>
-      <!-- Not-dupe buttons: one per other post in group -->
-      <div style="padding:.3rem .5rem;background:var(--bg2);border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:3px;">
-        {% for other in group %}{% if other.post_id != post.post_id %}
-        <button class="not-dupe-btn"
-                id="nd-{{ post.post_id }}-{{ other.post_id }}"
-                onclick="toggleNotDupe({{ post.post_id }}, {{ other.post_id }}, this)"
-                title="mark as not duplicate of post #{{ other.post_id }}">
-          not dupe of #{{ other.post_id }}
-        </button>
-        {% endif %}{% endfor %}
+      <div class="mode-card" onclick="enterMode('lazy')">
+        <div class="ico">📜</div><div class="ttl">list (load more)</div>
+        <div class="dsc">scrollable list, loads groups in small batches</div>
+      </div>
+      <div class="mode-card" onclick="enterMode('full')">
+        <div class="ico">📋</div><div class="ttl">full list</div>
+        <div class="dsc">renders every group at once — desktop only, can be heavy</div>
       </div>
     </div>
-    {% endfor %}
+    <div class="dupes-pending-note" id="dupes-pending-note"></div>
+  </div>
+
+  <!-- ── Minigame ──────────────────────────────────────────────── -->
+  <div id="dv-minigame" class="mg-wrap" style="display:none;">
+    <div class="mg-top">
+      <button class="btn" onclick="showView('landing')">&larr; exit</button>
+      <span id="mg-progress"></span>
+      <span class="mg-dist" id="mg-dist"></span>
+      <button class="btn primary" onclick="openReview()">review &amp; apply (Enter) &rarr;</button>
+    </div>
+    <div class="mg-group" id="mg-group"></div>
+    <div class="mg-actions">
+      <button class="btn primary" onclick="mgAction('merge')">merge (m)</button>
+      <button class="btn danger" onclick="mgAction('delete')">delete rest (d)</button>
+      <button class="btn" onclick="mgAction('ignore')">not dupes (i)</button>
+      <button class="btn" onclick="mgAction('skip')">skip (space)</button>
+      <button class="btn" onclick="mgUndo()">↺ undo (u)</button>
+    </div>
+    <div class="mg-nav">
+      <button class="btn" onclick="advanceGroup(-1)">&larr; prev</button>
+      <button class="btn" onclick="advanceGroup(1)">next &rarr;</button>
+    </div>
+    <div class="mg-hint">tap a thumbnail (or press 1–9) to change which post is kept</div>
+  </div>
+
+  <!-- ── List (lazy + full share this) ────────────────────────── -->
+  <div id="dv-list" style="display:none;">
+    <div class="mg-top" style="margin-bottom:.8rem;">
+      <button class="btn" onclick="showView('landing')">&larr; exit</button>
+      <span id="list-progress"></span>
+      <button class="btn" onclick="mgUndo()">↺ undo (u)</button>
+      <button class="btn primary" onclick="openReview()">review &amp; apply &rarr;</button>
+    </div>
+    <div id="dg-list-body"></div>
+    <div class="load-more-wrap" id="load-more-wrap" style="display:none;">
+      <button class="btn" onclick="loadMoreGroups()">load more</button>
+    </div>
+  </div>
+
+  <!-- ── Review & apply ───────────────────────────────────────── -->
+  <div id="dv-review" style="display:none;">
+    <div class="mg-top" style="margin-bottom:.8rem;">
+      <button class="btn" onclick="closeReview()">&larr; back</button>
+      <span id="rv-count"></span>
+      <button class="btn primary" onclick="applyDecisions()">✓ apply</button>
+    </div>
+    <div class="rv-summary">Only groups you made a decision on are listed here — nothing else was touched.
+      Untick a row to leave it as-is, or change its action before applying.</div>
+    <div id="rv-body"></div>
   </div>
 </div>
-{% endfor %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
-// ── Per-group selection for "merge selected" ───────────────────
-const dupSel = {};   // group number -> Set of post ids (insertion order matters)
+// ── State ───────────────────────────────────────────────────────
+let DUPE_GROUPS      = [];      // groups from the last scan, each tagged with a stable .gid
+let lastComputedAt   = null;
+let appliedThisSession = false;
+let dupeIdx           = 0;      // current group index in minigame
+let decisions         = new Map();   // gid -> {action, keeperId, apply}
+let undoStack         = [];     // [{gid, prev}] — prev is the decision before this change (or null)
+let keeperOverride    = {};     // gid -> post_id, overrides the server-picked keeper
+let currentMode       = null;   // 'minigame' | 'lazy' | 'full'
+let listRendered      = 0;
+let reviewFrom         = 'landing';
+const LIST_PAGE = 20;
+const ACTION_CYCLE = ['merge', 'delete', 'ignore'];
 
-function toggleDupSelect(group, postId, el) {
-  dupSel[group] = dupSel[group] || new Set();
-  const set = dupSel[group];
-  const card = document.getElementById(`dup-post-${postId}`);
-  if (set.has(postId)) { set.delete(postId); card?.classList.remove('dup-selected'); }
-  else { set.add(postId); card?.classList.add('dup-selected'); }
-  updateDupSelCount(group);
+function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+function fmtSize(n) {
+  if (!n) return '0 B';
+  const u = ['B','KB','MB','GB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i > 0 && n < 10 ? 1 : 0)} ${u[i]}`;
+}
+function fmtWhen(iso) {
+  if (!iso) return 'never';
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
-function updateDupSelCount(group) {
-  const set = dupSel[group] || new Set();
-  const countEl = document.getElementById(`dup-sel-count-${group}`);
-  if (countEl) countEl.textContent = set.size ? `${set.size} selected` : '';
-  const btn = document.getElementById(`dup-merge-sel-${group}`);
-  if (btn) btn.disabled = set.size < 2;
-}
-
-async function mergeSelected(group) {
-  const set = dupSel[group];
-  if (!set || set.size < 2) { toast('select at least 2 posts','err'); return; }
-  // preserve selection order: first picked becomes the target
-  const ids = [...set];
-  const target = ids[0], sources = ids.slice(1);
-  if (!confirm(`Merge ${sources.length} selected post(s) into post #${target}?\nThe others will be deleted after merging.`)) return;
-  await doMerge(target, sources);
-}
-
-async function mergeAll(group, ids) {
-  if (ids.length < 2) return;
-  const target = ids[0], sources = ids.slice(1);
-  if (!confirm(`Merge all ${ids.length} posts in this group into post #${target}?\nThe other ${sources.length} will be deleted after merging.`)) return;
-  await doMerge(target, sources);
-}
-
-async function doMerge(target, sources) {
-  const r = await fetch('/api/merge/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({target, sources})
+// ── View switching ─────────────────────────────────────────────
+function showView(name) {
+  ['landing', 'minigame', 'list', 'review'].forEach(v => {
+    document.getElementById('dv-' + v).style.display = (v === name) ? '' : 'none';
   });
-  const d = await r.json();
-  if (d.ok) {
-    // remove merged-away source cards; keep target — no page reload
-    sources.forEach(id => document.getElementById(`dup-post-${id}`)?.remove());
-    toast(`merged ${sources.length} post(s) into #${d.post_id}`);
-
-    // clear this group's selection state
-    const grpEl = document.getElementById(`dup-post-${target}`)?.closest('.dup-group');
-    if (grpEl) {
-      const grpNum = document.getElementById(`dup-post-${target}`)?.dataset.group;
-      if (grpNum && dupSel[grpNum]) { dupSel[grpNum].clear(); updateDupSelCount(grpNum); }
-      document.getElementById(`dup-post-${target}`)?.classList.remove('dup-selected');
-      // collapse the whole group once only the target card is left
-      if (grpEl.querySelectorAll('.dup-card').length <= 1) grpEl.remove();
-    }
-  } else {
-    toast(d.error || 'merge error','err');
-  }
+  if (name === 'landing') renderLanding();
+}
+function activeView() {
+  if (document.getElementById('dv-minigame').style.display !== 'none') return 'minigame';
+  if (document.getElementById('dv-list').style.display !== 'none') return 'list';
+  if (document.getElementById('dv-review').style.display !== 'none') return 'review';
+  return 'landing';
 }
 
-async function copyDupPath(el) {
-  const path = el.dataset.path || el.textContent;
+// ── Landing / scan ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', loadDupeResult);
+
+async function loadDupeResult() {
   try {
-    await navigator.clipboard.writeText(path);
-    el.style.color = 'var(--tag-meta)';
-    setTimeout(()=> el.style.color = '', 700);
-    toast('path copied');
-  } catch { toast('select text and copy manually'); }
+    const d = await (await fetch('/api/dupes/result/')).json();
+    DUPE_GROUPS = (d.groups || []).map((g, i) => ({...g, gid: i}));
+    lastComputedAt = d.computed_at;
+  } catch (e) {
+    DUPE_GROUPS = []; lastComputedAt = null;
+  }
+  renderLanding();
 }
 
-async function deletePost(id, alsoFiles) {
-  const msg = alsoFiles ? 'Delete ALL files of this post?' : 'Remove post from DB (keep files)?';
-  if (!confirm(msg)) return;
-  const r = await fetch(`/api/post/${id}/delete/`, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json','X-CSRFToken': getCsrf()},
-    body: JSON.stringify({delete_file: alsoFiles})
-  });
-  if ((await r.json()).ok) {
-    document.getElementById(`dup-post-${id}`)?.remove();
-    toast('removed');
+function renderLanding() {
+  const status = document.getElementById('dupes-status');
+  const picker = document.getElementById('dupes-mode-picker');
+  const topinfo = document.getElementById('dupes-topinfo');
+  const pending = document.getElementById('dupes-pending-note');
+  if (!DUPE_GROUPS.length) {
+    status.textContent = lastComputedAt
+      ? `no duplicate groups left (scanned ${fmtWhen(lastComputedAt)})`
+      : 'not scanned yet — click scan to find duplicates';
+    picker.style.display = 'none';
+    topinfo.textContent = '';
+  } else {
+    status.textContent = `${DUPE_GROUPS.length} group(s) found · scanned ${fmtWhen(lastComputedAt)}`
+      + (appliedThisSession ? ' · you’ve applied changes — rescan to refresh' : '');
+    picker.style.display = 'flex';
+    topinfo.textContent = `${DUPE_GROUPS.length} group(s)`;
+  }
+  document.getElementById('dupes-scan-btn').textContent = lastComputedAt ? '⟳ rescan' : '⟳ scan for duplicates';
+  if (decisions.size) {
+    pending.style.display = '';
+    pending.innerHTML = `${decisions.size} pending decision(s) not yet applied — <a href="#" onclick="reviewFrom='landing';openReview();return false;">review &amp; apply</a>`;
+  } else {
+    pending.style.display = 'none';
   }
 }
 
-async function deleteGroup(groupNum, ids) {
-  if (!confirm(`Keep first post, remove ${ids.length-1} duplicate(s) from DB? Files will NOT be deleted.`)) return;
-  for (const id of ids.slice(1)) {
-    await fetch(`/api/post/${id}/delete/`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json','X-CSRFToken': getCsrf()},
-      body: JSON.stringify({delete_file: false})
-    });
-    document.getElementById(`dup-post-${id}`)?.remove();
+let _dupePollTimer = null;
+async function startDupeScan() {
+  try {
+    const r = await fetch('/api/dupes/scan/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+    const d = await r.json();
+    document.getElementById('dupes-status').textContent = 'scanning…';
+    document.getElementById('dupes-mode-picker').style.display = 'none';
+    toast('scanning for duplicates in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+    watchDupeScan(d.task_id);
+  } catch (e) { toast('could not start scan', 'err'); }
+}
+function watchDupeScan(taskId) {
+  clearTimeout(_dupePollTimer);
+  const tick = async () => {
+    try {
+      const d = await (await fetch('/api/tasks/')).json();
+      const t = d.tasks.find(x => x.id === taskId);
+      if (t && t.status === 'running') {
+        document.getElementById('dupes-status').textContent = t.message || 'scanning…';
+        _dupePollTimer = setTimeout(tick, 1200);
+        return;
+      }
+      if (t && t.status === 'error') toast(t.error || 'scan failed', 'err');
+      await loadDupeResult();
+    } catch (e) {
+      _dupePollTimer = setTimeout(tick, 2000);
+    }
+  };
+  tick();
+}
+
+function enterMode(mode) {
+  if (!DUPE_GROUPS.length) { toast('scan first', 'err'); return; }
+  currentMode = mode;
+  if (mode === 'minigame') {
+    dupeIdx = 0;
+    renderMinigame();
+    showView('minigame');
+  } else {
+    listRendered = 0;
+    document.getElementById('dg-list-body').innerHTML = '';
+    renderListBatch(mode === 'full' ? DUPE_GROUPS.length : LIST_PAGE);
+    showView('list');
   }
-  toast(`removed ${ids.length-1} post(s)`);
 }
 
-async function toggleNotDupe(idA, idB, btn) {
-  const isActive = btn.classList.contains('active');
-  const r = await fetch('/api/not-dupe/', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json','X-CSRFToken': getCsrf()},
-    body: JSON.stringify({a: idA, b: idB, undo: isActive})
-  });
-  const d = await r.json();
-  if (!d.ok) return;
-  // toggle both directions
-  const btnAB = document.getElementById(`nd-${idA}-${idB}`);
-  const btnBA = document.getElementById(`nd-${idB}-${idA}`);
-  [btnAB, btnBA].forEach(b => {
-    if (!b) return;
-    b.classList.toggle('active', d.ignored);
-    b.title = d.ignored
-      ? `click to undo — these posts will reappear in duplicates`
-      : `mark as not duplicate`;
-  });
-  toast(d.ignored ? 'marked as not duplicate — will be hidden next scan' : 'unmarked');
+// ── Shared card rendering ──────────────────────────────────────
+function keeperFor(g) {
+  return (keeperOverride[g.gid] != null) ? keeperOverride[g.gid] : g.keeper_id;
+}
+function cardHtml(post, g, opts = {}) {
+  const keeperId = (opts.keeperId != null) ? opts.keeperId : keeperFor(g);
+  const isKeeper = post.post_id === keeperId;
+  return `<div class="dg-card ${isKeeper ? 'dg-keeper' : ''}" data-post="${post.post_id}"
+      title="${escAttr(post.file_path)}" onclick="pickKeeper(${g.gid}, ${post.post_id})">
+    <div class="dg-thumb-wrap">
+      <img src="${post.thumb_url}" loading="lazy" alt="">
+      ${post.img_count > 1 ? `<span class="dg-badge">${post.img_count} imgs</span>` : ''}
+      ${isKeeper ? `<span class="dg-keeper-badge">keep</span>` : ''}
+      ${opts.num ? `<span class="dg-num">${opts.num}</span>` : ''}
+    </div>
+    <div class="dg-meta">
+      <a href="/post/${post.post_id}/" target="_blank" rel="noopener" onclick="event.stopPropagation()">#${post.post_id}</a>
+      <span>${fmtSize(post.file_size)}</span>
+    </div>
+  </div>`;
 }
 
-async function ignoreGroup(groupNum, ids) {
-  // mark every pair in the group as not-dupes
-  let count = 0;
-  for (let i = 0; i < ids.length; i++) {
-    for (let j = i+1; j < ids.length; j++) {
-      await fetch('/api/not-dupe/', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json','X-CSRFToken': getCsrf()},
-        body: JSON.stringify({a: ids[i], b: ids[j], undo: false})
-      });
-      count++;
-      // toggle all buttons
-      const btnAB = document.getElementById(`nd-${ids[i]}-${ids[j]}`);
-      const btnBA = document.getElementById(`nd-${ids[j]}-${ids[i]}`);
-      [btnAB, btnBA].forEach(b => { if(b) b.classList.add('active'); });
+function pickKeeper(gid, postId) {
+  keeperOverride[gid] = postId;
+  if (decisions.has(gid)) {
+    const d = decisions.get(gid);
+    decisions.set(gid, {...d, keeperId: postId});
+  }
+  if (activeView() === 'minigame') {
+    renderMinigame();
+  } else {
+    const g = DUPE_GROUPS.find(x => x.gid === gid);
+    const row = document.getElementById(`dg-row-${gid}`);
+    if (g && row) row.outerHTML = groupRowHtml(g);
+  }
+}
+
+// ── Minigame ────────────────────────────────────────────────────
+function renderMinigame() {
+  const g = DUPE_GROUPS[dupeIdx];
+  document.getElementById('mg-progress').textContent = DUPE_GROUPS.length ? `group ${dupeIdx + 1} / ${DUPE_GROUPS.length}` : '';
+  const distEl = document.getElementById('mg-dist');
+  if (!g) {
+    distEl.textContent = '';
+    document.getElementById('mg-group').innerHTML =
+      `<div class="mg-done">all groups triaged 🎉<br>press <b>review &amp; apply</b> to finish, or ← prev to revisit one.</div>`;
+    return;
+  }
+  distEl.textContent = `hash distance ${g.min_distance}`;
+  const cards = g.posts.map((p, i) => cardHtml(p, g, {num: i + 1})).join('');
+  const decided = decisions.get(g.gid);
+  document.getElementById('mg-group').innerHTML = `<div><div class="dg-cards">${cards}</div>` +
+    (decided ? `<div class="mg-decided">queued: ${decided.action} — keep #${decided.keeperId}</div>` : '') +
+    `</div>`;
+}
+
+function recordAndAdvance(gid, newDecision) {
+  const prev = decisions.has(gid) ? decisions.get(gid) : null;
+  undoStack.push({gid, prev});
+  if (newDecision) decisions.set(gid, newDecision);
+  else decisions.delete(gid);
+}
+function mgAction(kind) {
+  const g = DUPE_GROUPS[dupeIdx];
+  if (!g) { toast('no more groups — review & apply', 'err'); return; }
+  if (kind === 'skip') recordAndAdvance(g.gid, null);
+  else recordAndAdvance(g.gid, {action: kind, keeperId: keeperFor(g), apply: true});
+  advanceGroup(1);
+}
+function mgUndo() {
+  const entry = undoStack.pop();
+  if (!entry) { toast('nothing to undo', 'err'); return; }
+  if (entry.prev) decisions.set(entry.gid, entry.prev);
+  else decisions.delete(entry.gid);
+  const g = DUPE_GROUPS.find(x => x.gid === entry.gid);
+  const view = activeView();
+  if (view === 'minigame') {
+    const idx = DUPE_GROUPS.findIndex(x => x.gid === entry.gid);
+    if (idx >= 0) dupeIdx = idx;
+    renderMinigame();
+  } else if (view === 'list' && g) {
+    const row = document.getElementById(`dg-row-${g.gid}`);
+    if (row) row.outerHTML = groupRowHtml(g);
+  }
+  toast('undone');
+}
+function advanceGroup(delta) {
+  dupeIdx = Math.max(0, Math.min(DUPE_GROUPS.length, dupeIdx + delta));
+  renderMinigame();
+}
+
+// ── List mode (lazy + full) ─────────────────────────────────────
+function queueAction(gid, kind) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid);
+  if (!g) return;
+  if (kind === 'skip') recordAndAdvance(gid, null);
+  else recordAndAdvance(gid, {action: kind, keeperId: keeperFor(g), apply: true});
+  const row = document.getElementById(`dg-row-${gid}`);
+  if (row) row.outerHTML = groupRowHtml(g);
+  toast(`queued: ${kind}`);
+}
+function groupRowHtml(g) {
+  const decided = decisions.get(g.gid);
+  const cards = g.posts.map(p => cardHtml(p, g)).join('');
+  return `<div class="dg-group-row" id="dg-row-${g.gid}">
+    <div class="dg-group-head">
+      <span>group · ${g.posts.length} posts · dist ${g.min_distance}${decided ? ` · queued: <b>${decided.action}</b>` : ''}</span>
+      <div class="dg-group-actions">
+        <button class="btn primary" onclick="queueAction(${g.gid}, 'merge')">merge all</button>
+        <button class="btn danger" onclick="queueAction(${g.gid}, 'delete')">delete rest</button>
+        <button class="btn" onclick="queueAction(${g.gid}, 'ignore')">not dupes</button>
+      </div>
+    </div>
+    <div class="dg-cards">${cards}</div>
+  </div>`;
+}
+function renderListBatch(count) {
+  const body = document.getElementById('dg-list-body');
+  const slice = DUPE_GROUPS.slice(listRendered, listRendered + count);
+  body.insertAdjacentHTML('beforeend', slice.map(groupRowHtml).join(''));
+  listRendered += slice.length;
+  document.getElementById('list-progress').textContent = `${listRendered} / ${DUPE_GROUPS.length} shown`;
+  const moreWrap = document.getElementById('load-more-wrap');
+  moreWrap.style.display = (currentMode === 'lazy' && listRendered < DUPE_GROUPS.length) ? '' : 'none';
+}
+function loadMoreGroups() { renderListBatch(LIST_PAGE); }
+
+// ── Review & apply ──────────────────────────────────────────────
+function openReview() {
+  reviewFrom = activeView();
+  const body = document.getElementById('rv-body');
+  const entries = [...decisions.entries()];
+  document.getElementById('rv-count').textContent = `${entries.length} decision(s)`;
+  body.innerHTML = entries.length
+    ? entries.map(([gid, d]) => reviewRowHtml(gid, d)).join('')
+    : `<div class="rv-empty">no decisions yet — go back and merge / delete / ignore some groups first</div>`;
+  showView('review');
+}
+function closeReview() {
+  if (reviewFrom === 'list') {
+    document.getElementById('dg-list-body').innerHTML =
+      DUPE_GROUPS.slice(0, listRendered).map(groupRowHtml).join('');
+  }
+  showView(reviewFrom === 'minigame' ? 'minigame' : (reviewFrom === 'list' ? 'list' : 'landing'));
+  if (reviewFrom === 'minigame') renderMinigame();
+}
+function reviewRowHtml(gid, d) {
+  const g = DUPE_GROUPS.find(x => x.gid === gid);
+  if (!g) return '';
+  const thumbs = g.posts.slice(0, 4).map(p => `<img src="${p.thumb_url}" loading="lazy" alt="">`).join('');
+  return `<div class="rv-row ${d.apply === false ? 'rv-off' : ''}" id="rv-row-${gid}">
+    <label style="display:flex;align-items:center;">
+      <input type="checkbox" ${d.apply === false ? '' : 'checked'} onchange="toggleApply(${gid}, this.checked)">
+    </label>
+    <div class="rv-thumbs">${thumbs}</div>
+    <div class="rv-info">group of ${g.posts.length} · keep #${d.keeperId} · dist ${g.min_distance}</div>
+    <span class="rv-action-badge ${d.action}">${d.action}</span>
+    <div class="rv-controls">
+      <button class="btn" onclick="cycleAction(${gid})" title="change action">⟳ change</button>
+      <button class="btn" onclick="removeDecision(${gid})" title="leave as-is, drop from this list">✕ leave</button>
+    </div>
+  </div>`;
+}
+function toggleApply(gid, checked) {
+  const d = decisions.get(gid); if (!d) return;
+  d.apply = checked; decisions.set(gid, d);
+  document.getElementById(`rv-row-${gid}`)?.classList.toggle('rv-off', !checked);
+}
+function cycleAction(gid) {
+  const d = decisions.get(gid); if (!d) return;
+  d.action = ACTION_CYCLE[(ACTION_CYCLE.indexOf(d.action) + 1) % ACTION_CYCLE.length];
+  decisions.set(gid, d);
+  const row = document.getElementById(`rv-row-${gid}`);
+  if (row) row.outerHTML = reviewRowHtml(gid, d);
+}
+function removeDecision(gid) {
+  decisions.delete(gid);
+  document.getElementById(`rv-row-${gid}`)?.remove();
+  document.getElementById('rv-count').textContent = `${decisions.size} decision(s)`;
+  if (!decisions.size) document.getElementById('rv-body').innerHTML = `<div class="rv-empty">no decisions left</div>`;
+}
+
+async function applyDecisions() {
+  const entries = [...decisions.entries()].filter(([, d]) => d.apply !== false);
+  if (!entries.length) { toast('nothing ticked to apply', 'err'); return; }
+  if (!confirm(`Apply ${entries.length} change(s) now?\nMerges/deletes/ignores run immediately and can't be undone from here.`)) return;
+
+  startProgress();
+  const summary = {merge: 0, delete: 0, ignore: 0, failed: 0};
+  const appliedGids = new Set();
+  for (const [gid, d] of entries) {
+    const g = DUPE_GROUPS.find(x => x.gid === gid);
+    if (!g) continue;
+    const others = g.posts.map(p => p.post_id).filter(id => id !== d.keeperId);
+    try {
+      if (d.action === 'merge') {
+        const r = await (await fetch('/api/merge/', {
+          method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+          body: JSON.stringify({target: d.keeperId, sources: others})
+        })).json();
+        r.ok ? summary.merge++ : summary.failed++;
+      } else if (d.action === 'delete') {
+        let allOk = true;
+        for (const id of others) {
+          const r = await (await fetch(`/api/post/${id}/delete/`, {
+            method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+            body: JSON.stringify({delete_file: true})
+          })).json();
+          if (!r.ok) allOk = false;
+        }
+        allOk ? summary.delete++ : summary.failed++;
+      } else if (d.action === 'ignore') {
+        for (let i = 0; i < g.posts.length; i++) {
+          for (let j = i + 1; j < g.posts.length; j++) {
+            await fetch('/api/not-dupe/', {
+              method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+              body: JSON.stringify({a: g.posts[i].post_id, b: g.posts[j].post_id, undo: false})
+            });
+          }
+        }
+        summary.ignore++;
+      }
+    } catch (e) { summary.failed++; }
+    appliedGids.add(gid);
+  }
+  doneProgress();
+
+  appliedGids.forEach(gid => { decisions.delete(gid); delete keeperOverride[gid]; });
+  DUPE_GROUPS = DUPE_GROUPS.filter(g => !appliedGids.has(g.gid));
+  undoStack = undoStack.filter(e => !appliedGids.has(e.gid));
+  appliedThisSession = true;
+
+  toast(`applied: ${summary.merge} merge, ${summary.delete} delete, ${summary.ignore} ignore` +
+        (summary.failed ? ` · ${summary.failed} failed` : ''));
+  showView('landing');
+}
+
+// ── Keyboard ──────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  const t = e.target.tagName;
+  if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+  if (e.metaKey || e.altKey) return;
+  if (e.ctrlKey) {
+    if (e.key.toLowerCase() === 'z') { e.preventDefault(); mgUndo(); }
+    return;
+  }
+  const view = activeView();
+  const k = e.key;
+  if (view === 'minigame') {
+    if (k === bind('dupe_merge'))  { e.preventDefault(); mgAction('merge');  return; }
+    if (k === bind('dupe_delete')) { e.preventDefault(); mgAction('delete'); return; }
+    if (k === bind('dupe_ignore')) { e.preventDefault(); mgAction('ignore'); return; }
+    if (k === bind('dupe_skip'))   { e.preventDefault(); mgAction('skip');   return; }
+    if (k === bind('dupe_prev'))   { e.preventDefault(); advanceGroup(-1);   return; }
+    if (k === bind('dupe_next'))   { e.preventDefault(); advanceGroup(1);    return; }
+    if (/^[1-9]$/.test(k)) {
+      const g = DUPE_GROUPS[dupeIdx]; if (!g) return;
+      const post = g.posts[parseInt(k, 10) - 1];
+      if (post) { e.preventDefault(); pickKeeper(g.gid, post.post_id); }
+      return;
     }
   }
-  toast(`ignored ${count} pair(s) — won't appear next time`);
-}
+  if (view === 'minigame' || view === 'list') {
+    if (k === bind('dupe_undo'))   { e.preventDefault(); mgUndo();     return; }
+    if (k === bind('dupe_review')) { e.preventDefault(); openReview(); return; }
+  }
+  if (view === 'review' && k === 'Escape') { e.preventDefault(); closeReview(); }
+});
 </script>
 {% endblock %}
