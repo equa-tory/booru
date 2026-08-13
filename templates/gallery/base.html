@@ -482,6 +482,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn notif-btn" onclick="toggleNotif()" style="width:100%;margin-top:.4rem;">&#128276; task notifications</button>
       <button class="mode-btn swipe-vid-btn" onclick="toggleSwipeVideos()" style="width:100%;margin-top:.4rem;">&#127909; swipe videos too</button>
       <button class="mode-btn scroll-jump-btn" onclick="toggleScrollJump()" style="width:100%;margin-top:.4rem;">&#128205; scroll opens at current item</button>
+      <button class="mode-btn force-scroll-btn" onclick="toggleForceScroll()" style="width:100%;margin-top:.4rem;" title="multi-image posts always open as one continuous scroll — removes the paged/scroll toggle button since there's nothing left to switch to">&#8693; always scroll (no paged mode)</button>
       <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
       <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.4rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
       <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.4rem;" title="in-post only: hides the header + bottom nav, replaces them with one slim thumb-reachable bar (rating, fav, info, more, prev/next arrows)">&#9707; minimal post UI</button>
@@ -762,6 +763,19 @@ function applyScrollJumpBtn() {
   document.querySelectorAll('.scroll-jump-btn').forEach(b => b.classList.toggle('active', on));
 }
 
+/* toggle: multi-image posts always open in scroll mode — paged mode is
+   disabled entirely, so the mode-toggle button (nothing to switch to) is
+   hidden on the post page (see detail.html's body.force-scroll rules). */
+function toggleForceScroll() {
+  localStorage.setItem('forceScrollMode', localStorage.getItem('forceScrollMode') === '1' ? '0' : '1');
+  applyForceScrollBtn();
+}
+function applyForceScrollBtn() {
+  const on = localStorage.getItem('forceScrollMode') === '1';
+  document.body.classList.toggle('force-scroll', on);
+  document.querySelectorAll('.force-scroll-btn').forEach(b => b.classList.toggle('active', on));
+}
+
 /* toggle: fast mode — disables image preloading, background polling, smooth
    animations, and trims the sidebar tag list (via a cookie the server reads). */
 function toggleFastMode() {
@@ -779,7 +793,7 @@ function applyFastModeBtn() {
   document.body.classList.toggle('fast-mode', on);
   document.querySelectorAll('.fast-mode-btn').forEach(b => b.classList.toggle('active', on));
 }
-document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); applyMinimalUiBtn(); });
+document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); applyMinimalUiBtn(); applyForceScrollBtn(); });
 
 /* toggle: redesigned thumb-friendly in-post mobile layout (post detail page
    only — see detail.html's own CSS/markup for the actual bar; this just

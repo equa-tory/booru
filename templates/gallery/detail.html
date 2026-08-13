@@ -173,6 +173,10 @@
     white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.4);
   }
 }
+/* "always scroll" setting: paged mode is disabled for multi-image posts, so
+   there's nothing to toggle to — hide both mode-toggle buttons entirely. */
+body.force-scroll #mode-toggle,
+body.force-scroll #mode-toggle-fixed { display:none !important; }
 
 /* Nav arrows */
 .nav-arrow { position:absolute; top:50%; transform:translateY(-50%); z-index:8; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.1); color:#fff; font-size:1.5rem; width:44px; height:70px; display:flex; align-items:center; justify-content:center; cursor:pointer; border-radius:6px; text-decoration:none; transition:background .15s, opacity .2s; opacity:0; pointer-events:none; -webkit-tap-highlight-color:transparent; }
@@ -685,8 +689,12 @@ const IS_TALL = COVER_W > 0 && COVER_H / COVER_W >= 2;
 // already set to scroll", so the cross-device sync can't silently flip an
 // established scroll preference back to paged (see the /api/prefs/ block).
 const LOCAL_VIEW_PREF = localStorage.getItem('viewMode');
+// "always scroll" setting (base.html's force-scroll-btn) — paged mode is
+// disabled entirely for multi-image posts when on.
+const FORCE_SCROLL = IS_MULTI && localStorage.getItem('forceScrollMode') === '1';
+document.body.classList.toggle('force-scroll', FORCE_SCROLL); // set now, don't wait for base.html's DOMContentLoaded handler
 let viewMode = IS_MULTI
-  ? (LOCAL_VIEW_PREF || 'scroll')
+  ? (FORCE_SCROLL ? 'scroll' : (LOCAL_VIEW_PREF || 'scroll'))
   : (localStorage.getItem('viewModeSingle') || (IS_TALL ? 'scroll' : 'paged'));
 
 // check if browser zoom is allowed (disable JS zoom in that case)
@@ -761,7 +769,19 @@ function applyViewMode(mode) {
         setTimeout(initScrollZoom, 80);
         return;
       }
-      sc.scrollTop = pt;
+      if (!IS_MULTI) {
+        // Single-image post: center the image vertically in the viewport
+        // instead of leaving it flush against the top padding — using the
+        // known width/height from the server so this doesn't have to wait
+        // for the lazy-loaded <img> to size itself. The top padding itself
+        // stays (still useful for the pull-down-to-close gesture); only the
+        // initial scroll position changes.
+        const contentWidth = Math.max(1, sc.clientWidth - 16); // 8px each side
+        const estHeight = (COVER_W > 0 && COVER_H > 0) ? contentWidth * (COVER_H / COVER_W) : contentWidth;
+        sc.scrollTop = Math.max(0, pt + estHeight / 2 - sc.clientHeight / 2);
+      } else {
+        sc.scrollTop = pt;
+      }
     }
     setupScrollLazy();
     setTimeout(initScrollZoom, 50);
@@ -808,6 +828,7 @@ function setupScrollLazy() {
   document.querySelectorAll('img.scroll-img').forEach(el => io.observe(el));
 }
 function toggleViewMode() {
+  if (FORCE_SCROLL) return; // "always scroll" setting — paged mode is disabled
   const newMode = viewMode === 'paged' ? 'scroll' : 'paged';
   applyViewMode(newMode);
   if (!IS_MULTI) return; // single-post mode is local-only, doesn't touch the shared default
@@ -2016,8 +2037,9 @@ document.querySelectorAll('[data-pdf-url]').forEach(div => {
 // chosen one locally (LOCAL_VIEW_PREF was null). Once a device has its own
 // local choice (e.g. phone set to scroll), it keeps it — otherwise toggling
 // to paged on desktop would silently flip the phone back to paged on its next
-// visit, which is the "sometimes loads in paged mode" bug.
-if (IS_MULTI && LOCAL_VIEW_PREF === null) {
+// visit, which is the "sometimes loads in paged mode" bug. Skipped entirely
+// under "always scroll" — a stale server 'paged' pref must never override it.
+if (IS_MULTI && !FORCE_SCROLL && LOCAL_VIEW_PREF === null) {
   fetch('/api/prefs/').then(r=>r.json()).then(d=>{
     const serverMode = d.prefs && d.prefs.viewMode;
     if (serverMode && serverMode !== viewMode) {
