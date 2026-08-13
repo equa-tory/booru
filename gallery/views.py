@@ -61,9 +61,9 @@ def _term_to_q(term):
     if not term:
         return None, False
     if term.startswith('file:') and len(term) > 5:   # search by file name
-        return Q(images__file_path__icontains=term[5:]), True
+        return Q(images__rel_path__icontains=term[5:]), True
     if term.startswith('folder:') and len(term) > 7:  # search by folder name
-        return Q(images__file_path__icontains=term[7:]), True
+        return Q(images__rel_path__icontains=term[7:]), True
     if '*' in term:                                   # wildcard glob
         pattern = '^' + re.escape(term).replace(r'\*', '.*') + '$'
         return Q(tags__name__iregex=pattern), True
@@ -633,7 +633,7 @@ def _do_scan(task):
     for photo in Photo.objects.filter(is_video=True):
         if not photo.thumb_path or not os.path.exists(photo.thumb_path) or os.path.getsize(photo.thumb_path) < 5000:
             thumb = make_video_thumb(photo.file_path)
-            if thumb: photo.thumb_path = thumb; photo.save(update_fields=['thumb_path'])
+            if thumb: photo.thumb_path = thumb; photo.save(update_fields=['rel_thumb_path'])
     task.message = f'added {added}, removed {removed} (total {Post.objects.count()})'
     task.save(update_fields=['message'])
 
@@ -744,6 +744,22 @@ def sound_tag_all_bg(request):
     return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…').id})
 
 
+@require_POST
+def rebase_paths_bg(request):
+    """Convert any Photo rows still storing an absolute file/thumb path into
+    a path relative to the current MEDIA_ROOT. Run this BEFORE moving the
+    media folder (while MEDIA_ROOT still points at the current location) so
+    future moves only need a MEDIA_ROOT change in settings.py, not a DB edit.
+    Idempotent — safe to re-run."""
+    from .utils import rebase_photo_paths
+    def work(task):
+        converted, already_relative, left_absolute = rebase_photo_paths(task)
+        task.message = (f'{converted} converted, {already_relative} already relative, '
+                         f'{left_absolute} left absolute (outside MEDIA_ROOT)')
+        task.save(update_fields=['message'])
+    return JsonResponse({'task_id': _start_task('rebase_paths', work, message='rebasing paths…').id})
+
+
 def _dupes_cache_path():
     return os.path.join(settings.BASE_DIR, '.dupes_cache.json')
 
@@ -823,16 +839,16 @@ def scan(request):
             thumb = make_video_thumb(photo.file_path)
             if thumb:
                 photo.thumb_path = thumb
-                photo.save(update_fields=['thumb_path'])
+                photo.save(update_fields=['rel_thumb_path'])
 
     # Also retag PDFs with placeholder thumbs
-    for photo in Photo.objects.filter(file_path__iendswith='.pdf'):
+    for photo in Photo.objects.filter(rel_path__iendswith='.pdf'):
         if not photo.thumb_path or not _os.path.exists(photo.thumb_path) or            _os.path.getsize(photo.thumb_path) < 5000:
             from .utils import make_pdf_thumb
             thumb = make_pdf_thumb(photo.file_path)
             if thumb:
                 photo.thumb_path = thumb
-                photo.save(update_fields=['thumb_path'])
+                photo.save(update_fields=['rel_thumb_path'])
 
     return JsonResponse({'added': added, 'removed': removed,
                          'total': Post.objects.count()})
@@ -1429,7 +1445,7 @@ def organize_singles(request):
         try:
             os.rename(fp, dest)
             photo.file_path = dest
-            photo.save(update_fields=['file_path'])
+            photo.save(update_fields=['rel_path'])
             moved += 1
         except OSError as e:
             print(f"organize_singles error post {post.pk}: {e}")
@@ -1479,7 +1495,7 @@ def organize_singles_deep(request):
         try:
             os.rename(fp, dest)
             photo.file_path = dest
-            photo.save(update_fields=['file_path'])
+            photo.save(update_fields=['rel_path'])
             moved += 1
         except OSError as e:
             print(f'organize_singles_deep error post {post.pk}: {e}')
@@ -1683,7 +1699,7 @@ def regen_thumb(request, pk):
         ph = compute_phash(photo.file_path)
         if ph:
             photo.phash = ph
-    photo.save(update_fields=['thumb_path', 'phash', 'is_video', 'width', 'height'])
+    photo.save(update_fields=['rel_thumb_path', 'phash', 'is_video', 'width', 'height'])
     return JsonResponse({'ok': True, 'thumb_url': photo.thumb_url})
 
 
@@ -1708,7 +1724,7 @@ def bulk_video_thumb(request):
         thumb = make_thumb(cover.file_path, pct=pct)
         if thumb:
             cover.thumb_path = thumb
-            cover.save(update_fields=['thumb_path'])
+            cover.save(update_fields=['rel_thumb_path'])
             done += 1
     return JsonResponse({'ok': True, 'updated': done})
 

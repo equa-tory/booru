@@ -13,6 +13,7 @@ urlpatterns = [
     path('api/merge-bg/', views.merge_bg, name='merge_bg'),
     path('api/ai-tag-all-bg/', views.ai_tag_all_bg, name='ai_tag_all_bg'),
     path('api/sound-tag-all-bg/', views.sound_tag_all_bg, name='sound_tag_all_bg'),
+    path('api/rebase-paths-bg/', views.rebase_paths_bg, name='rebase_paths_bg'),
     path('api/tasks/', views.tasks_list, name='tasks_list'),
     path('api/tasks/clear/', views.tasks_clear, name='tasks_clear'),
     path('api/upload/', views.upload, name='upload'),

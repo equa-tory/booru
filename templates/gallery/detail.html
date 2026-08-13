@@ -222,11 +222,13 @@
     background:var(--bg2); border-top:1px solid var(--border);
   }
   .mini-row { display:flex; align-items:center; flex:1; min-height:0; }
-  .mini-row-top { gap:.2rem; padding:0 .4rem; }
+  /* Row 1: stars + fav centered together as one cluster (not spread edge to
+     edge) so the fav button sits within thumb reach next to the stars. */
+  .mini-row-top { gap:.7rem; padding:0 .4rem; justify-content:center; }
   .mini-row-bottom { gap:.35rem; padding:.2rem 0; }
-  .mini-stars { display:flex; flex:1; justify-content:center; }
+  .mini-stars { display:flex; }
   .mini-bar .mob-rate-star { font-size:1.7rem; padding:.2rem .25rem; }
-  .mini-bar .mob-rate-fav { font-size:1.25rem; background:none; border:none; padding:0 .5rem; flex:none; height:100%; }
+  .mini-bar .mob-rate-fav { font-size:1.25rem; background:none; border:none; padding:0 .3rem; flex:none; height:100%; }
   /* Row 2: secondary actions — equal-width, wide tap targets */
   .mini-icon {
     flex:1; height:100%; background:none; border:none; color:var(--text);
@@ -234,11 +236,14 @@
     -webkit-tap-highlight-color:transparent; cursor:pointer; padding:0;
   }
 
-  /* Prev/next as big circle buttons floating over the media, centered above
-     the bar — easy to hit with either thumb without covering the image. */
+  /* Prev/next as big tap zones floating over the media, centered above the
+     bar — just a faint circular outline (no icon, near-invisible fill) so
+     they mark where to tap without covering the image. Deliberately NOT
+     hidden on tap (a prior attempt at hide-on-tap here didn't work well) —
+     instead they stay put but stay unobtrusive. */
   .mini-nav { display:none; }
   body.minimal-ui .mini-nav {
-    display:flex; gap:4.5rem;
+    display:flex; gap:5.5rem;
     position:fixed; left:50%; transform:translateX(-50%);
     bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .55rem);
     z-index:118; pointer-events:none;
@@ -246,16 +251,15 @@
   .mini-nav-btn {
     pointer-events:auto; touch-action:manipulation;
     width:60px; height:60px; border-radius:50%; padding:0;
-    background:rgba(0,0,0,.38); border:1px solid rgba(255,255,255,.22);
-    backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
-    color:rgba(255,255,255,.85); font-size:2rem; line-height:1;
+    background:rgba(255,255,255,.04); border:1.5px solid rgba(255,255,255,.3);
     display:flex; align-items:center; justify-content:center;
     -webkit-tap-highlight-color:transparent; cursor:pointer;
   }
-  .mini-nav-btn:active   { background:rgba(124,106,247,.6); color:#fff; }
-  .mini-nav-btn.disabled { opacity:.2; pointer-events:none; }
-  /* keep the mode toggle above the nav circles instead of overlapping them */
-  body.minimal-ui #mode-toggle-fixed { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 78px); }
+  .mini-nav-btn:active   { background:rgba(124,106,247,.25); border-color:rgba(124,106,247,.8); }
+  .mini-nav-btn.disabled { opacity:.15; pointer-events:none; }
+  /* Mode toggle sits lower, right above the rating row, in the horizontal
+     gap between the two nav circles instead of floating high on its own. */
+  body.minimal-ui #mode-toggle-fixed { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .55rem); z-index:120; }
 }
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
 .swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
@@ -623,12 +627,12 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   <button class="mob-float-btn accent mob-info-btn" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
 </div>
 
-<!-- Minimal post UI: one slim bottom bar (rating, fav, info, more, random,
-     tags) plus two big floating circles for prev/next. Always in the DOM;
+<!-- Minimal post UI: one slim bottom bar (scroll-top, info, tags, random,
+     more) plus two big floating tap-zones for prev/next. Always in the DOM;
      only shown when body.minimal-ui is active (phone). -->
 <div class="mini-nav" id="mini-nav">
-  <button class="mini-nav-btn" id="mini-prev" onclick="navTo('prev')">&#8249;</button>
-  <button class="mini-nav-btn" id="mini-next" onclick="navTo('next')">&#8250;</button>
+  <button class="mini-nav-btn" id="mini-prev" onclick="navTo('prev')" aria-label="previous"></button>
+  <button class="mini-nav-btn" id="mini-next" onclick="navTo('next')" aria-label="next"></button>
 </div>
 <div class="mini-bar" id="mini-bar">
   <div class="mini-row mini-row-top">
@@ -640,6 +644,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="mobFav()">&#9829;</button>
   </div>
   <div class="mini-row mini-row-bottom">
+    <button class="mini-icon" id="mini-scrolltop-btn" onclick="scrollDetailTop()" title="scroll to top" style="display:none;">&#10514;</button>
     <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
     <button class="mini-icon" onclick="openTagSheet()">&#8864;</button>
     <button class="mini-icon" onclick="goRandom()">&#9684;</button>
@@ -675,8 +680,13 @@ let currentImgIdx = 0;
 const COVER_W = {{ images.0.width|default:0 }};
 const COVER_H = {{ images.0.height|default:0 }};
 const IS_TALL = COVER_W > 0 && COVER_H / COVER_W >= 2;
+// Raw local preference BEFORE applyViewMode() writes a default into it below —
+// used later to tell "this device never chose a mode" from "this device is
+// already set to scroll", so the cross-device sync can't silently flip an
+// established scroll preference back to paged (see the /api/prefs/ block).
+const LOCAL_VIEW_PREF = localStorage.getItem('viewMode');
 let viewMode = IS_MULTI
-  ? (localStorage.getItem('viewMode') || 'scroll')
+  ? (LOCAL_VIEW_PREF || 'scroll')
   : (localStorage.getItem('viewModeSingle') || (IS_TALL ? 'scroll' : 'paged'));
 
 // check if browser zoom is allowed (disable JS zoom in that case)
@@ -1975,8 +1985,18 @@ function hideSuggestions(){document.getElementById('tag-suggestions').style.disp
 function onTagKey(e){if(e.key==='Enter')addTag();if(e.key==='Escape')hideSuggestions();}
 document.addEventListener('click',e=>{if(!e.target.closest('#new-tag')&&!e.target.closest('#tag-suggestions'))hideSuggestions();});
 
+// Scroll the current media back to the top — for the minimal-UI bottom-bar
+// button, shown only on multi-image or tall posts (the ones actually worth
+// scrolling back up from).
+function scrollDetailTop() {
+  const sc = document.getElementById('scroll-container');
+  if (sc) sc.scrollTo({top: 0, behavior: 'smooth'});
+}
+
 /* ── Init ────────────────────────────────────────────────── */
 applyViewMode(viewMode);
+const scrollTopBtn = document.getElementById('mini-scrolltop-btn');
+if (scrollTopBtn && (IS_MULTI || IS_TALL)) scrollTopBtn.style.display = '';
 loadNeighbors();
 if (IS_MULTI && typeof preloadNeighbors !== 'undefined') preloadNeighbors(currentImgIdx || 0);
 if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
@@ -1992,8 +2012,12 @@ document.querySelectorAll('[data-pdf-url]').forEach(div => {
   div.innerHTML = renderPdfContainer(div.dataset.pdfUrl);
 });
 
-// Load cross-device view mode preference, then re-apply if different
-if (IS_MULTI) {
+// Adopt the cross-device view mode preference ONLY on a device that has never
+// chosen one locally (LOCAL_VIEW_PREF was null). Once a device has its own
+// local choice (e.g. phone set to scroll), it keeps it — otherwise toggling
+// to paged on desktop would silently flip the phone back to paged on its next
+// visit, which is the "sometimes loads in paged mode" bug.
+if (IS_MULTI && LOCAL_VIEW_PREF === null) {
   fetch('/api/prefs/').then(r=>r.json()).then(d=>{
     const serverMode = d.prefs && d.prefs.viewMode;
     if (serverMode && serverMode !== viewMode) {

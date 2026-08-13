@@ -391,6 +391,7 @@ input[type=range].size-slider::-moz-range-thumb {
     <a class="btn header-desktop" href="/shortcuts/" title="keyboard shortcuts">&#9000; keys</a>
     <button class="btn header-desktop" onclick="organizeSingles()" title="move loose root files into month folders (faster to browse on disk)">&#128193; tidy files</button>
     <button class="btn header-desktop" onclick="organizeSinglesDeep()" title="re-tidy ALL files (including already in subfolders) into YYYY-MM/DD — run once">&#128194; re-tidy all</button>
+    <button class="btn header-desktop" onclick="rebasePaths()" title="convert any absolute file paths still in the DB to paths relative to MEDIA_ROOT — run this BEFORE moving the media folder, so afterwards only settings.py needs updating">&#128506; rebase paths</button>
     <!-- "fix folders" kept available but hidden from the top bar (run from
          console or re-enable here if needed). Hidden on phone too (no mobile
          menu entry exists for it). -->
@@ -426,6 +427,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select</button>
       <a class="btn" href="/tags/edit/">&#9998; edit tags</a>
       <button class="btn" onclick="organizeSingles();closeMobMenu()">&#128193; tidy files</button>
+      <button class="btn" onclick="rebasePaths();closeMobMenu()">&#128506; rebase paths</button>
       <a class="btn" href="/shortcuts/">&#9000; keys</a>
       <a class="btn" href="/logout/" style="color:var(--text-dim);">logout</a>
     </div>
@@ -805,7 +807,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;
@@ -1000,6 +1002,15 @@ async function soundTagAll() {
     toast('detecting video audio in the background…');
     if (typeof pollTasks !== 'undefined') pollTasks(true);
   } catch(e) { toast('could not start sound tagging','err'); }
+}
+
+async function rebasePaths() {
+  if (!confirm('Convert any absolute file paths still stored in the DB to paths relative to MEDIA_ROOT?\n\nRun this BEFORE moving the media folder (while MEDIA_ROOT in settings.py still points at the current location) — afterwards, moving the folder only needs a MEDIA_ROOT change, no DB edits. Safe to re-run.')) return;
+  try {
+    await fetch('/api/rebase-paths-bg/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+    toast('rebasing file paths in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start rebasing paths','err'); }
 }
 
 /* ── Upload modal ────────────────────────────────────── */

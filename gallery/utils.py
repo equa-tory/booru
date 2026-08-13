@@ -271,8 +271,13 @@ def make_thumb(src_path, max_size=360, pct=0):
 
 def ingest_photo(path, post, order=0):
     from gallery.models import Photo
-    if Photo.objects.filter(file_path=path).exists():
-        return Photo.objects.get(file_path=path)
+    from django.db.models import Q
+    # match either a legacy absolute row or an already-relative one, so a
+    # re-scan can't create a duplicate Photo regardless of migration state
+    rel = Photo._to_rel(path)
+    existing = Photo.objects.filter(Q(rel_path=path) | Q(rel_path=rel)).first()
+    if existing:
+        return existing
     vid = is_video(path)
     pdf = is_pdf(path)
     if vid or pdf:
@@ -293,12 +298,15 @@ def ingest_photo(path, post, order=0):
         ph = ''
     else:
         ph = compute_phash(path)
-    return Photo.objects.create(
+    photo = Photo(
         post=post, order=order,
-        file_path=path, thumb_path=thumb,
         width=w, height=h, file_size=size, phash=ph,
         is_video=vid,
     )
+    photo.file_path = path    # property setter — stores relative to MEDIA_ROOT
+    photo.thumb_path = thumb  # property setter
+    photo.save()
+    return photo
 
 
 def create_post_from_files(paths, title=''):
@@ -323,13 +331,19 @@ def scan_inbox():
     from gallery.models import Photo
     inbox     = os.path.join(settings.MEDIA_ROOT, 'inbox')
     multi_dir = os.path.join(inbox, '_')
-    existing  = set(Photo.objects.values_list('file_path', flat=True))
+    # normalize to absolute regardless of whether each row is still legacy-
+    # absolute or already relative — os.walk below always deals in absolute
+    # paths, so this set must match that
+    existing = {
+        rp if os.path.isabs(rp) else os.path.join(settings.MEDIA_ROOT, rp)
+        for rp in Photo.objects.values_list('rel_path', flat=True)
+    }
 
     folder_to_post = {}
     for photo in Photo.objects.filter(
-        file_path__contains=os.sep + '_' + os.sep
+        rel_path__contains=os.sep + '_' + os.sep
     ).select_related('post'):
-        folder = os.path.dirname(photo.file_path)
+        folder = os.path.dirname(photo.file_path)  # property -> always absolute
         if folder not in folder_to_post and photo.post:
             folder_to_post[folder] = photo.post
 
@@ -375,9 +389,56 @@ def retag_all_videos():
         thumb = make_video_thumb(photo.file_path)
         if thumb and thumb != photo.thumb_path:
             photo.thumb_path = thumb
-            photo.save(update_fields=['thumb_path'])
+            photo.save(update_fields=['rel_thumb_path'])
         updated += 1
     return updated
+
+
+def rebase_photo_paths(task=None):
+    """One-time, idempotent maintenance action: convert any Photo row still
+    storing an absolute path (from before paths became relative, or from
+    manually patching the DB after a move) into a path relative to the
+    CURRENT settings.MEDIA_ROOT — after this, moving the whole media folder
+    only requires updating MEDIA_ROOT in settings.py, no DB edits.
+
+    Run this BEFORE moving the folder, while MEDIA_ROOT still points at the
+    files' current, working location. A row is only ever converted if the
+    resulting relative-to-MEDIA_ROOT path still resolves to a real file on
+    disk — so running it too late (after MEDIA_ROOT already points somewhere
+    else) just safely leaves those rows as absolute instead of writing a
+    broken path. Safe to re-run any time.
+
+    Returns (converted, already_relative, left_absolute) post counts."""
+    from gallery.models import Photo
+    photos = list(Photo.objects.all())
+    if task:
+        task.total = len(photos); task.save(update_fields=['total'])
+    converted = already_relative = left_absolute = 0
+    for i, photo in enumerate(photos):
+        fields = []
+        any_left_abs = False
+        for attr in ('rel_path', 'rel_thumb_path'):
+            val = getattr(photo, attr)
+            if not val or not os.path.isabs(val):
+                continue
+            rel = Photo._to_rel(val)
+            if rel != val and os.path.isfile(os.path.join(settings.MEDIA_ROOT, rel)):
+                setattr(photo, attr, rel)
+                fields.append(attr)
+            else:
+                any_left_abs = True
+        if fields:
+            photo.save(update_fields=fields)
+            converted += 1
+        elif any_left_abs:
+            left_absolute += 1
+        else:
+            already_relative += 1
+        if task and i % 200 == 0:
+            task.done = i + 1; task.save(update_fields=['done'])
+    if task:
+        task.done = len(photos); task.save(update_fields=['done'])
+    return converted, already_relative, left_absolute
 
 
 def add_tags_to_post(post, tag_names, category='general'):
@@ -460,12 +521,15 @@ def move_post_to_folder(post, folder_basename):
         photo.file_path = dst
         if new_thumb:
             photo.thumb_path = new_thumb
-        photo.save(update_fields=['file_path', 'thumb_path'])
+        photo.save(update_fields=['rel_path', 'rel_thumb_path'])
 
     return dest_dir
 
 
 def _dir_belongs_to_post(dir_path, post):
     """Check if any of post's photos already live in dir_path."""
-    photo_dirs = {os.path.dirname(p) for p in post.images.values_list('file_path', flat=True)}
+    photo_dirs = set()
+    for p in post.images.values_list('rel_path', flat=True):
+        ap = p if os.path.isabs(p) else os.path.join(settings.MEDIA_ROOT, p)
+        photo_dirs.add(os.path.dirname(ap))
     return os.path.abspath(dir_path) in {os.path.abspath(d) for d in photo_dirs}

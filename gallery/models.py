@@ -1,5 +1,6 @@
 import os
 from django.utils import timezone
+from django.conf import settings
 from django.db import models
 
 
@@ -63,11 +64,17 @@ class Post(models.Model):
 
 
 class Photo(models.Model):
-    post       = models.ForeignKey(Post, on_delete=models.CASCADE,
-                                   related_name='images', null=True, blank=True)
-    order      = models.IntegerField(default=0)
-    file_path  = models.CharField(max_length=1000, unique=True)
-    thumb_path = models.CharField(max_length=1000, blank=True)
+    post           = models.ForeignKey(Post, on_delete=models.CASCADE,
+                                       related_name='images', null=True, blank=True)
+    order          = models.IntegerField(default=0)
+    # Stored relative to settings.MEDIA_ROOT (so moving the whole media folder
+    # only requires updating MEDIA_ROOT, not every row in the DB) — accessed
+    # as absolute paths via the file_path/thumb_path properties below. Rows
+    # from before this became relative may still hold a legacy absolute value;
+    # both properties handle that transparently, and `rebase_photo_paths()` in
+    # utils.py (wired to the "rebase paths" button) converts them in bulk.
+    rel_path       = models.CharField(max_length=1000, unique=True)
+    rel_thumb_path = models.CharField(max_length=1000, blank=True)
     width      = models.IntegerField(default=0)
     height     = models.IntegerField(default=0)
     file_size  = models.BigIntegerField(default=0)
@@ -79,6 +86,41 @@ class Photo(models.Model):
 
     def __str__(self):
         return os.path.basename(self.file_path)
+
+    @staticmethod
+    def _to_rel(value):
+        """Convert an absolute path to one relative to MEDIA_ROOT. Values that
+        are already relative, empty, or fall outside MEDIA_ROOT (or are on a
+        different drive on Windows) are returned unchanged."""
+        if not value or not os.path.isabs(value):
+            return value
+        try:
+            rel = os.path.relpath(value, settings.MEDIA_ROOT)
+        except ValueError:
+            return value
+        return value if rel.startswith('..') else rel
+
+    @property
+    def file_path(self):
+        p = self.rel_path
+        if not p or os.path.isabs(p):
+            return p
+        return os.path.join(settings.MEDIA_ROOT, p)
+
+    @file_path.setter
+    def file_path(self, value):
+        self.rel_path = self._to_rel(value)
+
+    @property
+    def thumb_path(self):
+        p = self.rel_thumb_path
+        if not p or os.path.isabs(p):
+            return p
+        return os.path.join(settings.MEDIA_ROOT, p)
+
+    @thumb_path.setter
+    def thumb_path(self, value):
+        self.rel_thumb_path = self._to_rel(value) if value else ''
 
     @property
     def is_pdf(self):
@@ -94,13 +136,11 @@ class Photo(models.Model):
 
     @property
     def media_url(self):
-        from django.conf import settings
         rel = os.path.relpath(self.file_path, settings.MEDIA_ROOT)
         return '/media/' + rel.replace(os.sep, '/')
 
     @property
     def thumb_url(self):
-        from django.conf import settings
         if self.thumb_path:
             rel = os.path.relpath(self.thumb_path, settings.MEDIA_ROOT)
             url = '/media/' + rel.replace(os.sep, '/')
