@@ -80,8 +80,8 @@
      • paged mode (multi): image fullscreen, all chrome hidden; a tap reveals
        ONLY the rating panel + scroll-mode button (body.tapped).
      • single-image post: all UI shown by default; a tap hides everything for a
-       fullscreen image (body.is-single.tapped). The mode button is pointless
-       for a single image, so it's hidden there. */
+       fullscreen image (body.is-single.tapped), except the mode button (still
+       needed to flip a tall image between paged/scroll). */
 
   /* paged + multi: chrome always hidden */
   body.mode-paged:not(.is-single) header,
@@ -94,8 +94,6 @@
   body.mode-paged:not(.is-single):not(.tapped) .mob-rate-pop,
   body.mode-paged:not(.is-single):not(.tapped) #mode-toggle-fixed { display:none !important; }
 
-  /* single post: no mode toggle (nothing to switch to) */
-  body.is-single #mode-toggle-fixed { display:none !important; }
   /* single post: a tap hides only the in-image overlays (rating panel, info
      button, back button + post-number bar, arrows). The global header and
      bottom nav stay so the page is still usable. */
@@ -223,20 +221,11 @@
     padding:0 .25rem calc(var(--safe-bottom));
     background:var(--bg2); border-top:1px solid var(--border);
   }
-  /* Row 1: prev/next as WIDE edge zones (not tiny corner icons) so either
-     thumb lands on them without precise aim — solves "hard to press on
-     both sides" without mirroring arrows on both edges. */
   .mini-row { display:flex; align-items:center; flex:1; min-height:0; }
-  .mini-row-top { gap:.2rem; }
+  .mini-row-top { gap:.2rem; padding:0 .4rem; }
   .mini-row-bottom { gap:.35rem; padding:.2rem 0; }
-  .mini-arrow {
-    flex:0 0 24%; height:100%; background:none; border:none; color:var(--text);
-    font-size:1.7rem; display:flex; align-items:center; justify-content:center;
-    -webkit-tap-highlight-color:transparent; cursor:pointer; padding:0;
-  }
-  .mini-arrow.disabled { opacity:.25; pointer-events:none; }
   .mini-stars { display:flex; flex:1; justify-content:center; }
-  .mini-bar .mob-rate-star { font-size:1.35rem; padding:.15rem; }
+  .mini-bar .mob-rate-star { font-size:1.7rem; padding:.2rem .25rem; }
   .mini-bar .mob-rate-fav { font-size:1.25rem; background:none; border:none; padding:0 .5rem; flex:none; height:100%; }
   /* Row 2: secondary actions — equal-width, wide tap targets */
   .mini-icon {
@@ -244,6 +233,29 @@
     font-size:1.3rem; display:flex; align-items:center; justify-content:center;
     -webkit-tap-highlight-color:transparent; cursor:pointer; padding:0;
   }
+
+  /* Prev/next as big circle buttons floating over the media, centered above
+     the bar — easy to hit with either thumb without covering the image. */
+  .mini-nav { display:none; }
+  body.minimal-ui .mini-nav {
+    display:flex; gap:4.5rem;
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .55rem);
+    z-index:118; pointer-events:none;
+  }
+  .mini-nav-btn {
+    pointer-events:auto; touch-action:manipulation;
+    width:60px; height:60px; border-radius:50%; padding:0;
+    background:rgba(0,0,0,.38); border:1px solid rgba(255,255,255,.22);
+    backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+    color:rgba(255,255,255,.85); font-size:2rem; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    -webkit-tap-highlight-color:transparent; cursor:pointer;
+  }
+  .mini-nav-btn:active   { background:rgba(124,106,247,.6); color:#fff; }
+  .mini-nav-btn.disabled { opacity:.2; pointer-events:none; }
+  /* keep the mode toggle above the nav circles instead of overlapping them */
+  body.minimal-ui #mode-toggle-fixed { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + 78px); }
 }
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
 .swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
@@ -293,6 +305,8 @@
 .tag-chip-name.ai       { color:var(--tag-ai); }
 .tag-remove { color:var(--text-dim); cursor:pointer; font-size:1.1rem; padding:0 .2rem; min-width:24px; text-align:center; -webkit-tap-highlight-color:transparent; }
 .tag-remove:active { color:var(--danger); }
+.tag-add { color:var(--text-dim); cursor:pointer; font-size:1rem; padding:0 .2rem; min-width:22px; text-align:center; -webkit-tap-highlight-color:transparent; }
+.tag-add:active { color:var(--accent); }
 
 .add-tag-row { display:flex; gap:.4rem; margin-top:.6rem; }
 .add-tag-row input { flex:1; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .5rem; border-radius:6px; font-size:.9rem; font-family:var(--mono); outline:none; }
@@ -373,9 +387,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   <div class="img-panel view-paged" id="img-panel">
     <div class="img-topbar" id="img-topbar">
       <a href="javascript:goBack()" class="btn" style="font-size:.75rem;">&#8592; back</a>
-      {% if images|length > 1 %}
       <button class="mode-toggle" id="mode-toggle" onclick="toggleViewMode()">&#9783; scroll</button>
-      {% endif %}
       <span class="nav-counter" id="nav-counter">...</span>
     </div>
 
@@ -464,6 +476,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       </div>
       <form style="display:flex;gap:.4rem;align-items:center;position:relative;" onsubmit="detailSearch();return false;">
         <input id="detail-search" type="text" enterkeyhint="search" autocomplete="off"
+               value="{{ q_tags|join:' ' }}"
                placeholder="tag1 tag2 …" oninput="onDetailSearchInput(this.value)" onkeydown="onDetailSearchKey(event)"
                style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.4rem .5rem;font-family:var(--mono);font-size:.8rem;outline:none;">
         <button type="submit" class="btn primary" style="padding:.4rem .55rem;" title="search">&#128269;</button>
@@ -477,7 +490,11 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       {% if post.title %}<div class="meta-row"><span class="meta-key">title</span><span class="meta-val" title="{{ post.title }}">{{ post.title }}</span></div>{% endif %}
       <div class="meta-row"><span class="meta-key">images</span><span class="meta-val">{{ images|length }}</span></div>
       <div class="meta-row"><span class="meta-key">added</span><span class="meta-val">{{ post.added_at|date:"Y-m-d" }}</span></div>
-      <button class="btn" id="gallery-page-btn" onclick="goToGalleryPage()" style="width:100%;justify-content:center;margin-top:.6rem;font-size:.78rem;">&#8862; open gallery</button>
+      <div style="display:flex;gap:.4rem;margin-top:.6rem;">
+        <button class="btn" id="gallery-page-btn" onclick="goToGalleryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the gallery at this post's page, keeping the current search">&#8862; gallery</button>
+        <button class="btn" id="library-page-btn" onclick="goToLibraryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the whole library (no search filters) at the page containing this post">&#9776; library</button>
+      </div>
+      <button class="btn" style="width:100%;justify-content:center;font-size:.78rem;margin-top:.4rem;" onclick="openFolderPicker([{{ post.pk }}])">&#128193; add to folder</button>
     </div>
 
     <!-- Rating (below actions) -->
@@ -518,8 +535,6 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="findSimilar()" id="similar-btn" title="open the gallery filtered to visually + tag-similar posts">&#9783; find similar</button>
         <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="regenThumb()" id="regen-btn" title="rebuild the thumbnail for the current image">&#10227; regen thumb</button>
       </div>
-
-      <button class="btn" style="width:100%;justify-content:center;font-size:.78rem;margin-bottom:.5rem;" onclick="openFolderPicker([{{ post.pk }}])">&#128193; add to folder</button>
 
       {% if images|length > 1 %}
       <div style="margin-bottom:.5rem;">
@@ -581,6 +596,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       <div class="tag-chips" id="tag-chips">
         {% for tag in post.tags.all|sort_by_category %}
         <div class="tag-chip" data-tag="{{ tag.name }}">
+          <span class="tag-add" onclick="addTagToSearch('{{ tag.name|escapejs }}')" title="add to search">+</span>
           <a class="tag-chip-name {{ tag.category }}" href="/?tag={{ tag.name }}">{{ tag.name }}</a>
           <span class="tag-remove" onclick="removeTag('{{ tag.name }}')">x</span>
         </div>
@@ -607,33 +623,32 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   <button class="mob-float-btn accent mob-info-btn" id="mob-info-btn" onclick="toggleInfoPanel()">i</button>
 </div>
 
-<!-- Minimal post UI: one slim bottom bar (rating, fav, info, more, prev/next,
-     random, tags). Always in the DOM; only shown when body.minimal-ui is
-     active (phone). Two rows: top = rating + nav (used most), bottom =
-     secondary actions. -->
+<!-- Minimal post UI: one slim bottom bar (rating, fav, info, more, random,
+     tags) plus two big floating circles for prev/next. Always in the DOM;
+     only shown when body.minimal-ui is active (phone). -->
+<div class="mini-nav" id="mini-nav">
+  <button class="mini-nav-btn" id="mini-prev" onclick="navTo('prev')">&#8249;</button>
+  <button class="mini-nav-btn" id="mini-next" onclick="navTo('next')">&#8250;</button>
+</div>
 <div class="mini-bar" id="mini-bar">
   <div class="mini-row mini-row-top">
-    <button class="mini-arrow" id="mini-prev" onclick="navTo('prev')">&#8249;</button>
     <div class="mini-stars">
       {% for n in "12345" %}
       <button class="mob-rate-star {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
       {% endfor %}
     </div>
     <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="mobFav()">&#9829;</button>
-    <button class="mini-arrow" id="mini-next" onclick="navTo('next')">&#8250;</button>
   </div>
   <div class="mini-row mini-row-bottom">
+    <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
     <button class="mini-icon" onclick="openTagSheet()">&#8864;</button>
     <button class="mini-icon" onclick="goRandom()">&#9684;</button>
-    <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
     <button class="mini-icon" onclick="openMobMenu()">&#8943;</button>
   </div>
 </div>
 
-{% if images|length > 1 %}
 <!-- Mobile: mode toggle fixed at bottom center, always visible -->
 <button id="mode-toggle-fixed" onclick="toggleViewMode()">&#9783; scroll</button>
-{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -653,7 +668,16 @@ const IS_MULTI = IMAGES.length > 1;
 let currentImgIdx = 0;
 
 /* ── View mode ───────────────────────────────────────────── */
-let viewMode = IS_MULTI ? (localStorage.getItem('viewMode') || 'scroll') : 'paged';
+// Single tall images (e.g. comic pages) default to scroll mode so they can
+// actually be scrolled instead of being crushed to fit the screen. Single
+// posts remember their own mode separately (viewModeSingle) so opening a
+// tall image never flips the shared multi-image default.
+const COVER_W = {{ images.0.width|default:0 }};
+const COVER_H = {{ images.0.height|default:0 }};
+const IS_TALL = COVER_W > 0 && COVER_H / COVER_W >= 2;
+let viewMode = IS_MULTI
+  ? (localStorage.getItem('viewMode') || 'scroll')
+  : (localStorage.getItem('viewModeSingle') || (IS_TALL ? 'scroll' : 'paged'));
 
 // check if browser zoom is allowed (disable JS zoom in that case)
 function isSafari() {
@@ -677,8 +701,12 @@ function renderPdfContainer(url) {
 
 function applyViewMode(mode) {
   viewMode = mode;
-  localStorage.setItem('viewMode', mode);
-  localStorage.setItem('pref_viewMode', mode);
+  if (IS_MULTI) {
+    localStorage.setItem('viewMode', mode);
+    localStorage.setItem('pref_viewMode', mode);
+  } else {
+    localStorage.setItem('viewModeSingle', mode);
+  }
   const panel     = document.getElementById('img-panel');
   const toggle    = document.getElementById('mode-toggle');
   const resizeSec = document.getElementById('resize-section');
@@ -772,6 +800,7 @@ function setupScrollLazy() {
 function toggleViewMode() {
   const newMode = viewMode === 'paged' ? 'scroll' : 'paged';
   applyViewMode(newMode);
+  if (!IS_MULTI) return; // single-post mode is local-only, doesn't touch the shared default
   // persist across devices
   fetch('/api/pref/set/', {
     method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
@@ -1255,7 +1284,7 @@ async function loadNeighbors() {
   const gp = document.getElementById('gallery-page-btn');
   if (gp) {
     const page = Math.floor(neighborIndex / GALLERY_PAGE_SIZE) + 1;
-    gp.textContent = `\u229E open gallery (page ${page})`;
+    gp.textContent = `\u229E gallery (p ${page})`;
   }
   // preload neighbour cover images
   preloadUrls(d.prev_preload);
@@ -1272,6 +1301,20 @@ function goToGalleryPage() {
   const page = Math.floor(neighborIndex / GALLERY_PAGE_SIZE) + 1;
   const qs = SEARCH_QS ? '&' + SEARCH_QS : '';
   window.location.href = `/?page=${page}${qs}`;
+}
+
+// Open the gallery index at the page containing this post with ALL search
+// filters cleared — the whole library, not the current search.
+async function goToLibraryPage() {
+  const btn = document.getElementById('library-page-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  if (typeof startProgress !== 'undefined') startProgress();
+  try {
+    const d = await (await fetch(`/api/post/${POST_ID}/neighbors/`)).json();
+    window.location.href = `/?page=${Math.floor((d.index || 0) / GALLERY_PAGE_SIZE) + 1}`;
+  } catch (e) {
+    window.location.href = '/';
+  }
 }
 
 function navTo(dir, pos) {
@@ -1312,6 +1355,16 @@ function detailPickSug(name) {
   hideDetailSug(); inp.focus();
 }
 function hideDetailSug() { const el = document.getElementById('detail-search-sug'); if (el) el.style.display = 'none'; }
+// Tap the '+' on a post tag: add it to the CURRENT search (preserving sort/
+// rating/fav/folder filters) and navigate there immediately.
+function addTagToSearch(name) {
+  const p = new URLSearchParams(SEARCH_QS);
+  if (!p.getAll('tag').includes(name)) p.append('tag', name);
+  p.delete('page');
+  if (typeof pushRecentSearch !== 'undefined') pushRecentSearch(p.getAll('tag').join(' '));
+  if (typeof startProgress !== 'undefined') startProgress();
+  window.location.href = '/?' + p.toString();
+}
 function onDetailSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); detailSearch(); } if (e.key === 'Escape') hideDetailSug(); }
 document.addEventListener('click', e => { if (!e.target.closest('#detail-search') && !e.target.closest('#detail-search-sug')) hideDetailSug(); });
 (function() {
@@ -1796,7 +1849,8 @@ function renderTags(tags) {
   for (const t of tags) {
     const div = document.createElement('div');
     div.className='tag-chip'; div.dataset.tag=t.name;
-    div.innerHTML = `<a class="tag-chip-name ${t.category}" href="/?tag=${encodeURIComponent(t.name)}">${t.name}</a>`
+    div.innerHTML = `<span class="tag-add" onclick="addTagToSearch('${t.name.replace(/'/g,"\\'")}')" title="add to search">+</span>`
+                  + `<a class="tag-chip-name ${t.category}" href="/?tag=${encodeURIComponent(t.name)}">${t.name}</a>`
                   + `<span class="tag-remove" onclick="removeTag('${t.name}')">x</span>`;
     chips.appendChild(div);
   }

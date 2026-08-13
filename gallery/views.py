@@ -13,7 +13,7 @@ from django.conf import settings
 from .models import Post, Photo, Tag, Task, Folder
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
-                    make_video_thumb, retag_all_videos)
+                    make_video_thumb, retag_all_videos, sync_sound_tag)
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -618,9 +618,16 @@ def _do_scan(task):
     base = len(new_posts)
     for j, (post, paths) in enumerate(extend_posts):
         start_order = post.images.count()
+        added_video = False
         for k, path in enumerate(sorted(paths)):
-            ingest_photo(path, post, order=start_order + k)
+            photo = ingest_photo(path, post, order=start_order + k)
+            added_video = added_video or photo.is_video
         added += len(paths)
+        if added_video:
+            try:
+                sync_sound_tag(post)
+            except Exception as e:
+                print(f'sound-tag error post {post.id}: {e}')
         task.done = base + j + 1; task.save(update_fields=['done'])
     # fix placeholder video/pdf thumbs
     for photo in Photo.objects.filter(is_video=True):
@@ -713,6 +720,28 @@ def ai_tag_all_bg(request):
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
     return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…').id})
+
+
+@require_POST
+def sound_tag_all_bg(request):
+    """Re-check every video post for an audio stream and sync the `sound` tag.
+    Idempotent — safe to re-run (adds/removes the tag as clips change)."""
+    def work(task):
+        import time as _t
+        posts = list(Post.objects.filter(images__is_video=True).distinct())
+        task.total = len(posts); task.save(update_fields=['total'])
+        found = 0
+        for i, post in enumerate(posts):
+            try:
+                if sync_sound_tag(post):
+                    found += 1
+            except Exception as e:
+                print(f'sound-tag error post {post.id}: {e}')
+            task.done = i + 1
+            task.message = f'{found} with sound / {i + 1} checked'
+            task.save(update_fields=['done', 'message'])
+            _t.sleep(0)
+    return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…').id})
 
 
 def _dupes_cache_path():

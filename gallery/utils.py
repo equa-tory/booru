@@ -153,6 +153,41 @@ def _video_duration(src_path):
         return 0.0
 
 
+SOUND_TAG = 'sound'
+
+
+def has_audio_stream(src_path):
+    """True if the file has at least one audio stream (ffprobe; False if unknown/missing)."""
+    try:
+        r = subprocess.run([
+            'ffprobe', '-v', 'error', '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', src_path
+        ], capture_output=True, timeout=30)
+        return b'audio' in r.stdout
+    except Exception:
+        return False
+
+
+def sync_sound_tag(post):
+    """Add/remove the `sound` meta tag on a post based on whether any of its
+    video Photos has an audio stream. No-op (returns None) for non-video posts.
+    Returns True/False for whether the post has sound, so callers can count hits."""
+    from gallery.models import Tag
+    vids = [p for p in post.images.all() if p.is_video]
+    if not vids:
+        return None
+    want = any(has_audio_stream(p.file_path) for p in vids)
+    has = post.tags.filter(name=SOUND_TAG).exists()
+    if want and not has:
+        add_tags_to_post(post, [SOUND_TAG], category='meta')
+    elif not want and has:
+        tag = Tag.objects.filter(name=SOUND_TAG).first()
+        if tag:
+            post.tags.remove(tag)
+            tag.update_count()
+    return want
+
+
 def make_video_thumb(src_path, max_size=360, pct=0):
     """Extract a frame from the video for the thumbnail.
     pct = where in the video to grab the frame (0-100). 0 → first usable frame."""
@@ -276,6 +311,11 @@ def create_post_from_files(paths, title=''):
         tags = auto_tags_for(path)
         if tags:
             add_tags_to_post(post, tags, category='meta')
+    if any(is_video(p) for p in paths):
+        try:
+            sync_sound_tag(post)
+        except Exception as e:
+            print(f'sound-tag error post {post.id}: {e}')
     return post
 
 
