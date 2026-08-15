@@ -104,6 +104,9 @@
 }
 .view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:20vh 8px 45vh; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y; }
 .scroll-img { max-width:100%; display:block; border-radius:2px; }
+/* zoomed: the image is genuinely wider than the column, so let the browser pan
+   it horizontally and keep scrolling the post vertically — no JS drag needed. */
+.view-scroll .scroll-container.zoomed { overflow-x:auto; touch-action:pan-x pan-y; }
 
 /* Topbar */
 .img-topbar { position:absolute; top:.6rem; left:.6rem; right:.6rem; display:flex; align-items:center; justify-content:space-between; z-index:10; pointer-events:none; gap:.4rem; flex-wrap:nowrap; }
@@ -869,6 +872,9 @@ function setScrollImgSizeMobile(val) {
 
 function setScrollImgSize(val, platform) {
   const cssVal = String(val).endsWith('px') || String(val).endsWith('%') ? val : val + 'px';
+  // a zoomed image has inline width/maxWidth overriding this size setting —
+  // unzoom first so the new size actually takes and dataset.prevW isn't stale.
+  if (typeof zoomedImg !== 'undefined' && zoomedImg) setScrollZoom(zoomedImg, false);
 
   if (platform === 'mobile' || (platform === undefined && isMobileDetail())) {
     // mobile: percentage = zoom relative to container width
@@ -1026,12 +1032,61 @@ function initPinchZoom() {
   if (img) attachZoom(img, img.parentElement);
 }
 
+/* ── Scroll-mode zoom: reflow, not transform ─────────────────────
+   Paged mode's attachZoom() (above) scales+pans a single image that has
+   nothing above or below it, so an overlaying transform is fine there. In
+   scroll mode a transform would paint over the neighbouring images instead
+   of pushing them apart, and hijacking touchmove for panning would break
+   vertical scrolling of the post. So here "zoom" instead doubles the image's
+   real layout width — the images above/below reflow around it — and panning
+   is just native horizontal scrolling (scroll-container gets overflow-x:auto
+   only while zoomed). Same double-tap 1×↔2× gesture as paged mode, no pinch. */
+let zoomedImg = null;   // only one scroll-mode image zoomed at a time
+
+function setScrollZoom(img, on) {
+  const sc = document.getElementById('scroll-container');
+  if (!sc) return;
+  if (on) {
+    if (zoomedImg && zoomedImg !== img) setScrollZoom(zoomedImg, false);
+    // remember whatever setScrollImgSize() left inline so we can restore it exactly
+    img.dataset.prevW  = img.style.width;
+    img.dataset.prevMw = img.style.maxWidth;
+    const base = img.getBoundingClientRect().width;
+    img.style.maxWidth  = 'none';
+    img.style.width     = (base * 2) + 'px';
+    img.style.alignSelf = 'flex-start'; // flex centring would clip the left half once scrolled
+    sc.classList.add('zoomed');
+    zoomedImg = img; zoomScale = 2;
+    sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2; // start centred
+  } else {
+    img.style.width = img.dataset.prevW || '';
+    img.style.maxWidth = img.dataset.prevMw || '';
+    img.style.alignSelf = '';
+    sc.classList.remove('zoomed');
+    sc.scrollLeft = 0;
+    if (zoomedImg === img) { zoomedImg = null; zoomScale = 1; }
+  }
+}
+
+function attachScrollZoom(img) {
+  if (!img) return;
+  let lastTap = 0;
+  img.addEventListener('touchend', e => {
+    if (e.changedTouches.length !== 1) return;
+    const now = Date.now();
+    if (now - lastTap < 280) {
+      e.preventDefault();
+      e.stopPropagation(); // don't let the main gesture handler see this as a tap
+      setScrollZoom(img, zoomedImg !== img);
+    }
+    lastTap = now;
+  }, {passive:false});
+}
+
 function initScrollZoom() {
   document.querySelectorAll('.scroll-img:not([data-zoom])').forEach(el => {
     el.dataset.zoom='1';
-    // lockPointer=false → scroll images keep receiving touch events so they
-    // can be pinch-zoomed repeatedly, not just once.
-    attachZoom(el, el, false);
+    attachScrollZoom(el);
   });
 }
 
@@ -1326,6 +1381,13 @@ function goBack() {
   else history.back();
 }
 
+// swipe-down destination: the gallery page holding this post (with the
+// current search) when the setting is on, otherwise plain back.
+function swipeDownExit() {
+  if (localStorage.getItem('swipeDownGallery') === '1') goToGalleryPage();
+  else goBack();
+}
+
 // Open the gallery index at the exact page that contains this post,
 // carrying over the current tags / sort / rating filters.
 function goToGalleryPage() {
@@ -1465,7 +1527,7 @@ document.addEventListener('keydown', e => {
     if (zoomScale > 1.05) {
       if (isTap) {
         if (viewMode === 'paged') togglePagedChrome();
-        else if (IS_MULTI) toggleFilmstripOverlay();
+        else if (IS_MULTI && localStorage.getItem('disableTapFilmstrip') !== '1') toggleFilmstripOverlay();
       }
       return;
     }
@@ -1479,9 +1541,10 @@ document.addEventListener('keydown', e => {
 
     if (viewMode === 'paged') {
       // swipe down: multi-item posts → switch to scroll mode (browse the post);
-      // single posts → close the post (go back).
+      // single posts → close the post (back, or the gallery page if that
+      // setting is on).
       if (dt<700 && dy>55 && absDy>absDx*1.15) {
-        if (IS_MULTI) { toggleViewMode(); } else { goBack(); }
+        if (IS_MULTI) { toggleViewMode(); } else { swipeDownExit(); }
         return;
       }
       // horizontal swipes in paged mode are handled by the finger-follow module
@@ -1493,12 +1556,12 @@ document.addEventListener('keydown', e => {
       // SCROLL MODE
       if (!blockVidSwipe && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev','last'); return; }
       const sc = document.getElementById('scroll-container');
-      if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { goBack(); return; }
+      if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { swipeDownExit(); return; }
       // single tap on an item → open it in paged mode (unless disabled)
       if (isTap && IS_MULTI) {
         const tappedImg = topEl && topEl.closest('.scroll-img');
         if (tappedImg && tappedImg.tagName === 'IMG' && localStorage.getItem('disableTapPaged') !== '1') { openPagedAt(tappedImg); return; }
-        toggleFilmstripOverlay();
+        if (localStorage.getItem('disableTapFilmstrip') !== '1') toggleFilmstripOverlay();
       }
     }
   }

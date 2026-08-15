@@ -486,9 +486,18 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
       <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.4rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
       <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.4rem;" title="in-post only: hides the header + bottom nav, replaces them with one slim thumb-reachable bar (rating, fav, info, more, prev/next arrows)">&#9707; minimal post UI</button>
+      <button class="mode-btn swipe-gallery-btn" onclick="toggleSwipeGallery()" style="width:100%;margin-top:.4rem;" title="in-post only: swipe down closes the post straight to the gallery page it's on (with the current search), instead of just going back">&#8862; swipe down &rarr; gallery page</button>
+      <button class="mode-btn tap-filmstrip-btn" onclick="toggleTapFilmstrip()" style="width:100%;margin-top:.4rem;" title="in-post scroll mode: tapping an image (or the frame while zoomed) shows the filmstrip overlay. Turn off to leave only scroll + double-tap zoom, no distractions">&#9646; tap opens filmstrip</button>
       <div style="margin-top:.55rem;">
         <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);display:block;margin-bottom:.2rem;">swipe sensitivity</label>
         <input type="range" class="size-slider" id="swipe-sens-slider" min="1" max="10" step="1" oninput="setSwipeSens(this.value)" style="width:100%;">
+      </div>
+    </div>
+    <!-- Remember on restart -->
+    <div style="margin:.5rem 0;">
+      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.4rem;">remember on restart</div>
+      <div style="display:flex;gap:.4rem;">
+        <button class="mode-btn remember-sort-btn" onclick="toggleRememberSort()" title="reopen the app on the sort you last used">&#8645; sort</button>
       </div>
     </div>
   </div>
@@ -632,15 +641,26 @@ async function openFolderPicker(ids) {
   document.getElementById('folder-modal').classList.add('open');
 }
 function closeFolderPicker() { document.getElementById('folder-modal').classList.remove('open'); }
+
+// Tapping the dimmed area outside any modal closes it (the inner .modal /
+// .bulk-modal is a child, so event.target === backdrop only for the backdrop
+// itself, never for a click that started inside the panel).
+document.addEventListener('click', e => {
+  if (e.target.classList && e.target.classList.contains('modal-backdrop')) {
+    e.target.classList.remove('open');
+  }
+});
 async function doAddToFolder(folderId) {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'add_to_folder',folder_id:folderId})});
   closeFolderPicker();
   toast(`added ${_folderPickerIds.length} post(s) to folder`);
+  if (typeof finishBulkAction !== 'undefined') finishBulkAction(false);
 }
 async function doRemoveFromFolder(folderId) {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'remove_from_folder',folder_id:folderId})});
   closeFolderPicker();
   toast(`removed ${_folderPickerIds.length} post(s) from folder`);
+  if (typeof finishBulkAction !== 'undefined') finishBulkAction(false);
 }
 // Populates the mobile "more" sheet folder list — called from openMobMenu().
 async function renderMobFolders() {
@@ -793,7 +813,43 @@ function applyFastModeBtn() {
   document.body.classList.toggle('fast-mode', on);
   document.querySelectorAll('.fast-mode-btn').forEach(b => b.classList.toggle('active', on));
 }
-document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); applyMinimalUiBtn(); applyForceScrollBtn(); });
+
+/* toggle: in-post swipe-down closes straight to the gallery page this post is
+   on (with the current search) instead of just going back. See detail.html's
+   swipeDownExit(). */
+function toggleSwipeGallery() {
+  localStorage.setItem('swipeDownGallery', localStorage.getItem('swipeDownGallery') === '1' ? '0' : '1');
+  applySwipeGalleryBtn();
+}
+function applySwipeGalleryBtn() {
+  const on = localStorage.getItem('swipeDownGallery') === '1';
+  document.querySelectorAll('.swipe-gallery-btn').forEach(b => b.classList.toggle('active', on));
+}
+
+/* toggle: in-post scroll mode, tapping an image (or the frame while zoomed)
+   shows the filmstrip overlay. Off = only scroll + double-tap zoom. */
+function toggleTapFilmstrip() {
+  const off = localStorage.getItem('disableTapFilmstrip') === '1';
+  localStorage.setItem('disableTapFilmstrip', off ? '0' : '1'); // flip
+  applyTapFilmstripBtn();
+}
+function applyTapFilmstripBtn() {
+  const on = localStorage.getItem('disableTapFilmstrip') !== '1'; // active = enabled
+  document.querySelectorAll('.tap-filmstrip-btn').forEach(b => b.classList.toggle('active', on));
+}
+
+/* toggle: remember the gallery sort across a full app restart (PWA cold
+   start) — restored once by index.html's restoreSort() IIFE. */
+function toggleRememberSort() {
+  localStorage.setItem('rememberSort', localStorage.getItem('rememberSort') === '1' ? '0' : '1');
+  applyRememberSortBtn();
+}
+function applyRememberSortBtn() {
+  const on = localStorage.getItem('rememberSort') === '1';
+  document.querySelectorAll('.remember-sort-btn').forEach(b => b.classList.toggle('active', on));
+}
+
+document.addEventListener('DOMContentLoaded', () => { applySwipeVideosBtn(); applyFastModeBtn(); applyScrollJumpBtn(); applyLiveScanBtn(); applyMinimalUiBtn(); applyForceScrollBtn(); applySwipeGalleryBtn(); applyTapFilmstripBtn(); applyRememberSortBtn(); });
 
 /* toggle: redesigned thumb-friendly in-post mobile layout (post detail page
    only — see detail.html's own CSS/markup for the actual bar; this just

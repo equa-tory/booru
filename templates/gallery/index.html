@@ -75,6 +75,13 @@ input, select, textarea { font-size: 16px !important; }
 .sel-act.danger { border-color:var(--danger); color:var(--danger); }
 .sel-act.danger:active { background:var(--danger); color:#fff; }
 .sel-act .sa-i { font-size:1.2rem; line-height:1; }
+/* the bar is fixed and covers the bottom of the grid — pad the scroll
+   container clear of it so the last rows stay reachable. Height is measured
+   live (varies with action-row wrapping) via a ResizeObserver, see JS below. */
+body.select-mode main { padding-bottom: calc(var(--sel-bar-h, 0px) + 1rem); }
+@media (max-width: 640px) {
+  body.select-mode main { padding-bottom: calc(var(--sel-bar-h, 0px) + var(--mobile-nav-h) + var(--safe-bottom) + .5rem); }
+}
 .photo-card.selectable { cursor: pointer; }
 .photo-card .sel-check { position: absolute; top: .35rem; left: .35rem; z-index: 2; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,.6); background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; font-size: .7rem; color: #fff; transition: all .15s; }
 body.select-mode .photo-card .sel-check { display: flex; }
@@ -316,14 +323,9 @@ body.select-mode .scroll-fabs { display:none; }
     <button class="btn primary" onclick="toggleSelectMode()">done</button>
   </div>
   <div class="selection-actions">
-    <button class="sel-act" onclick="openBulkTag('add')"><span class="sa-i">&#65291;</span><span>add tag</span></button>
-    <button class="sel-act" onclick="openBulkTag('remove')"><span class="sa-i">&#65293;</span><span>del tag</span></button>
+    <button class="sel-act" onclick="openBulkTag('add')"><span class="sa-i">&#65291;</span><span>tag</span></button>
     <button class="sel-act" onclick="openBulkRate()"><span class="sa-i">&#9733;</span><span>rate</span></button>
-    <button class="sel-act" onclick="bulkFav(true)"><span class="sa-i">&#9829;</span><span>fav</span></button>
-    <button class="sel-act" onclick="bulkFav(false)"><span class="sa-i">&#9825;</span><span>unfav</span></button>
-    <button class="sel-act" onclick="bulkMerge()"><span class="sa-i">&#9135;</span><span>queue merge</span></button>
-    <button class="sel-act" onclick="finalizeMergeQueue()" id="merge-go-btn"><span class="sa-i">&#8694;</span><span>merge now</span></button>
-    <button class="sel-act" onclick="bulkVideoThumb()"><span class="sa-i">&#9654;</span><span>vid thumb&nbsp;%</span></button>
+    <button class="sel-act" onclick="openBulkMerge()"><span class="sa-i">&#9135;</span><span>merge</span></button>
     <button class="sel-act" onclick="if(selectedIds.size){openFolderPicker([...selectedIds]);}else{toast('select posts first','err');}"><span class="sa-i">&#128193;</span><span>add to folder</span></button>
     {% if active_folder %}<button class="sel-act" onclick="bulkRemoveFromFolder()"><span class="sa-i">&#8722;</span><span>remove from folder</span></button>{% endif %}
     <button class="sel-act danger" onclick="bulkDelete()"><span class="sa-i">&#128465;</span><span>delete</span></button>
@@ -335,6 +337,10 @@ body.select-mode .scroll-fabs { display:none; }
   <div class="bulk-modal">
     <div class="modal-handle"></div>
     <h3 id="bulk-modal-title">add tag to selected</h3>
+    <div style="display:flex;gap:.4rem;margin-bottom:.6rem;">
+      <button class="mode-btn active" id="bulk-tag-mode-add" style="flex:1;" onclick="setBulkTagAction('add')">add tag</button>
+      <button class="mode-btn" id="bulk-tag-mode-remove" style="flex:1;" onclick="setBulkTagAction('remove')">remove tag</button>
+    </div>
     <div id="bulk-recent" style="display:none;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem;align-items:center;"></div>
     <div class="bulk-input-row">
       <div style="position:relative;flex:1;">
@@ -352,7 +358,7 @@ body.select-mode .scroll-fabs { display:none; }
   </div>
 </div>
 
-<!-- Bulk rate modal -->
+<!-- Bulk rate modal (also covers fav/unfav and video-thumbnail %) -->
 <div class="modal-backdrop" id="bulk-rate-modal">
   <div class="bulk-modal">
     <div class="modal-handle"></div>
@@ -361,7 +367,28 @@ body.select-mode .scroll-fabs { display:none; }
       {% for n in "12345" %}<button class="btn" style="font-size:1.2rem;padding:.4rem .7rem;" onclick="doBulkRate({{ n }})">{{ n }}&#9733;</button>{% endfor %}
       <button class="btn" onclick="doBulkRate(0)">clear</button>
     </div>
+    <div style="display:flex;gap:.4rem;justify-content:center;margin:.8rem 0;">
+      <button class="btn" onclick="bulkFav(true)">&#9829; fav</button>
+      <button class="btn" onclick="bulkFav(false)">&#9825; unfav</button>
+      <button class="btn" onclick="bulkVideoThumb()">&#9654; vid thumb&nbsp;%</button>
+    </div>
     <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-rate-modal').classList.remove('open')">cancel</button></div>
+  </div>
+</div>
+
+<!-- Bulk merge modal -->
+<div class="modal-backdrop" id="bulk-merge-modal">
+  <div class="bulk-modal">
+    <div class="modal-handle"></div>
+    <h3>merge selected</h3>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem;">
+      "queue group" banks the current selection and lets you pick another group; "merge now" runs every queued group (plus whatever's still selected) in the background.
+    </div>
+    <div style="display:flex;gap:.5rem;justify-content:center;margin:.8rem 0;">
+      <button class="btn" onclick="bulkMerge()">&#9135; queue group</button>
+      <button class="btn primary" onclick="finalizeMergeQueue()" id="merge-go-btn">&#8694; merge now</button>
+    </div>
+    <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-merge-modal').classList.remove('open')">close</button></div>
   </div>
 </div>
 
@@ -381,6 +408,22 @@ window.SORT_OPTIONS = [{% for val, label in sort_options %}['{{ val|escapejs }}'
 window.Q_TOKENS = [{% for t in q_tags %}'{{ t|escapejs }}'{% if not forloop.last %},{% endif %}{% endfor %}];
 // current filters (minus page) — read by newSmartFolder() in base.html
 window.CURRENT_QUERY = '{{ current_query|escapejs }}';
+
+// ── Remember sort across a full app restart (PWA cold start only) ─────────
+// sessionStorage.appSession distinguishes a cold start from in-app
+// navigation; only set once per launch, so this can only redirect the very
+// first bare "/" load. location.replace keeps it out of history and never
+// loops (the target URL always carries ?sort=, so it won't match again).
+(function restoreSort() {
+  if (sessionStorage.getItem('appSession')) return;
+  sessionStorage.setItem('appSession', '1');
+  if (localStorage.getItem('rememberSort') !== '1') return;
+  if (location.search) return; // only take over the bare landing page
+  const s = localStorage.getItem('lastSort');
+  if (!s || s === 'new') return;
+  const seed = localStorage.getItem('lastSeed');
+  location.replace('/?sort=' + s + (s === 'random' && seed ? '&seed=' + seed : ''));
+})();
 
 // ── Grid size ─────────────────────────────────────────────────
 function isMobile() { return window.innerWidth <= 640; }
@@ -792,6 +835,16 @@ let selectedIds = new Set(), selectModeOn = false;
 let lastClickedIdx = null;       // for range select
 let mergeQueue = [];             // array of arrays (each is a group of ids to merge)
 
+// keep --sel-bar-h in sync so body.select-mode main can pad itself clear of
+// the fixed selection bar (its height varies with how many action rows wrap)
+(() => {
+  const bar = document.getElementById('sel-bar');
+  if (bar && window.ResizeObserver) {
+    new ResizeObserver(() => document.body.style.setProperty(
+      '--sel-bar-h', bar.offsetHeight + 'px')).observe(bar);
+  }
+})();
+
 function toggleSelectMode() {
   selectModeOn = !selectModeOn;
   document.body.classList.toggle('select-mode', selectModeOn);
@@ -891,6 +944,13 @@ function clearSelection() {
   document.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
   updateSelCount();
 }
+// Every bulk action ends the same way: nothing selected, panel closed.
+// (bulkMerge()'s "queue group" step is the deliberate exception — see below.)
+function finishBulkAction(reload = true) {
+  clearSelection();
+  if (selectModeOn) toggleSelectMode();
+  if (reload) setTimeout(() => reloadKeepingScroll(), 600);
+}
 function updateSelCount() {
   let txt = `${selectedIds.size} selected`;
   if (mergeQueue.length) txt += ` · ${mergeQueue.length} group(s) queued`;
@@ -935,13 +995,20 @@ function wireBulkChips() {
 
 function openBulkTag(action) {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
-  bulkTagAction = action;
-  document.getElementById('bulk-modal-title').textContent = action==='add' ? 'add tag to selected' : 'remove tag from selected';
+  setBulkTagAction(action || 'add');
   document.getElementById('bulk-tag-input').value = '';
   hideBulkSuggestions();
   renderRecentBulkTags();
   document.getElementById('bulk-modal').classList.add('open');
   setTimeout(() => document.getElementById('bulk-tag-input').focus(), 100);
+}
+// Switches the modal between "add tag" and "remove tag" without closing it —
+// the segmented control at the top of #bulk-modal.
+function setBulkTagAction(action) {
+  bulkTagAction = action;
+  document.getElementById('bulk-modal-title').textContent = action==='add' ? 'add tag to selected' : 'remove tag from selected';
+  document.getElementById('bulk-tag-mode-add').classList.toggle('active', action==='add');
+  document.getElementById('bulk-tag-mode-remove').classList.toggle('active', action==='remove');
 }
 function closeBulkModal() { document.getElementById('bulk-modal').classList.remove('open'); hideBulkSuggestions(); }
 async function doBulkTag() {
@@ -951,6 +1018,7 @@ async function doBulkTag() {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:bulkTagAction+'_tag',tag,category:cat})});
   if (bulkTagAction === 'add') pushRecentTag(tag, cat);
   closeBulkModal(); toast(`${bulkTagAction==='add'?'added':'removed'} "${tag}" on ${selectedIds.size} posts`);
+  finishBulkAction();
 }
 
 // ── Bulk tag autocomplete (with keyboard arrow selection) ─────
@@ -1019,30 +1087,41 @@ function openBulkRate() {
 async function doBulkRate(rating) {
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'rate',rating})});
   document.getElementById('bulk-rate-modal').classList.remove('open');
-  toast(`rated ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
+  toast(`rated ${selectedIds.size} posts`);
+  finishBulkAction();
 }
 async function bulkFav(fav) {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'fav',fav})});
-  toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
+  document.getElementById('bulk-rate-modal').classList.remove('open');
+  toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`);
+  finishBulkAction();
 }
 
 // ── Merge queue ───────────────────────────────────────────────
-// "merge" banks the current selection as one group, clears selection,
-// lets you keep building more groups. "done"/"none" flushes the queue.
+// "queue group" banks the current selection as one group, clears selection,
+// closes the merge modal so you can pick the next group from the grid — the
+// selection panel itself stays open. "merge now" flushes the whole queue.
 function bulkMerge() {
   if (selectedIds.size < 2) { toast('select at least 2 posts to merge','err'); return; }
   mergeQueue.push([...selectedIds].map(Number));
+  document.getElementById('bulk-merge-modal').classList.remove('open');
   // clear current selection visually, keep building next group
   document.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
   selectedIds.clear(); lastClickedIdx = null;
   updateSelCount();
-  toast(`group queued (${mergeQueue.length}) — select next group, then press done`);
+  toast(`group queued (${mergeQueue.length}) — select next group, then press merge`);
+}
+
+function openBulkMerge() {
+  if (!selectedIds.size && !mergeQueue.length) { toast('select at least 2 posts to merge','err'); return; }
+  document.getElementById('bulk-merge-modal').classList.add('open');
 }
 
 async function finalizeMergeQueue() {
   // include any still-selected group
   if (selectedIds.size >= 2) mergeQueue.push([...selectedIds].map(Number));
+  document.getElementById('bulk-merge-modal').classList.remove('open');
   if (!mergeQueue.length) return;
   if (!confirm(`Merge ${mergeQueue.length} group(s) in the background?\nEach group's first post becomes the target. You can keep using (or close) the site while it runs.`)) {
     mergeQueue = []; return;
@@ -1057,7 +1136,7 @@ async function finalizeMergeQueue() {
     toast(`merging ${groups.length} group(s) in the background…`);
     if (typeof pollTasks !== 'undefined') pollTasks(true);
     // leave select mode; the task panel shows progress
-    if (selectModeOn) toggleSelectMode();
+    finishBulkAction(false);
   } catch(e) { toast('could not start merge','err'); }
 }
 
@@ -1074,8 +1153,9 @@ async function bulkVideoThumb() {
     body: JSON.stringify({ids:[...selectedIds], pct})
   })).json();
   doneProgress();
+  document.getElementById('bulk-rate-modal').classList.remove('open');
   toast(`updated ${d.updated||0} video thumbnail(s) to ${pct}%`);
-  if (d.updated) setTimeout(()=>reloadKeepingScroll(), 700);
+  finishBulkAction(!!d.updated);
 }
 
 async function bulkDelete() {
@@ -1084,7 +1164,8 @@ async function bulkDelete() {
   startProgress();
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'delete',delete_file:alsoFile})});
   doneProgress();
-  toast(`deleted ${selectedIds.size} posts`); setTimeout(()=>reloadKeepingScroll(), 600);
+  toast(`deleted ${selectedIds.size} posts`);
+  finishBulkAction();
 }
 
 // ── Folders ────────────────────────────────────────────────────
@@ -1096,7 +1177,8 @@ async function bulkRemoveFromFolder() {
   const folderId = new URLSearchParams(location.search).get('folder');
   if (!folderId) return;
   await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'remove_from_folder',folder_id:folderId})});
-  toast(`removed ${selectedIds.size} posts from folder`); setTimeout(()=>reloadKeepingScroll(), 600);
+  toast(`removed ${selectedIds.size} posts from folder`);
+  finishBulkAction();
 }
 
 // ── Preferences ──────────────────────────────────────────────
@@ -1114,19 +1196,25 @@ function setMode(mode) {
 }
 function setSort(val) {
   PREFS.set('sort', val);
+  if (localStorage.getItem('rememberSort') === '1') localStorage.setItem('lastSort', val);
   const p = new URLSearchParams(window.location.search);
   if (val === 'new') p.delete('sort'); else p.set('sort', val);
   p.delete('page');
   window.location.href = '/?' + p.toString();
 }
+// Keep lastSort/lastSeed in sync with however the user actually got here
+// (a clicked sort button, a bookmarked link, or the server's random-seed
+// redirect) — not just explicit setSort() calls.
+if (localStorage.getItem('rememberSort') === '1') {
+  const p = new URLSearchParams(window.location.search);
+  const s = p.get('sort') || 'new';
+  localStorage.setItem('lastSort', s);
+  if (s === 'random' && p.get('seed')) localStorage.setItem('lastSeed', p.get('seed'));
+}
 
-// ── Close modals ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  ['bulk-modal','bulk-rate-modal'].forEach(id => {
-    document.getElementById(id)?.addEventListener('click', e => {
-      if (e.target.id === id) document.getElementById(id).classList.remove('open');
-    });
-  });
+  // (outside-tap-to-close for every .modal-backdrop, incl. bulk-modal /
+  // bulk-rate-modal, is now wired once in base.html)
 
   // restore full-size preview mode before sizing
   const fullPrev = localStorage.getItem('fullPreview') === '1';
