@@ -1042,23 +1042,56 @@ function initPinchZoom() {
    is just native horizontal scrolling (scroll-container gets overflow-x:auto
    only while zoomed). Same double-tap 1×↔2× gesture as paged mode, no pinch. */
 let zoomedImg = null;   // only one scroll-mode image zoomed at a time
+let zoomObserver = null; // auto-unzoom once the zoomed image scrolls out of view
 
-function setScrollZoom(img, on) {
+// Arms/disarms an IntersectionObserver that unzooms the image the moment it's
+// fully scrolled out of #scroll-container's view. Without this, the shared
+// container's overflow-x:auto (see .zoomed CSS) — and its scrollLeft — would
+// outlive the image it belongs to, leaving every OTHER image below it
+// horizontally draggable/offsettable too, since scrollLeft is one value for
+// the whole vertically-stacked list, not per-image.
+function armZoomAutoClose(img) {
+  disarmZoomAutoClose();
+  const sc = document.getElementById('scroll-container');
+  zoomObserver = new IntersectionObserver(entries => {
+    if (!entries[0].isIntersecting && zoomedImg === img) setScrollZoom(img, false);
+  }, { root: sc, threshold: 0 });
+  zoomObserver.observe(img);
+}
+function disarmZoomAutoClose() {
+  if (zoomObserver) { zoomObserver.disconnect(); zoomObserver = null; }
+}
+
+function setScrollZoom(img, on, tapX, tapY) {
   const sc = document.getElementById('scroll-container');
   if (!sc) return;
   if (on) {
     if (zoomedImg && zoomedImg !== img) setScrollZoom(zoomedImg, false);
+    const rect = img.getBoundingClientRect();
+    // fraction of the tap point within the pre-zoom image, so the zoom
+    // centres on wherever was tapped — tapping dead centre reduces to just
+    // centring the whole image, same as before.
+    const fx = (tapX != null) ? Math.min(1, Math.max(0, (tapX - rect.left) / rect.width)) : 0.5;
     // remember whatever setScrollImgSize() left inline so we can restore it exactly
     img.dataset.prevW  = img.style.width;
     img.dataset.prevMw = img.style.maxWidth;
-    const base = img.getBoundingClientRect().width;
+    const newWidth = rect.width * 2;
     img.style.maxWidth  = 'none';
-    img.style.width     = (base * 2) + 'px';
-    img.style.alignSelf = 'flex-start'; // flex centring would clip the left half once scrolled
+    img.style.width     = newWidth + 'px';
+    img.style.alignSelf = 'flex-start'; // anchor left: overflow (and scrollLeft) only ever grows right
     sc.classList.add('zoomed');
     zoomedImg = img; zoomScale = 2;
-    sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2; // start centred
+    // a synchronous scrollWidth/clientWidth read right after this width
+    // write is unreliable on mobile — wait a frame for the new layout to
+    // actually settle before centring on the tap point.
+    requestAnimationFrame(() => {
+      if (zoomedImg !== img) return; // unzoomed again before this ran
+      const maxScroll = Math.max(0, sc.scrollWidth - sc.clientWidth);
+      sc.scrollLeft = Math.min(maxScroll, Math.max(0, fx * newWidth - sc.clientWidth / 2));
+    });
+    armZoomAutoClose(img);
   } else {
+    disarmZoomAutoClose();
     img.style.width = img.dataset.prevW || '';
     img.style.maxWidth = img.dataset.prevMw || '';
     img.style.alignSelf = '';
@@ -1077,7 +1110,8 @@ function attachScrollZoom(img) {
     if (now - lastTap < 280) {
       e.preventDefault();
       e.stopPropagation(); // don't let the main gesture handler see this as a tap
-      setScrollZoom(img, zoomedImg !== img);
+      const t = e.changedTouches[0];
+      setScrollZoom(img, zoomedImg !== img, t.clientX, t.clientY);
     }
     lastTap = now;
   }, {passive:false});
