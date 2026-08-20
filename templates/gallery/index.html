@@ -109,11 +109,16 @@ body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outlin
 #bulk-suggestions div:last-child { border-bottom: none; }
 #bulk-suggestions div:hover, #bulk-suggestions div.active { background: var(--accent-dim); color: var(--text-bright); }
 .bulk-recent-chip {
+  display: inline-flex; align-items: center; gap: .3rem;
   font-family: var(--mono); font-size: .72rem; padding: .2rem .5rem;
   border-radius: 4px; border: 1px solid var(--border); background: var(--bg3);
   color: var(--text-dim); cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .bulk-recent-chip:hover, .bulk-recent-chip:active { border-color: var(--accent); color: var(--accent); }
+/* small '-' to drop one entry from recent-tags history (not shown on the
+   favorites row below it — those aren't history) */
+.bulk-recent-x { color: var(--text-dim); line-height: 1; -webkit-tap-highlight-color: transparent; }
+.bulk-recent-x:hover, .bulk-recent-x:active { color: var(--danger); }
 /* .cheat-code styling now lives in base.html (shared) */
 .recent-strip { display:flex; gap:4px; align-items:center; overflow-x:auto; padding:.1rem 0 .5rem; margin-bottom:.3rem; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
 .recent-strip .rs-lbl { font-family:var(--mono); font-size:.62rem; color:var(--text-dim); flex:0 0 auto; padding-right:.2rem; text-transform:uppercase; letter-spacing:1px; }
@@ -968,7 +973,8 @@ function renderRecentBulkTags() {
   let html = '';
   if (recent.length) {
     html += '<span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">recent:</span>'
-      + recent.map(t => `<span class="bulk-recent-chip" data-name="${t.name}" data-cat="${t.category||'general'}">${t.name}</span>`).join('');
+      + recent.map(t => `<span class="bulk-recent-chip" data-name="${t.name}" data-cat="${t.category||'general'}">${t.name}`
+        + `<span class="bulk-recent-x" data-name="${t.name}" title="remove from history">&times;</span></span>`).join('');
   }
   wrap.style.display = 'flex';
   wrap.innerHTML = html || '<span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);">type a tag…</span>';
@@ -989,6 +995,12 @@ function wireBulkChips() {
       const sel = document.getElementById('bulk-tag-cat');
       if (sel && [...sel.options].some(o => o.value === chip.dataset.cat)) sel.value = chip.dataset.cat;
       hideBulkSuggestions(); input.focus();
+    };
+  });
+  document.querySelectorAll('#bulk-recent .bulk-recent-x').forEach(x => {
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      if (typeof removeRecentTag !== 'undefined') removeRecentTag(x.dataset.name);
     };
   });
 }

@@ -327,9 +327,13 @@ body.fast-mode .sheet-backdrop > div, body.fast-mode .swipe-preview, body.fast-m
 .sheet-sug:active { background:var(--accent-dim); }
 .quick-row { display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; padding:.25rem 0; }
 .quick-lbl { font-family:var(--mono); font-size:.62rem; color:var(--text-dim); }
-.quick-chip { font-family:var(--mono); font-size:.74rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.quick-chip { display:inline-flex; align-items:center; gap:.3rem; font-family:var(--mono); font-size:.74rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .quick-chip:active, .quick-chip:hover { border-color:var(--accent); color:var(--accent); }
 .quick-chip.character{color:var(--tag-character);} .quick-chip.artist{color:var(--tag-artist);} .quick-chip.meta{color:var(--tag-meta);} .quick-chip.ai{color:var(--tag-ai);}
+/* small '-' to drop one entry out of a recent-searches/recent-tags history
+   list (not shown on favorite-tag chips — those aren't history) */
+.quick-chip-x { color:var(--text-dim); line-height:1; -webkit-tap-highlight-color:transparent; }
+.quick-chip-x:hover, .quick-chip-x:active { color:var(--danger); }
 .cheat-code { font-family: var(--mono); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent); font-size: .78rem; white-space: nowrap; }
 
 /* ── Misc ─────────────────────────────────────────────── */
@@ -579,6 +583,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <div><code class="cheat-code">ta*1</code> — <b>wildcard</b>: tags starting with “ta” and ending “1”. <code class="cheat-code">*</code> matches anything.</div>
       <div><code class="cheat-code">file:cat</code> — posts whose <b>file name</b> contains “cat”.</div>
       <div><code class="cheat-code">folder:trip</code> — posts whose <b>folder</b> path contains “trip”.</div>
+      <div><code class="cheat-code">pages:3</code> — posts with exactly 3 images. Also <code class="cheat-code">pages:&gt;15</code>, <code class="cheat-code">pages:&lt;12</code>, <code class="cheat-code">pages:&gt;=15</code>, <code class="cheat-code">pages:&lt;=12</code>.</div>
       <div style="color:var(--text-dim);font-size:.76rem;border-top:1px solid var(--border);padding-top:.5rem;">Combine freely, e.g.&nbsp; <code class="cheat-code">1girl ( red_hair ~ blue_hair ) -monochrome file:2024</code></div>
     </div>
     <div class="modal-actions"><button class="btn primary" onclick="document.getElementById('cheat-modal').classList.remove('open')">got it</button></div>
@@ -706,7 +711,7 @@ const DEFAULT_BINDINGS = {
   detail_back:    'Escape', toggle_info:   'i',
   toggle_view:    'v',    fav:             'f',
   ai_tag:         'g',    find_similar:   'u',
-  regen_thumb:    'h',
+  regen_thumb:    'h',    quick_tag:      't',
   detail_prev:    'ArrowLeft', detail_next: 'ArrowRight',
   // Duplicates minigame
   dupe_merge:     'm',    dupe_delete:    'd',
@@ -877,7 +882,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;
@@ -1166,6 +1171,16 @@ function pushRecentTag(name, category) {
   localStorage.setItem('recentTags', JSON.stringify(r.slice(0, 16)));
   pushRecentSync();
 }
+// Drop one entry from the recent-tags history (favorites are untouched —
+// they live in Tag.fav, not this list). Must push to the server too, or
+// pullRecent()'s union-merge on the next page load would resurrect it.
+function removeRecentTag(name) {
+  localStorage.setItem('recentTags', JSON.stringify(getRecentTags().filter(t => t.name !== name)));
+  pushRecentSync();
+  if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
+  if (typeof renderRecentBulkTags !== 'undefined') renderRecentBulkTags();
+  if (typeof renderSheetQuick !== 'undefined') renderSheetQuick();
+}
 let _favTagCache = null;
 async function getFavTags() {
   if (_favTagCache) return _favTagCache;
@@ -1187,6 +1202,17 @@ function pushRecentSearch(query) {
   r.unshift(query);
   localStorage.setItem('recentSearches', JSON.stringify(r.slice(0, 12)));
   pushRecentSync();
+}
+// Drop one entry from the recent-searches history. Re-renders every chip
+// host at once, since recentSearchChips() is shared by all of them.
+function removeRecentSearch(query) {
+  localStorage.setItem('recentSearches', JSON.stringify(getRecentSearches().filter(q => q !== query)));
+  pushRecentSync();
+  ['recent-searches', 'detail-recent-searches'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { const c = recentSearchChips(); el.innerHTML = c ? '<span class="quick-lbl">searches</span>' + c : ''; }
+  });
+  if (typeof renderSheetQuick !== 'undefined') renderSheetQuick();
 }
 function recordRecentPost(entry) {
   // Write to localStorage immediately so THIS device's strip updates right away
@@ -1307,8 +1333,13 @@ function runSearchQuery(query) {
   window.location.href = p.toString() ? '/?' + p.toString() : '/';
 }
 function recentSearchChips() {
-  return getRecentSearches().map(q =>
-    `<span class="quick-chip" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${q.replace(/"/g,'&quot;')}" onclick="runSearchQuery('${q.replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">${q.replace(/</g,'&lt;')}</span>`).join('');
+  return getRecentSearches().map(q => {
+    const esc = q.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    return `<span class="quick-chip" style="max-width:220px;" title="${q.replace(/"/g,'&quot;')}" onclick="runSearchQuery('${esc}')">` +
+      `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${q.replace(/</g,'&lt;')}</span>` +
+      `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentSearch('${esc}')" title="remove from history">&times;</span>` +
+      `</span>`;
+  }).join('');
 }
 
 /* ── Mobile tag sheet ────────────────────────────────── */
@@ -1352,7 +1383,8 @@ async function renderSheetQuick() {
   const searches = recentSearchChips();
   if (searches) html += '<div class="quick-row"><span class="quick-lbl">searches</span>' + searches + '</div>';
   if (recent.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>'
-    + recent.map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}</span>`).join('') + '</div>';
+    + recent.map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}`
+      + `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentTag('${t.name}')" title="remove from history">&times;</span></span>`).join('') + '</div>';
   if (favs.length) html += '<div class="quick-row"><span class="quick-lbl">&#9829;</span>'
     + favs.slice(0,12).map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}</span>`).join('') + '</div>';
   wrap.innerHTML = html;

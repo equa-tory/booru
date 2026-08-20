@@ -6,14 +6,15 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
-from django.db.models import Q, Case, When, IntegerField, F
-from django.db.models.functions import Mod
+from django.db.models import Q, Case, When, IntegerField, F, Count, Value, OuterRef, Subquery
+from django.db.models.functions import Mod, Coalesce
 from django.conf import settings
 
 from .models import Post, Photo, Tag, Task, Folder
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
-                    make_video_thumb, retag_all_videos, sync_sound_tag)
+                    make_video_thumb, retag_all_videos, sync_sound_tag,
+                    make_gif_from_post)
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -23,6 +24,9 @@ from .utils import (scan_inbox, create_post_from_files, ingest_photo,
 #   -tag1            NOT   — posts without the tag
 #   night~           FUZZY — Levenshtein-close tag names (night/fight/bright…)
 #   ta*1             GLOB  — tags starting "ta" and ending "1" (* = anything)
+#   pages:3          PAGES — posts with exactly 3 images (also >15, <12, >=, <=)
+
+_PAGES_RE = re.compile(r'^pages:(>=|<=|>|<)?(\d+)$')
 
 def _levenshtein(a, b):
     if a == b:
@@ -53,6 +57,20 @@ def _fuzzy_tag_names(base):
     return out
 
 
+def _page_count_sq():
+    """Correlated subquery giving each post's image count, independent of
+    whatever joins the rest of the query has already added. A plain
+    annotate(Count('images')) (as multi_only/single_only use below) would be
+    wrong here: a tag join that matches multiple rows per post (wildcard,
+    fuzzy, OR groups) inflates the count, and a file:/folder: filter's WHERE
+    clause on the same 'images' join would UNDER-count instead. A subquery
+    sidesteps both."""
+    return Coalesce(Subquery(
+        Photo.objects.filter(post=OuterRef('pk')).order_by()
+             .values('post').annotate(c=Count('id')).values('c')[:1],
+        output_field=IntegerField()), Value(0))
+
+
 def _term_to_q(term):
     """Translate one search term into a Q over Post.tags.
     Returns (Q, multi) — multi=True means the term may match several tag
@@ -64,6 +82,18 @@ def _term_to_q(term):
         return Q(images__rel_path__icontains=term[5:]), True
     if term.startswith('folder:') and len(term) > 7:  # search by folder name
         return Q(images__rel_path__icontains=term[7:]), True
+    m = _PAGES_RE.match(term)                          # image-count filter
+    if m:
+        op, n = m.group(1), int(m.group(2))
+        if op == '>':
+            return Q(_pages__gt=n), False
+        if op == '>=':
+            return Q(_pages__gte=n), False
+        if op == '<':
+            return Q(_pages__lt=n), False
+        if op == '<=':
+            return Q(_pages__lte=n), False
+        return Q(_pages=n), False                       # exact
     if '*' in term:                                   # wildcard glob
         pattern = '^' + re.escape(term).replace(r'\*', '.*') + '$'
         return Q(tags__name__iregex=pattern), True
@@ -154,6 +184,13 @@ def _build_post_qs(request):
 
     posts = Post.objects.prefetch_related('tags', 'images').all()
 
+    # Only pay for the extra correlated subquery when a pages: token is
+    # actually present (tokens inside "( ... )" OR groups are still separate
+    # entries in q_tags, so a flat scan covers those too; strip a leading '-'
+    # so "-pages:1" NOT-queries are detected as well).
+    if any(t.lstrip('-').startswith('pages:') for t in q_tags):
+        posts = posts.annotate(_pages=_page_count_sq())
+
     if q_tags:
         ands, ors, nots = _parse_tag_tokens(q_tags)
         for q in ands:
@@ -178,15 +215,13 @@ def _build_post_qs(request):
         posts = posts.filter(folders__id=int(folder_id)).distinct()
 
     if multi_only == '1':
-        from django.db.models import Count as _Count
-        posts = posts.annotate(_img_count=_Count('images')).filter(_img_count__gt=1)
+        posts = posts.annotate(_img_count=Count('images')).filter(_img_count__gt=1)
 
     if single_only == '1':
-        from django.db.models import Count as _Count2
         if multi_only == '1':
             pass  # conflicting filters
         else:
-            posts = posts.annotate(_img_count2=_Count2('images')).filter(_img_count2__lte=1)
+            posts = posts.annotate(_img_count2=Count('images')).filter(_img_count2__lte=1)
 
     if sort_by == 'old':
         posts = posts.order_by('added_at')
@@ -742,6 +777,34 @@ def sound_tag_all_bg(request):
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
     return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…').id})
+
+
+@require_POST
+def post_to_gif_bg(request, pk):
+    """Render a multi-image post into a full-resolution animated GIF and
+    ingest it as a NEW post (tags copied across) — the source post is left
+    untouched. Runs in the background: full-res GIF encoding can take
+    minutes, well past what a plain request should hold open."""
+    post = get_object_or_404(Post, pk=pk)
+    if post.image_count < 2:
+        return JsonResponse({'error': 'post needs at least 2 images'}, status=400)
+    try:
+        fps = float(json.loads(request.body or '{}').get('fps') or 2)
+    except (ValueError, TypeError):
+        fps = 2.0
+
+    def work(task):
+        src = Post.objects.get(pk=pk)  # re-fetch: this closure runs in its own thread
+        gif_path = make_gif_from_post(src, fps, task=task)
+        new_post = create_post_from_files([gif_path], title=src.title)
+        for tag in src.tags.all():
+            new_post.tags.add(tag)
+        for tag in new_post.tags.all():
+            tag.update_count()
+        task.message = f'gif ready — post #{new_post.id}'
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('gif', work, message='building gif…').id})
 
 
 @require_POST

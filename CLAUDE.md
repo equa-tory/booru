@@ -8,7 +8,7 @@ A self-hosted, single-user "booru"-style photo/video/PDF gallery built on Django
 ## Commands
 - Dev server: `python manage.py runserver`
 - Migrate / make migrations: `python manage.py migrate` / `python manage.py makemigrations`
-- Production (Linux/systemd): `./start.sh` — runs migrate then gunicorn (gevent workers, port 3001). Windows dev uses runserver.
+- Production (Linux/systemd): `./start.sh` — runs makemigrations+migrate, reloads/restarts the `booru` systemd unit, then execs gunicorn (gevent workers, port 3001). Windows dev uses runserver.
 - Tests: `python manage.py test` (note: `gallery/tests.py` is currently an empty stub — there is no real suite yet).
 - Downloads watcher (optional sidecar): `python watch_downloads.py --downloads <dir> --inbox <media/inbox>` — auto-moves new downloads/zips into the inbox.
 
@@ -21,6 +21,7 @@ Convention: `media/inbox/_/<folder>/` = one multi-image Post; loose files in `me
 ## Architecture
 - Single Django app `gallery`; project package `booru`.
 - Models (`gallery/models.py`): `Post` (a gallery item) has many `Photo` (individual files, incl. video/PDF, `is_video` flag, `phash` for dedupe). `Tag` (M2M to Post) has a `category` (general/character/artist/meta/ai) and a denormalized `count` kept current via `Tag.update_count()`. `Folder` is either manual (explicit M2M posts) or "smart" (stores a query string re-run through `_build_post_qs`). `Task` is a DB-backed row tracking background jobs so progress survives page reloads and is visible to every gunicorn worker.
+- `Photo.rel_path`/`rel_thumb_path` are stored relative to `settings.MEDIA_ROOT` (so relocating the whole media folder only means updating `MEDIA_ROOT`); the `file_path`/`thumb_path` properties resolve them to absolute paths and transparently tolerate legacy absolute values from before this became relative. `rebase_photo_paths()` in `utils.py` (wired to the "rebase paths" button) bulk-converts any remaining absolute rows.
 - Ingestion/thumbnailing lives in `gallery/utils.py`: `ingest_photo`, `create_post_from_files`, `make_thumb`/`make_video_thumb` (ffmpeg)/`make_pdf_thumb` (PyMuPDF→pdftoppm fallback), `compute_phash`/`phash_distance`. Thumbnails are keyed by md5 of the source path and written to `media/thumbs/`.
 - Views (`gallery/views.py`) are the whole controller layer — page renders + a large JSON API (URLs in `gallery/urls.py`). Frontend is server-rendered templates (`templates/gallery/`) + `static/js/htmx.min.js`; there is no JS build step. Infinite scroll pulls JSON from `/api/posts/`.
 
@@ -35,6 +36,7 @@ Heavy operations (scan, merge, ai_tag, dupes) run via `_start_task(kind, fn)` wh
 
 ## AI tagging
 `run_ai_tagger` runs the WD14 ONNX tagger (`SmilingWolf/wd-vit-tagger-v3`, lazily downloaded + cached in `_get_wd14_model`, CUDA→CPU providers). For videos/PDFs it tags the generated thumbnail instead of the original. Tags applied land in the `ai` category and set `Post.ai_tagged=True`.
+- Separately, `sync_sound_tag`/`has_audio_stream` (ffprobe-based, in `gallery/utils.py`) add/remove a `sound` tag on video posts; driven per-post during ingest and in bulk via the `sound_tag_all_bg` background task.
 
 ## Middleware & caching (`gallery/middleware.py`)
 - `LoginRequiredMiddleware`: session password gate; `sw.js` and `/login|/logout` are exempt.

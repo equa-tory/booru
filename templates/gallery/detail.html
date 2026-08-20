@@ -8,7 +8,11 @@
 @media (max-width:640px) { .detail-wrap { flex-direction:column; } }
 
 /* Image panel */
-.img-panel { flex:1; background:#000; position:relative; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+/* overscroll-behavior:contain — belt-and-braces so a wheel/scroll gesture
+   over the nav arrows / panel background never chains up to the document
+   (the .mobile-only fix above already removes the overflow that caused it,
+   this just makes sure nothing else can reintroduce the same scroll-through). */
+.img-panel { flex:1; background:#000; position:relative; display:flex; flex-direction:column; overflow:hidden; overscroll-behavior:contain; min-width:0; }
 
 /* PAGED */
 .view-paged .img-main { flex:1; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden; min-height:0; overscroll-behavior:none; touch-action:none; }
@@ -285,7 +289,7 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
    so we must NOT set -webkit-user-drag:none on them. */
 
 /* Info panel */
-.info-panel { width:280px; min-width:280px; background:var(--bg2); border-left:1px solid var(--border); padding:1rem; overflow-y:auto; }
+.info-panel { width:280px; min-width:280px; background:var(--bg2); border-left:1px solid var(--border); padding:1rem; overflow-y:auto; overscroll-behavior:contain; }
 @media (max-width:640px) {
   .info-panel { position:fixed; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom)); left:0; right:0; width:100%; max-height:60vh; border-left:none; border-top:1px solid var(--border); border-radius:16px 16px 0 0; transform:translateY(100%); transition:transform .3s cubic-bezier(.4,0,.2,1), visibility 0s .3s; z-index:120; box-shadow:0 -4px 24px rgba(0,0,0,.4); touch-action:pan-y; overscroll-behavior:contain; visibility:hidden; }
   .info-panel.open { transform:translateY(0); transition:transform .3s cubic-bezier(.4,0,.2,1), visibility 0s 0s; visibility:visible; }
@@ -328,6 +332,15 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
 #tag-suggestions div:active { background:var(--accent-dim); color:var(--text-bright); }
 #tag-suggestions .tag-sug-item { display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
 #tag-suggestions .tag-sug-item.character{color:var(--tag-character);} #tag-suggestions .tag-sug-item.artist{color:var(--tag-artist);} #tag-suggestions .tag-sug-item.meta{color:var(--tag-meta);} #tag-suggestions .tag-sug-item.general{color:var(--tag-general);}
+
+/* Quick-tag sheet (long-press / 't') */
+#quick-tag-input { width:100%; background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.5rem .6rem; border-radius:6px; font-size:.9rem; font-family:var(--mono); outline:none; }
+#quick-tag-input:focus { border-color:var(--accent); }
+#quick-tag-suggestions { position:absolute; left:0; right:0; background:var(--bg3); border:1px solid var(--border); border-radius:6px; z-index:200; max-height:180px; overflow-y:auto; font-size:.85rem; font-family:var(--mono); box-shadow:0 4px 16px rgba(0,0,0,.5); }
+#quick-tag-suggestions div { padding:.45rem .7rem; cursor:pointer; -webkit-tap-highlight-color:transparent; display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
+#quick-tag-suggestions div:active { background:var(--accent-dim); color:var(--text-bright); }
+#quick-tag-chips .quick-chip { font-size:.82rem; padding:.35rem .65rem; }
+#quick-tag-chips .quick-chip.applied { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
 
 .delete-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.4rem; }
 
@@ -614,6 +627,25 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         {% endfor %}
       </div>
     </div>
+
+    {% if images|length > 1 %}
+    <!-- Convert this multi-image post into a GIF (new post, original untouched) -->
+    <div class="info-section" id="gif-section">
+      <div class="info-label" style="margin-bottom:.3rem;">make gif</div>
+      <div style="display:flex;gap:.4rem;align-items:center;">
+        <input id="gif-fps" type="number" min="0.1" max="60" step="0.1" value="2"
+               style="width:64px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:6px;font-size:.82rem;font-family:var(--mono);outline:none;"
+               title="frames per second" onchange="saveGifFps()">
+        <span style="font-size:.7rem;color:var(--text-dim);">fps</span>
+        <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="postToGif()" id="gif-btn">&#9654; make gif</button>
+      </div>
+      <div style="font-size:.65rem;color:var(--text-dim);margin-top:.35rem;">
+        Renders all {{ images|length }} images into a full-resolution animated GIF as a
+        NEW post — this post is left untouched. Full-res GIFs can be large and take a
+        while; runs in the background, progress shows in the notifications panel.
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% endwith %}
@@ -637,11 +669,11 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 <!-- Minimal post UI: one slim bottom bar (scroll-top, info, tags, random,
      more) plus two big floating tap-zones for prev/next. Always in the DOM;
      only shown when body.minimal-ui is active (phone). -->
-<div class="mini-nav" id="mini-nav">
+<div class="mini-nav mobile-only" id="mini-nav">
   <button class="mini-nav-btn" id="mini-prev" onclick="navTo('prev')" aria-label="previous"></button>
   <button class="mini-nav-btn" id="mini-next" onclick="navTo('next')" aria-label="next"></button>
 </div>
-<div class="mini-bar" id="mini-bar">
+<div class="mini-bar mobile-only" id="mini-bar">
   <div class="mini-row mini-row-top">
     <div class="mini-stars">
       {% for n in "12345" %}
@@ -661,6 +693,24 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 
 <!-- Mobile: mode toggle fixed at bottom center, always visible -->
 <button id="mode-toggle-fixed" onclick="toggleViewMode()">&#9783; scroll</button>
+
+<!-- Quick-tag sheet: long-press the image (or press 't') to apply favorite /
+     recent tags to THIS post without leaving it or opening the info panel.
+     Stays open across taps so several tags can be applied in a row; a tap
+     toggles (add if missing, remove if already on the post). -->
+<div class="modal-backdrop" id="quick-tag-backdrop" onclick="if(event.target===this) closeQuickTagSheet()">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-handle"></div>
+    <h2>quick tag</h2>
+    <div style="position:relative;margin-bottom:.6rem;">
+      <input id="quick-tag-input" type="text" placeholder="add tag..." autocomplete="off"
+             oninput="onQuickTagInput()" onkeydown="onQuickTagKey(event)">
+      <div id="quick-tag-suggestions" style="display:none;"></div>
+    </div>
+    <div id="quick-tag-chips"></div>
+    <div class="modal-actions"><button class="btn primary" onclick="closeQuickTagSheet()">done</button></div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -1522,6 +1572,7 @@ document.addEventListener('keydown', e => {
   if (k === bk('ai_tag'))       { e.preventDefault(); aiTag(); return; }
   if (k === bk('find_similar')) { e.preventDefault(); findSimilar(); return; }
   if (k === bk('regen_thumb'))  { e.preventDefault(); regenThumb(); return; }
+  if (k === bk('quick_tag'))    { e.preventDefault(); if (typeof openQuickTagSheet !== 'undefined') openQuickTagSheet(); return; }
   if (k === bk('open_random'))  { window.location.href='/?sort=random'; return; }
   if (k === bk('random_post'))  { if(typeof goRandom!=='undefined') goRandom(); return; }
   if (k === bk('scan_inbox'))   { e.preventDefault(); if(typeof doScan!=='undefined') doScan(); return; }
@@ -2001,10 +2052,13 @@ async function renderPostQuickTags() {
   const favs   = (typeof getFavTags !== 'undefined') ? await getFavTags() : [];
   const have   = new Set([...document.querySelectorAll('#tag-chips .tag-chip')].map(c => c.dataset.tag));
   const chip = t => `<span class="quick-chip ${t.category||''}" onclick="quickAddTag('${t.name.replace(/'/g,"\\'")}','${t.category||'general'}')">${t.name}</span>`;
+  // recent-tag chips (not favorites) also get a small '-' to drop them from history
+  const chipRemovable = t => `<span class="quick-chip ${t.category||''}" onclick="quickAddTag('${t.name.replace(/'/g,"\\'")}','${t.category||'general'}')">${t.name}`
+    + `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentTag('${t.name.replace(/'/g,"\\'")}')" title="remove from history">&times;</span></span>`;
   let html = '';
   const r = recent.filter(t => !have.has(t.name));
   const f = favs.filter(t => !have.has(t.name)).slice(0,14);
-  if (r.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>' + r.map(chip).join('') + '</div>';
+  if (r.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>' + r.map(chipRemovable).join('') + '</div>';
   if (f.length) html += '<div class="quick-row"><span class="quick-lbl">&#9829;</span>' + f.map(chip).join('') + '</div>';
   wrap.innerHTML = html;
 }
@@ -2014,6 +2068,140 @@ function quickAddTag(name, category) {
   setTimeout(renderPostQuickTags, 150);
 }
 function removeTag(name) { apiTag('remove',name,''); }
+
+/* ── Quick-tag sheet (long-press image, or press 't') ─────────
+   One-tap favorite/recent tags applied straight to this post, without
+   opening the info panel — built for rapid-fire tagging while scrolling
+   through posts. A tap toggles the tag; the sheet stays open across taps. */
+function quickTagHave() {
+  return new Set([...document.querySelectorAll('#tag-chips .tag-chip')].map(c => c.dataset.tag));
+}
+function quickToggleTag(name, category) {
+  if (quickTagHave().has(name)) { apiTag('remove', name, ''); }
+  else {
+    apiTag('add', name, category);
+    if (typeof pushRecentTag !== 'undefined') pushRecentTag(name, category);
+  }
+  setTimeout(renderQuickTagSheet, 150);
+}
+async function renderQuickTagSheet() {
+  const wrap = document.getElementById('quick-tag-chips');
+  if (!wrap) return;
+  const have   = quickTagHave();
+  const recent = (typeof getRecentTags !== 'undefined') ? getRecentTags() : [];
+  const favs   = (typeof getFavTags !== 'undefined') ? await getFavTags() : [];
+  const chip = (t, removable) => {
+    const applied = have.has(t.name);
+    const nameEsc = t.name.replace(/'/g,"\\'");
+    const x = removable ? `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentTag('${nameEsc}')" title="remove from history">&times;</span>` : '';
+    return `<span class="quick-chip ${t.category||''}${applied?' applied':''}" onclick="quickToggleTag('${nameEsc}','${t.category||'general'}')">${applied?'&#10003; ':''}${t.name}${x}</span>`;
+  };
+  let html = '';
+  if (favs.length)   html += '<div class="quick-row"><span class="quick-lbl">&#9829;</span>' + favs.map(t => chip(t, false)).join('') + '</div>';
+  if (recent.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>' + recent.map(t => chip(t, true)).join('') + '</div>';
+  wrap.innerHTML = html || '<div style="font-size:.78rem;color:var(--text-dim);">no favorite or recent tags yet — favorite some tags, or add one above.</div>';
+}
+async function openQuickTagSheet() {
+  document.body.style.overflow = 'hidden';
+  await renderQuickTagSheet();
+  document.getElementById('quick-tag-backdrop').classList.add('open');
+  document.getElementById('quick-tag-input').value = '';
+  hideQuickTagSuggestions();
+}
+function closeQuickTagSheet() {
+  document.getElementById('quick-tag-backdrop').classList.remove('open');
+  hideQuickTagSuggestions();
+  document.body.style.overflow = '';
+}
+let quickTagSuggestTimeout;
+function onQuickTagInput() {
+  clearTimeout(quickTagSuggestTimeout);
+  const q = document.getElementById('quick-tag-input').value.trim();
+  if (q.length < 2) { hideQuickTagSuggestions(); return; }
+  quickTagSuggestTimeout = setTimeout(async () => {
+    const d = await (await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`)).json();
+    showQuickTagSuggestions(d.tags);
+  }, 200);
+}
+function showQuickTagSuggestions(tags) {
+  const el = document.getElementById('quick-tag-suggestions'); el.innerHTML = '';
+  if (!tags.length) { el.style.display = 'none'; return; }
+  tags.forEach(t => {
+    const div = document.createElement('div');
+    div.innerHTML = `<span>${t.name}</span><span style="color:var(--text-dim);font-size:.7rem;">${t.count||''}</span>`;
+    div.onclick = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      quickToggleTag(t.name, t.category || 'general');
+      document.getElementById('quick-tag-input').value = '';
+      hideQuickTagSuggestions();
+    };
+    el.appendChild(div);
+  });
+  el.style.display = 'block';
+}
+function hideQuickTagSuggestions() { const el = document.getElementById('quick-tag-suggestions'); if (el) el.style.display = 'none'; }
+function onQuickTagKey(e) {
+  if (e.key === 'Enter') {
+    const name = document.getElementById('quick-tag-input').value.trim();
+    if (name) { quickToggleTag(name, 'general'); document.getElementById('quick-tag-input').value = ''; hideQuickTagSuggestions(); }
+  }
+  if (e.key === 'Escape') closeQuickTagSheet();
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#quick-tag-input') && !e.target.closest('#quick-tag-suggestions')) hideQuickTagSuggestions();
+});
+
+/* Trigger: long-press the image (touch) or mouse-hold (desktop), or the
+   'quick_tag' key binding. Independent of the swipe/pinch modules above — it
+   only fires on a touch/hold that stays essentially still for HOLD_MS, which
+   those modules already treat as a no-op (their tap check requires dt<300ms;
+   their swipe checks require real movement), so this can't steal a real tap
+   or swipe from them. */
+(function() {
+  let timer = null, sx = 0, sy = 0, moved = false;
+  const HOLD_MS = 450, MOVE_TOL = 10;
+  function cancel() { clearTimeout(timer); timer = null; }
+  function shouldSkip(target) {
+    return target && target.closest && target.closest(
+      'video, .nav-arrow, button, a, input, select, .filmstrip, .mini-bar, .mini-nav, .info-panel, .modal-backdrop');
+  }
+  function armTimer() {
+    cancel();
+    timer = setTimeout(() => {
+      if (moved) return;
+      if (navigator.vibrate) navigator.vibrate(15);
+      openQuickTagSheet();
+    }, HOLD_MS);
+  }
+  function onTouchStart(e) {
+    if (e.touches.length !== 1 || shouldSkip(e.target)) { cancel(); return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; moved = false;
+    armTimer();
+  }
+  function onTouchMove(e) {
+    if (!timer) return;
+    if (e.touches.length !== 1) { cancel(); return; }
+    if (Math.abs(e.touches[0].clientX - sx) > MOVE_TOL || Math.abs(e.touches[0].clientY - sy) > MOVE_TOL) { moved = true; cancel(); }
+  }
+  const targets = [document.getElementById('img-main'), document.getElementById('scroll-container')].filter(Boolean);
+  targets.forEach(el => {
+    el.addEventListener('touchstart', onTouchStart, {passive:true});
+    el.addEventListener('touchmove',  onTouchMove,  {passive:true});
+    el.addEventListener('touchend',   cancel,        {passive:true});
+    el.addEventListener('touchcancel', cancel,       {passive:true});
+  });
+  // Desktop: mouse-hold does the same thing (no touch events fire there).
+  function onMouseDown(e) {
+    if (e.button !== 0 || shouldSkip(e.target)) return;
+    sx = e.clientX; sy = e.clientY; moved = false;
+    armTimer();
+    const onMove2 = ev => { if (Math.abs(ev.clientX - sx) > MOVE_TOL || Math.abs(ev.clientY - sy) > MOVE_TOL) { moved = true; cancel(); } };
+    const onUp = () => { cancel(); document.removeEventListener('mousemove', onMove2); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove2);
+    document.addEventListener('mouseup', onUp, {once:true});
+  }
+  targets.forEach(el => el.addEventListener('mousedown', onMouseDown));
+})();
 async function aiTag() {
   const btn=document.getElementById('ai-btn'); btn.disabled=true; btn.textContent='tagging...';
   startProgress();
@@ -2069,6 +2257,43 @@ async function regenThumb() {
   } catch(e) { doneProgress(); toast('error regenerating','err'); }
   if (btn) { btn.disabled = false; btn.textContent = '\u27F3 regen thumb'; }
 }
+
+/* \u2500\u2500 Post \u2192 GIF (background task; new post, original untouched) \u2500\u2500\u2500 */
+function saveGifFps() {
+  const v = parseFloat(document.getElementById('gif-fps').value);
+  if (!v || v <= 0) return;
+  try {
+    fetch('/api/pref/set/', {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({key:'gifFps', value:v})
+    }).catch(()=>{});
+  } catch(e) {}
+}
+// adopt the cross-device default fps, if one was ever saved
+fetch('/api/prefs/').then(r=>r.json()).then(d=>{
+  const v = d.prefs && d.prefs.gifFps;
+  const input = document.getElementById('gif-fps');
+  if (v && input) input.value = v;
+}).catch(()=>{});
+
+async function postToGif() {
+  const input = document.getElementById('gif-fps');
+  const fps = parseFloat(input.value) || 2;
+  if (!confirm(`Render all ${IMAGES.length} images into a full-resolution GIF at ${fps} fps?\n\nThis creates a NEW post \u2014 this post is left untouched. Full-res GIFs can be large and take a while.`)) return;
+  saveGifFps();
+  const btn = document.getElementById('gif-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
+  try {
+    await fetch(`/api/post/${POST_ID}/to-gif/`, {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({fps})
+    });
+    toast('building gif in the background\u2026');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start gif build','err'); }
+  if (btn) { btn.disabled = false; btn.textContent = '\u25B6 make gif'; }
+}
+
 let suggestTimeout;
 async function onTagInput() {
   clearTimeout(suggestTimeout);

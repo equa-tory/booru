@@ -269,6 +269,112 @@ def make_thumb(src_path, max_size=360, pct=0):
         return ''
 
 
+def make_gif_from_post(post, fps=2, task=None):
+    """Render a multi-image post into a full-resolution animated GIF, written
+    into its own sibling folder rather than alongside the source images —
+    scan_inbox treats the first Photo found in an inbox/_/<folder> as that
+    folder's "owner" post (see folder_to_post in scan_inbox), so dropping the
+    GIF into the source folder risks a later rescan attaching new files to
+    the GIF's post instead of the original. Returns the absolute path to the
+    produced .gif. Raises on failure; the caller (post_to_gif_bg) runs this
+    inside a background Task, which surfaces the exception as task.error."""
+    frames = [p for p in post.images.order_by('order', 'id')
+              if not p.is_video and not p.is_pdf and os.path.exists(p.file_path)]
+    if len(frames) < 2:
+        raise ValueError('post needs at least 2 still images to make a gif')
+    try:
+        fps = max(0.1, min(float(fps), 60.0))
+    except (TypeError, ValueError):
+        fps = 2.0
+
+    if task:
+        task.total = 3; task.done = 0
+        task.message = 'reading frames…'
+        task.save(update_fields=['total', 'done', 'message'])
+
+    # Canvas = the largest width/height across frames — don't trust
+    # Photo.width/height (0 for anything ingested as video/pdf, and can go
+    # stale after an out-of-band file swap); frames of differing sizes would
+    # otherwise make ffmpeg's scale/pad chain abort.
+    max_w = max_h = 0
+    for p in frames:
+        try:
+            with Image.open(p.file_path) as im:
+                w, h = im.size
+        except Exception as e:
+            raise ValueError(f'could not read image {p.filename}: {e}')
+        max_w, max_h = max(max_w, w), max(max_h, h)
+    max_w += max_w % 2  # even dimensions — some scale/pad filters require it
+    max_h += max_h % 2
+
+    if task:
+        task.done = 1; task.save(update_fields=['done'])
+
+    safe_name = _safe_folder_name(post.title or f'post-{post.id}')
+    dest_dir = os.path.join(settings.MEDIA_ROOT, 'inbox', '_', f'{safe_name} (gif)')
+    n = 1
+    while os.path.isdir(dest_dir):
+        dest_dir = os.path.join(settings.MEDIA_ROOT, 'inbox', '_', f'{safe_name} (gif) {n}')
+        n += 1
+    os.makedirs(dest_dir, exist_ok=True)
+    gif_path     = os.path.join(dest_dir, f'{safe_name}.gif')
+    palette_path = os.path.join(dest_dir, '_palette.png')
+    list_path    = os.path.join(dest_dir, '_frames.txt')
+
+    def _esc(path):
+        # ffmpeg concat demuxer: single-quoted path, embedded single quotes
+        # escaped as '\'' — filenames with apostrophes are common and would
+        # otherwise corrupt the list.
+        return path.replace("'", "'\\''")
+
+    frame_dur = 1.0 / fps
+    try:
+        with open(list_path, 'w', encoding='utf-8') as f:
+            for p in frames:
+                f.write(f"file '{_esc(p.file_path)}'\nduration {frame_dur:.6f}\n")
+            # the concat demuxer ignores the final `duration` line unless the
+            # last file is repeated without one
+            f.write(f"file '{_esc(frames[-1].file_path)}'\n")
+
+        vf_scale = (f'scale={max_w}:{max_h}:force_original_aspect_ratio=decrease,'
+                    f'pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2:color=white')
+
+        if task:
+            task.message = 'building color palette…'; task.save(update_fields=['message'])
+        r1 = subprocess.run([
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path,
+            '-vf', f'{vf_scale},fps={fps},palettegen=stats_mode=diff',
+            '-update', '1', palette_path,
+        ], capture_output=True, timeout=600)
+        if r1.returncode != 0 or not os.path.exists(palette_path):
+            raise RuntimeError(f'palette generation failed: '
+                                f'{r1.stderr[-500:].decode(errors="ignore")}')
+        if task:
+            task.done = 2; task.save(update_fields=['done'])
+
+        if task:
+            task.message = 'encoding gif…'; task.save(update_fields=['message'])
+        r2 = subprocess.run([
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path,
+            '-i', palette_path,
+            '-lavfi', f'{vf_scale},fps={fps}[x];[x][1:v]paletteuse',
+            gif_path,
+        ], capture_output=True, timeout=1800)
+        if r2.returncode != 0 or not os.path.exists(gif_path) or os.path.getsize(gif_path) < 500:
+            raise RuntimeError(f'gif encode failed: '
+                                f'{r2.stderr[-500:].decode(errors="ignore")}')
+    except FileNotFoundError:
+        raise RuntimeError('ffmpeg not found. Install it with `apt install ffmpeg`.')
+    finally:
+        for p in (list_path, palette_path):
+            try: os.remove(p)
+            except OSError: pass
+
+    if task:
+        task.done = 3; task.save(update_fields=['done'])
+    return gif_path
+
+
 def ingest_photo(path, post, order=0):
     from gallery.models import Photo
     from django.db.models import Q
@@ -443,12 +549,17 @@ def rebase_photo_paths(task=None):
 
 def add_tags_to_post(post, tag_names, category='general'):
     from gallery.models import Tag
+    # Only recount the tags this call actually touched — adding tag X can't
+    # change any OTHER tag's count, so re-counting every tag on the post
+    # (the old behavior) was O(all tags on the post) writes for a single add.
+    touched = []
     for name in tag_names:
         name = name.strip().lower().replace(' ', '_')
         if not name: continue
         tag, _ = Tag.objects.get_or_create(name=name, defaults={'category': category})
         post.tags.add(tag)
-    for tag in post.tags.all():
+        touched.append(tag)
+    for tag in touched:
         tag.update_count()
 
 
