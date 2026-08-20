@@ -2151,12 +2151,17 @@ document.addEventListener('click', e => {
   if (!e.target.closest('#quick-tag-input') && !e.target.closest('#quick-tag-suggestions')) hideQuickTagSuggestions();
 });
 
-/* Trigger: long-press the image (touch) or mouse-hold (desktop), or the
-   'quick_tag' key binding. Independent of the swipe/pinch modules above — it
-   only fires on a touch/hold that stays essentially still for HOLD_MS, which
-   those modules already treat as a no-op (their tap check requires dt<300ms;
-   their swipe checks require real movement), so this can't steal a real tap
-   or swipe from them. */
+/* Trigger: long-press the image (touch only — see quick_tag key binding
+   below for desktop). Independent of the swipe/pinch modules above — it only
+   fires on a touch that stays essentially still for HOLD_MS, which those
+   modules already treat as a no-op (their tap check requires dt<300ms; their
+   swipe checks require real movement), so this can't steal a real tap or
+   swipe from them.
+   Deliberately NOT mirrored with a mousedown-hold on desktop: a mouse click
+   held down while scrolling (dragging a scrollbar, or just clicking then
+   slowly wheeling) has no "wheel" event to cancel the timer on, so it kept
+   firing false-positives during normal scrolling. Desktop instead uses the
+   'quick_tag' key binding ('t' by default, see the keydown handler above). */
 (function() {
   let timer = null, sx = 0, sy = 0, moved = false;
   const HOLD_MS = 450, MOVE_TOL = 10;
@@ -2190,17 +2195,6 @@ document.addEventListener('click', e => {
     el.addEventListener('touchend',   cancel,        {passive:true});
     el.addEventListener('touchcancel', cancel,       {passive:true});
   });
-  // Desktop: mouse-hold does the same thing (no touch events fire there).
-  function onMouseDown(e) {
-    if (e.button !== 0 || shouldSkip(e.target)) return;
-    sx = e.clientX; sy = e.clientY; moved = false;
-    armTimer();
-    const onMove2 = ev => { if (Math.abs(ev.clientX - sx) > MOVE_TOL || Math.abs(ev.clientY - sy) > MOVE_TOL) { moved = true; cancel(); } };
-    const onUp = () => { cancel(); document.removeEventListener('mousemove', onMove2); document.removeEventListener('mouseup', onUp); };
-    document.addEventListener('mousemove', onMove2);
-    document.addEventListener('mouseup', onUp, {once:true});
-  }
-  targets.forEach(el => el.addEventListener('mousedown', onMouseDown));
 })();
 async function aiTag() {
   const btn=document.getElementById('ai-btn'); btn.disabled=true; btn.textContent='tagging...';
