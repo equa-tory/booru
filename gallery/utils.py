@@ -152,6 +152,17 @@ def load_image_for_tagging(file_path, thumb_path=''):
         raise
 
 
+def wd14_input(img, target=448):
+    """WD14 model input: image fitted into a white target x target canvas,
+    BGR float32 0-255, NHWC with a batch axis. Shared by the default model and
+    my model so both see exactly the same tensor."""
+    import numpy as np
+    img.thumbnail((target, target), Image.LANCZOS)
+    canvas = Image.new('RGB', (target, target), (255, 255, 255))
+    canvas.paste(img, ((target - img.width) // 2, (target - img.height) // 2))
+    return np.array(canvas, dtype=np.float32)[:, :, ::-1][np.newaxis, :]
+
+
 def phash_distance(a, b):
     if not a or not b or len(a) != len(b): return 999
     return bin(int(a, 16) ^ int(b, 16)).count('1')

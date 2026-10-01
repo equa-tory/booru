@@ -1009,7 +1009,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Scanning library with my model', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;

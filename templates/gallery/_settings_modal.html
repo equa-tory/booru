@@ -21,6 +21,14 @@
 .bk-row .bk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .bk-row .bk-meta { color: var(--text-dim); font-size: .66rem; }
 .bk-row .btn { flex-shrink: 0; padding: .15rem .55rem; font-size: .7rem; }
+.cm-row { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: .45rem .55rem; font-family: var(--mono); font-size: .72rem; display: flex; flex-direction: column; gap: .3rem; }
+.cm-row .cm-top { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.cm-row .cm-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-row .cm-cat { color: var(--text-dim); font-size: .62rem; }
+.cm-row .cm-meta { color: var(--text-dim); font-size: .66rem; line-height: 1.5; }
+.cm-row .cm-ctl { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.cm-row input[type=range] { flex: 1; min-width: 6rem; accent-color: var(--accent); }
+.cm-row .btn { padding: .15rem .55rem; font-size: .7rem; }
 </style>
 
 <div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this)closeSettings()">
@@ -50,6 +58,17 @@
         <button class="btn" onclick="restartWorkers()" title="graceful gunicorn reload — also releases each worker's CUDA context (~120 MiB); running background tasks stop">&#8635; restart workers too</button>
         <span class="set-note" id="aim-vram" style="margin:0;"></span>
       </div>
+    </div>
+
+    <div class="set-sec">
+      <h3>my model <span style="text-transform:none;letter-spacing:0;font-weight:400;">· exactly the default model, plus what you teach it</span></h3>
+      <div class="set-note" id="cm-status">&nbsp;</div>
+      <div class="set-actions">
+        <button class="btn" id="cm-clone" onclick="cloneDefault()" style="display:none;">&#10697; clone the default model</button>
+        <button class="btn" id="cm-index" onclick="indexLibrary()" style="display:none;" title="run every post through my model once and remember the result (~0.4 s/post, resumable, stoppable). Needed to preview/apply a taught tag on the whole library.">&#9881; index library</button>
+      </div>
+      <div id="cm-concepts" style="display:flex;flex-direction:column;gap:.35rem;margin:.4rem 0;"></div>
+      <div class="set-note">Teach it: select posts in the gallery &rarr; <b>&#127891; teach AI</b> (what shows the thing / what doesn't), then <b>train</b> here. Training takes seconds; the quality shown is <i>cross-validated</i> (tested on posts it did not train on), with precision estimated for a concept that is rare in your library. Learned tags are added by "ai auto-tag" when <b>My model</b> is the main tagger. The default model's own tags never change.</div>
     </div>
 
     <div class="set-sec">
@@ -113,6 +132,7 @@ function openSettings() {
   loadDbgStats();
   loadAiInfo();
   loadAiModels();
+  loadCustom();
 }
 async function loadDbgStats() {
   ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });
@@ -170,12 +190,11 @@ async function loadAiModels() {
 
   const list = document.getElementById('aim-list'); list.textContent = '';
   d.models.forEach(m => {
-    if (m.key === 'custom' && !m.ready) return;            // "my model" rows come with the clone feature
     const row = document.createElement('div'); row.className = 'bk-row';
     const left = document.createElement('div'); left.style.minWidth = '0';
     const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = m.name;
     const meta = document.createElement('div'); meta.className = 'bk-meta';
-    meta.textContent = (m.ready ? `on disk · ${m.mb} MB` : `not on disk${m.expected_mb ? ' · ' + m.expected_mb + ' MB' : ''}`) + ' · ' + (AIM_DESC[m.key] || '');
+    meta.textContent = (m.ready ? `on disk · ${m.mb} MB` : (m.key === 'custom' ? 'not created yet — clone the default model (section below)' : `not on disk${m.expected_mb ? ' · ' + m.expected_mb + ' MB' : ''}`)) + ' · ' + (AIM_DESC[m.key] || '');
     left.append(nm, meta);
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:.3rem;flex-shrink:0;';
     if (!m.ready && m.key !== 'custom') {
@@ -230,7 +249,108 @@ async function restartWorkers() {
   toast('restarting workers…'); setTimeout(() => location.reload(), 8000);
 }
 // refresh the panel when a background task (e.g. a model download) finishes
-function onTasksIdle() { if (document.getElementById('settings-modal').classList.contains('open')) { loadAiModels(); loadAiInfo(); } }
+function onTasksIdle() { if (document.getElementById('settings-modal').classList.contains('open')) { loadAiModels(); loadAiInfo(); loadCustom(); } }
+
+/* ── My model: clone / concepts / train ── */
+async function loadCustom() {
+  let d;
+  try { d = await (await fetch('/api/custom/')).json(); } catch(e) { return; }
+  const st = document.getElementById('cm-status'), cl = document.getElementById('cm-clone');
+  const ix = document.getElementById('cm-index');
+  ix.style.display = d.ready ? '' : 'none';
+  if (d.ready) { st.textContent = `ready · ${d.concepts.length} taught tag(s) · library index: ${Number(d.features_cached).toLocaleString()} / ${Number(d.posts).toLocaleString()} posts` + (d.features_cached < d.posts ? ' (needed to preview/apply on the whole library)' : ''); cl.style.display = 'none'; }
+  else if (!d.default_ready) { st.textContent = 'download the default model first (AI models above), then clone it.'; cl.style.display = 'none'; }
+  else if (!d.onnx) { st.textContent = 'the "onnx" Python package is missing — run ./install.sh, then clone.'; cl.style.display = 'none'; }
+  else { st.textContent = 'not created yet. Cloning copies the default model (about 360 MB) and verifies it gives identical results.'; cl.style.display = ''; }
+  const box = document.getElementById('cm-concepts'); box.textContent = '';
+  d.concepts.forEach(c => box.appendChild(_conceptRow(c, d.ready)));
+}
+function _conceptRow(c, ready) {
+  const row = document.createElement('div'); row.className = 'cm-row';
+  const top = document.createElement('div'); top.className = 'cm-top';
+  const nm = document.createElement('span'); nm.className = 'cm-name'; nm.textContent = c.name;
+  const cat = document.createElement('span'); cat.className = 'cm-cat'; cat.textContent = c.category;
+  const btns = document.createElement('span'); btns.style.cssText = 'display:flex;gap:.3rem;align-items:center;flex-shrink:0;';
+  const tr = document.createElement('button'); tr.className = 'btn primary'; tr.textContent = c.trained ? 'retrain' : 'train'; tr.disabled = !ready;
+  tr.title = ready ? '' : 'clone the default model first'; tr.onclick = () => trainConcept(c.id);
+  const fg = document.createElement('button'); fg.className = 'btn danger'; fg.textContent = 'forget'; fg.onclick = () => forgetConcept(c.id, c.name);
+  btns.append(tr, fg);
+  const left = document.createElement('span'); left.style.cssText = 'display:flex;gap:.5rem;align-items:baseline;min-width:0;'; left.append(nm, cat);
+  top.append(left, btns);
+  const meta = document.createElement('div'); meta.className = 'cm-meta';
+  const m = c.metrics || {};
+  meta.textContent = `${c.pos} yes / ${c.neg} no` + (c.trained
+    ? ` · precision ≈ ${Math.round((m.precision_est || 0) * 100)}% (if it shows in ~${Math.round((m.prior || 0.02) * 100)}% of your posts) · recall ${Math.round((m.recall || 0) * 100)}% · AUC ${m.auc} (cross-validated, ${m.n_pos}+/${m.n_neg}− used)`
+    : ' · not trained yet') + (c.applied ? ` · applied to ${c.applied} post(s)` : '');
+  row.append(top, meta);
+  if (c.trained) {
+    const ctl = document.createElement('div'); ctl.className = 'cm-ctl';
+    const en = document.createElement('label'); en.className = 'set-check'; en.style.fontSize = '.7rem';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = c.enabled;
+    cb.onchange = () => updateConcept(c.id, {enabled: cb.checked});
+    en.append(cb, document.createTextNode('on'));
+    const lab = document.createElement('span'); lab.className = 'cm-meta'; lab.textContent = 'threshold';
+    const rg = document.createElement('input'); rg.type = 'range'; rg.min = 0.1; rg.max = 0.99; rg.step = 0.01; rg.value = c.threshold;
+    const val = document.createElement('span'); val.className = 'cm-meta'; val.textContent = Number(c.threshold).toFixed(2);
+    let timer; rg.oninput = () => { val.textContent = Number(rg.value).toFixed(2); clearTimeout(timer); timer = setTimeout(() => updateConcept(c.id, {threshold: parseFloat(rg.value)}), 400); };
+    ctl.append(en, lab, rg, val); row.appendChild(ctl);
+    const act = document.createElement('div'); act.className = 'cm-ctl';
+    const mk = (txt, title, fn, cls) => { const b = document.createElement('button'); b.className = 'btn' + (cls ? ' ' + cls : ''); b.textContent = txt; b.title = title; b.onclick = fn; return b; };
+    act.append(
+      mk('preview', 'open the library posts it is most sure about (not yet tagged/labeled) — confirm or reject them with "teach AI"', () => previewConcept(c.id, 'top')),
+      mk('review uncertain', 'open the posts it is least sure about — labeling these teaches it the most', () => previewConcept(c.id, 'uncertain')),
+      mk('apply to library', 'tag every indexed post scoring above the threshold (undoable)', () => applyConcept(c.id, c.name), 'primary'),
+    );
+    if (c.applied) act.append(mk(`undo (${c.applied})`, 'remove the tag from the posts "apply" tagged — tags you added by hand stay', () => undoConcept(c.id, c.name), 'danger'));
+    row.appendChild(act);
+  }
+  return row;
+}
+async function cloneDefault() {
+  const {ok, d} = await _aimPost('/api/custom/clone/');
+  if (!ok) { toast(d.error || 'could not start', 'err'); return; }
+  toast('cloning the default model…'); if (typeof pollTasks !== 'undefined') pollTasks(true);
+}
+async function trainConcept(id) {
+  const {ok, d} = await _aimPost(`/api/custom/concept/${id}/train/`);
+  if (!ok) { toast(d.error || 'could not start training', 'err'); return; }
+  toast('training…'); if (typeof pollTasks !== 'undefined') pollTasks(true);
+}
+async function indexLibrary() {
+  const {ok, d} = await _aimPost('/api/custom/scan/');
+  if (!ok) { toast(d.error || 'could not start', 'err'); return; }
+  toast('indexing the library in the background…'); if (typeof pollTasks !== 'undefined') pollTasks(true);
+}
+async function previewConcept(id, mode) {
+  const d = await (await fetch(`/api/custom/concept/${id}/candidates/?n=60&mode=${mode}`)).json();
+  if (!d.indexed) { toast('index the library first (button above)', 'err'); return; }
+  if (!d.ids.length) { toast('nothing to review — every indexed post is already tagged or labeled', 'err'); return; }
+  if (d.indexed < d.posts && !confirm(`Only ${d.indexed.toLocaleString()} of ${d.posts.toLocaleString()} posts are indexed so far — review these anyway?`)) return;
+  location.href = '/?ids=' + d.ids.join(',');
+}
+async function applyConcept(id, name) {
+  const pre = await (await fetch(`/api/custom/concept/${id}/candidates/?n=1`)).json();
+  if (!pre.indexed) { toast('index the library first (button above)', 'err'); return; }
+  const note = pre.indexed < pre.posts ? `\n(only ${pre.indexed.toLocaleString()} of ${pre.posts.toLocaleString()} posts are indexed so far)` : '';
+  if (!confirm(`${pre.above_threshold.toLocaleString()} post(s) score above the threshold and would get the tag “${name}”.${note}\n\nDoes that number look right? If you expected far fewer, cancel, raise the threshold or review/teach more first.\n\nIt only adds the tag (posts you labeled "no" are skipped) and can be undone from here.`)) return;
+  const {ok, d} = await _aimPost(`/api/custom/concept/${id}/apply/`);
+  if (!ok) { toast(d.error || 'could not start', 'err'); return; }
+  toast('applying…'); if (typeof pollTasks !== 'undefined') pollTasks(true);
+}
+async function undoConcept(id, name) {
+  if (!confirm(`Remove “${name}” from the posts that "apply to library" tagged?\n\nTags you added by hand stay.`)) return;
+  const {ok, d} = await _aimPost(`/api/custom/concept/${id}/undo/`);
+  toast(ok ? `removed from ${d.untagged} post(s)` : 'failed', ok ? '' : 'err'); loadCustom();
+}
+async function updateConcept(id, patch) {
+  const {ok, d} = await _aimPost(`/api/custom/concept/${id}/update/`, patch);
+  if (!ok) toast(d.error || 'could not save', 'err');
+}
+async function forgetConcept(id, name) {
+  if (!confirm(`Forget “${name}”?\n\nIts examples and learned classifier are deleted. Tags already on posts stay.`)) return;
+  const {ok} = await _aimPost(`/api/custom/concept/${id}/delete/`);
+  toast(ok ? 'forgotten' : 'failed', ok ? '' : 'err'); loadCustom();
+}
 async function startCharRetag() {
   const limit = parseInt(document.getElementById('ai-limit').value || '0', 10) || 0;
   if (!confirm(`Run the character model on ${limit ? 'up to ' + limit : 'ALL remaining'} post(s), newest first?\n\nIt only adds character tags (nothing is removed) and you can stop it any time; the next run continues where it stopped.`)) return;

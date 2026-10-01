@@ -936,3 +936,340 @@ class AiModelsPanelTests(TestCase):
         self.assertNotIn('g5', res['general'])
         self.assertEqual(res['character'], ['char_a'])           # char_b 0.5 < 0.85
         self.assertEqual(res['model'], 'pixai')
+
+
+# ── Part C: my model ────────────────────────────────────────────
+from . import custom_model
+from .models import CustomApplied, CustomConcept, CustomExample, PostFeature
+
+
+def _planted(n, d=768, shift=2.0, seed=0, positive=True):
+    """Synthetic 768-d 'features': positives are shifted along a fixed direction."""
+    rng = np.random.default_rng(seed)
+    direction = np.random.default_rng(123).normal(size=d); direction /= np.linalg.norm(direction)
+    X = rng.normal(scale=0.4, size=(n, d)).astype(np.float32)
+    if positive:
+        X += (shift * direction).astype(np.float32)
+    return X
+
+
+class CustomNumericsTests(TestCase):
+    def test_train_recovers_a_planted_direction_and_generalises(self):
+        Xp, Xn = _planted(30, seed=1), _planted(120, seed=2, positive=False)
+        X = np.vstack([Xp, Xn]); y = np.array([1] * 30 + [0] * 120)
+        w, b, thr, m = custom_model.train(X, y)
+        self.assertGreater(m['auc'], 0.95)
+        self.assertGreaterEqual(thr, 0.1); self.assertLessEqual(thr, 0.995)
+        # held-out examples
+        tp = custom_model._sigmoid(_planted(200, seed=7) @ w + b)
+        tn = custom_model._sigmoid(_planted(200, seed=8, positive=False) @ w + b)
+        # in 768-d with only 150 examples the head is under-confident on NEW positives, so the
+        # out-of-fold threshold lands below 0.5; it must still find most positives and almost never fire on negatives.
+        self.assertLess(thr, 0.6)
+        self.assertGreater((tp >= thr).mean(), 0.7)
+        self.assertLess((tn >= thr).mean(), 0.06)                # (the cut-off ignores the top ~2.5% of negatives: real ones hide true positives)
+
+    def test_weights_apply_to_raw_features(self):
+        """fit_standardised must fold the scaling back: logit = x @ w + b on RAW x."""
+        rng = np.random.default_rng(0)
+        X = rng.normal(loc=5.0, scale=3.0, size=(80, 768)); y = (rng.random(80) > 0.5).astype(int)
+        X[y == 1, 0] += 4
+        w, b = custom_model.fit_standardised(X, y, 10.0)
+        mu, sd = X.mean(0), X.std(0) + 1e-6
+        theta = custom_model.fit_logreg((X - mu) / sd, y, 10.0, custom_model._weights(y))
+        np.testing.assert_allclose(X @ w + b, ((X - mu) / sd) @ theta[:-1] + theta[-1], rtol=1e-6, atol=1e-6)
+
+    def test_too_few_examples_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            custom_model.train(_planted(5), np.array([1, 1, 1, 0, 0]))
+
+    def test_threshold_accounts_for_a_rare_concept(self):
+        y = np.array([1] * 50 + [0] * 50)
+        p = np.concatenate([np.linspace(0.6, 0.99, 50), np.linspace(0.05, 0.75, 50)])   # overlapping scores
+        t_rare, _, _ = custom_model.choose_threshold(y, p, prior=0.01)
+        t_common, _, _ = custom_model.choose_threshold(y, p, prior=0.5)
+        self.assertGreaterEqual(t_rare, t_common)               # rarer concept -> stricter cut-off
+
+    def test_auc(self):
+        self.assertAlmostEqual(custom_model.auc(np.array([0, 0, 1, 1]), np.array([.1, .2, .8, .9])), 1.0)
+        self.assertAlmostEqual(custom_model.auc(np.array([0, 1, 0, 1]), np.array([.9, .1, .8, .2])), 0.0)
+
+
+class CustomHeadsAndTeachingTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
+        custom_model._heads_cache.update(mtime=None, heads=None)
+        self.addCleanup(custom_model._heads_cache.update, mtime=None, heads=None)
+        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))
+
+    def _posts(self, n):
+        out = []
+        for i in range(n):
+            post = Post.objects.create(ai_tagged=True)
+            path = os.path.join(self.tmp, f'p{post.pk}.png'); Image.new('RGB', (20, 20)).save(path)
+            ph = Photo(post=post, order=0); ph.file_path = path; ph.thumb_path = ''; ph.save()
+            out.append(post)
+        return out
+
+    def test_heads_roundtrip_threshold_and_enabled(self):
+        w = np.zeros(768, np.float32); w[0] = 4.0
+        custom_model.set_head('my_style', w, -2.0, 0.8)
+        f = np.zeros(768, np.float32); f[0] = 1.0                 # logit = 4 - 2 = 2 -> p = 0.88
+        self.assertEqual([n for n, _ in custom_model.learned_tags(f)], ['my_style'])
+        custom_model.update_head('my_style', thr=0.95)
+        self.assertEqual(custom_model.learned_tags(f), [])        # below the new threshold
+        custom_model.update_head('my_style', thr=0.5, enabled=False)
+        self.assertEqual(custom_model.learned_tags(f), [])        # disabled
+        custom_model.update_head('my_style', enabled=True)
+        custom_model.set_head('other', -w, 0.0, 0.5)
+        self.assertEqual(sorted(custom_model.load_heads()['names']), ['my_style', 'other'])
+        custom_model.remove_head('my_style')
+        self.assertEqual(custom_model.load_heads()['names'], ['other'])
+
+    def test_teach_endpoint_plus_minus_and_validation(self):
+        a, b, c = self._posts(3)
+        post = lambda **kw: self.client.post('/api/custom/examples/', kw, content_type='application/json')
+        with mock.patch.object(views, '_wd14_tags', return_value=(['smile', '1girl'], np.array([False, False]))):
+            self.assertEqual(post(ids=[a.pk], concept='Bad Name!?', label=1).status_code, 400)
+            self.assertEqual(post(ids=[], concept='ok', label=1).status_code, 400)
+            self.assertEqual(post(ids=[a.pk], concept='ok', label=1, category='nope').status_code, 400)
+            self.assertEqual(post(ids=[a.pk], concept='smile', label=1).status_code, 409)     # default model already knows it
+            r = post(ids=[a.pk, b.pk], concept='My Style', label=1, category='general').json()
+            self.assertEqual((r['concept'], r['created'], r['pos'], r['tagged']), ('my_style', True, 2, 2))
+            self.assertEqual(set(Post.objects.get(pk=a.pk).tags.values_list('name', 'category')), {('my_style', 'general')})
+            self.assertEqual(Tag.objects.get(name='my_style').count, 2)
+            # a wrong one: mark b as NOT showing it -> tag removed, negative example kept
+            r = post(ids=[b.pk], concept='my_style', label=-1).json()
+            self.assertEqual((r['untagged'], r['pos'], r['neg']), (1, 1, 1))
+            self.assertFalse(Post.objects.get(pk=b.pk).tags.filter(name='my_style').exists())
+            self.assertEqual(Tag.objects.get(name='my_style').count, 1)
+            # changing your mind on a post flips its label instead of duplicating it
+            post(ids=[b.pk], concept='my_style', label=1)
+            self.assertEqual(CustomExample.objects.filter(concept__name='my_style', post=b).count(), 1)
+            self.assertEqual(CustomExample.objects.get(concept__name='my_style', post=b).label, 1)
+        self.assertEqual(CustomExample.objects.filter(concept__name='my_style').count(), 2)
+
+    def _fake_features(self, positives):
+        pos_ids = {p.pk for p in positives}
+        def fake(post_id):
+            return _planted(1, seed=post_id, positive=post_id in pos_ids)[0]
+        return fake
+
+    def test_train_concept_end_to_end_with_fake_features(self):
+        pos = self._posts(24)
+        library = self._posts(150)                                  # the rest of the library (negatives are sampled from here)
+        c = CustomConcept.objects.create(name='my_style', category='general')
+        for p in pos:
+            CustomExample.objects.create(concept=c, post=p, label=1)
+        fake = self._fake_features(pos)
+        with mock.patch.object(custom_model, 'is_ready', return_value=True), \
+             mock.patch.object(custom_model, 'model_hash', return_value='h1'), \
+             mock.patch.object(custom_model, 'feature_for_post', side_effect=fake):
+            m = custom_model.train_concept(c)
+        c.refresh_from_db()
+        self.assertGreater(m['auc'], 0.95)
+        self.assertEqual((c.n_pos, c.n_neg), (24, 96))              # 4x auto negatives
+        self.assertIsNotNone(c.trained_at)
+        self.assertEqual(c.examples.filter(auto=True).count(), 96)
+        self.assertTrue(all(e.feat is not None for e in c.examples.all()))   # features cached for retraining
+        # the learned head recognises a fresh positive and rejects a fresh negative
+        self.assertEqual([n for n, _ in custom_model.learned_tags(_planted(1, seed=999)[0])], ['my_style'])
+        self.assertEqual(custom_model.learned_tags(_planted(1, seed=998, positive=False)[0]), [])
+        # retraining re-uses the cached features: the clone is never asked again
+        with mock.patch.object(custom_model, 'is_ready', return_value=True), \
+             mock.patch.object(custom_model, 'model_hash', return_value='h1'), \
+             mock.patch.object(custom_model, 'feature_for_post', side_effect=AssertionError('features should be cached')):
+            custom_model.train_concept(c)
+
+    def test_train_endpoint_requires_clone_and_reports_in_task(self):
+        c = CustomConcept.objects.create(name='x')
+        with mock.patch.object(custom_model, 'is_ready', return_value=False):
+            self.assertEqual(self.client.post(f'/api/custom/concept/{c.pk}/train/').status_code, 409)
+
+    def test_my_model_tagging_is_identical_to_default_plus_learned_tags(self):
+        post = self._posts(1)[0]
+        p = {'rating_a': 0.9}
+        p.update({f'g{i}': 0.5 for i in range(60)}); p.update({'char_a': 0.95, 'char_c': 0.9})
+        fake_model, names, is_char = _fake_wd14(p)
+        probs = fake_model.probs
+        w = np.zeros(768, np.float32); w[0] = 6.0
+        custom_model.set_head('my_style', w, -3.0, 0.8)
+        CustomConcept.objects.create(name='my_style', category='general')
+        feat = np.zeros(768, np.float32); feat[0] = 1.0            # logit 3 -> p 0.95
+        with mock.patch.object(views, '_get_wd14_model', return_value=(fake_model, names, is_char)):
+            default = views.run_ai_tagger(self.tmp + '/p%d.png' % post.pk, model='wd14')
+        with mock.patch.object(views, '_wd14_tags', return_value=(names, is_char)), \
+             mock.patch.object(custom_model, 'run_clone', return_value=(probs, feat)):
+            mine = views.run_ai_tagger(self.tmp + '/p%d.png' % post.pk, model='custom')
+        self.assertEqual((mine['general'], mine['character']), (default['general'], default['character']))   # exact same
+        self.assertEqual([n for n, _ in mine['learned']], ['my_style'])
+        # and apply_ai_tags stores the learned tag in its concept's category
+        with mock.patch.object(views, '_main_model', return_value='custom'), \
+             mock.patch.object(views, '_wd14_tags', return_value=(names, is_char)), \
+             mock.patch.object(custom_model, 'run_clone', return_value=(probs, feat)):
+            views.apply_ai_tags(post)
+        self.assertEqual(Tag.objects.get(name='my_style').category, 'general')
+        self.assertTrue(post.tags.filter(name='my_style').exists())
+
+    def test_update_and_delete_concept(self):
+        c = CustomConcept.objects.create(name='my_style', category='ai')
+        custom_model.set_head('my_style', np.zeros(768, np.float32), 0.0, 0.7)
+        Tag.objects.create(name='my_style', category='ai', count=1)
+        r = self.client.post(f'/api/custom/concept/{c.pk}/update/', {'threshold': 0.9, 'category': 'general', 'enabled': False},
+                             content_type='application/json').json()
+        self.assertAlmostEqual(r['concept']['threshold'], 0.9)
+        self.assertEqual(Tag.objects.get(name='my_style').category, 'general')          # tag moved with the concept
+        self.assertAlmostEqual(float(custom_model.load_heads()['thr'][0]), 0.9, places=5)
+        self.assertFalse(bool(custom_model.load_heads()['enabled'][0]))
+        self.client.post(f'/api/custom/concept/{c.pk}/delete/')
+        self.assertFalse(CustomConcept.objects.exists())
+        self.assertEqual(custom_model.load_heads()['names'], [])
+        self.assertTrue(Tag.objects.filter(name='my_style').exists())                   # tags on posts stay
+
+    def test_clone_endpoint_guards_and_info(self):
+        with mock.patch.object(ai_models, 'is_ready', side_effect=lambda k: k == 'custom'):
+            self.assertEqual(self.client.post('/api/custom/clone/').status_code, 409)   # already cloned
+        with mock.patch.object(ai_models, 'is_ready', return_value=False):
+            self.assertEqual(self.client.post('/api/custom/clone/').status_code, 409)   # default missing
+            d = self.client.get('/api/custom/').json()
+        self.assertFalse(d['ready']); self.assertEqual(d['concepts'], [])
+
+    def test_deleting_the_clone_keeps_examples_but_drops_caches(self):
+        p = self._posts(1)[0]
+        c = CustomConcept.objects.create(name='a', n_pos=5, metrics={'x': 1}, trained_at=timezone.now())
+        CustomExample.objects.create(concept=c, post=p, label=1, feat=b'xx', model_hash='h')
+        CustomExample.objects.create(concept=c, post=self._posts(1)[0], label=-1, auto=True, feat=b'yy', model_hash='h')
+        PostFeature.objects.create(post=p, vec=b'zz', model_hash='h')
+        custom_model.on_clone_deleted()
+        c.refresh_from_db()
+        self.assertIsNone(c.trained_at); self.assertEqual(c.metrics, {})
+        self.assertEqual(CustomExample.objects.count(), 1)                              # user's example kept, auto-negative dropped
+        self.assertIsNone(CustomExample.objects.get().feat)
+        self.assertFalse(PostFeature.objects.exists())
+
+
+@unittest.skipUnless(
+    __import__('importlib').util.find_spec('onnx') and ai_models.cached_file('wd14', 'model.onnx'),
+    'needs the onnx package and the downloaded default model')
+class RealCloneTests(TestCase):
+    def test_clone_reproduces_default_exactly_and_exposes_features(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with override_settings(AI_MODELS_DIR=tmp):
+            msgs = []
+            custom_model.clone_default(msgs.append)
+            self.assertTrue(custom_model.is_ready())
+            self.assertEqual(custom_model.meta()['dim'], 768)
+            self.assertEqual(len(custom_model.model_hash()), 40)
+            import onnxruntime as ort
+            src = ort.InferenceSession(ai_models.cached_file('wd14', 'model.onnx'), providers=['CPUExecutionProvider'])
+            clone = ort.InferenceSession(ai_models.cached_file('custom', 'model.onnx'), providers=['CPUExecutionProvider'])
+            x = (np.random.default_rng(5).random((1, 448, 448, 3)) * 255).astype(np.float32)
+            a = src.run(None, {src.get_inputs()[0].name: x})[0]
+            out, feat = clone.run(['output', custom_model.meta()['feature_tensor']], {clone.get_inputs()[0].name: x})
+            self.assertTrue(np.array_equal(a, out))                 # bit-identical default outputs
+            self.assertEqual(feat.shape, (1, 768))
+            self.assertTrue(any('verif' in m for m in msgs))
+            # deleting it
+            ai_models.delete('custom')
+            self.assertFalse(custom_model.is_ready())
+
+
+class CustomLibraryTests(TestCase):
+    """Phase C2: index the library once, then preview / apply / undo are matrix ops."""
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
+        custom_model._heads_cache.update(mtime=None, heads=None)
+        self.addCleanup(custom_model._heads_cache.update, mtime=None, heads=None)
+        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))
+        p1 = mock.patch.object(custom_model, 'model_hash', return_value='h1'); p1.start(); self.addCleanup(p1.stop)
+        p2 = mock.patch.object(custom_model, 'is_ready', return_value=True); p2.start(); self.addCleanup(p2.stop)
+        self.posts = [Post.objects.create(ai_tagged=True) for _ in range(40)]
+        self.pos = {p.pk for p in self.posts[:10]}                     # the 10 "true" positives
+        d = np.random.default_rng(123).normal(size=768); d /= np.linalg.norm(d)
+        self.w = (6.0 * d).astype(np.float32)                           # head along the planted direction
+        custom_model.set_head('my_style', self.w, -6.0, 0.5)
+        self.c = CustomConcept.objects.create(name='my_style', category='general', threshold=0.5, trained_at=timezone.now())
+        self.feat = lambda pid: _planted(1, seed=pid, positive=pid in self.pos)[0]
+
+    def _index(self):
+        with mock.patch.object(custom_model, 'feature_for_post', side_effect=self.feat):
+            return custom_model.scan_library()
+
+    def test_scan_is_resumable_counts_failures_and_drops_stale_features(self):
+        bad = self.posts[5].pk
+        def flaky(pid):
+            if pid == bad: raise RuntimeError('source file missing')
+            return self.feat(pid)
+        PostFeature.objects.create(post=self.posts[0], vec=b'old', model_hash='OLD')       # from an older clone
+        with mock.patch.object(custom_model, 'feature_for_post', side_effect=flaky):
+            done, failed = custom_model.scan_library()
+        self.assertEqual((done, failed), (39, 1))
+        self.assertEqual(PostFeature.objects.filter(model_hash='h1').count(), 39)
+        self.assertFalse(PostFeature.objects.filter(model_hash='OLD').exists())
+        with mock.patch.object(custom_model, 'feature_for_post', side_effect=AssertionError('already indexed')) as f:
+            done, failed = custom_model.scan_library()                                      # only the failed one is retried
+        self.assertEqual(done + failed, 1)
+
+    def test_scan_can_be_cancelled(self):
+        task = Task.objects.create(kind='custom_scan', cancel_requested=True)
+        with mock.patch.object(custom_model, 'feature_for_post', side_effect=self.feat):
+            with self.assertRaises(TaskCancelled):
+                custom_model.scan_library(check=lambda: check_cancel(task))
+        self.assertEqual(PostFeature.objects.count(), 0)
+
+    def test_candidates_rank_exclude_labeled_and_tagged(self):
+        self._index()
+        labeled = self.posts[0]; tagged = self.posts[1]
+        CustomExample.objects.create(concept=self.c, post=labeled, label=1)
+        tag = Tag.objects.create(name='my_style', category='general'); tagged.tags.add(tag)
+        ids, scores, n_above = custom_model.candidates(self.c, n=30)
+        self.assertNotIn(labeled.pk, ids); self.assertNotIn(tagged.pk, ids)
+        top8 = ids[:8]
+        self.assertTrue(set(top8) <= self.pos)                           # the 8 remaining true positives come first
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertEqual(n_above, 8)                                     # what 'apply' would tag: the 8 unlabeled/untagged true positives
+        unc, usc, _ = custom_model.candidates(self.c, n=5, mode='uncertain')
+        self.assertEqual(len(unc), 5)
+        self.assertEqual([abs(s - 0.5) for s in usc], sorted(abs(s - 0.5) for s in usc))    # closest to the threshold first
+
+    def test_apply_tags_only_confident_unlabeled_posts_and_undo_spares_manual_tags(self):
+        self._index()
+        manual = self.posts[0]; neg = self.posts[1]
+        tag = Tag.objects.create(name='my_style', category='general'); manual.tags.add(tag)        # tagged by hand
+        CustomExample.objects.create(concept=self.c, post=neg, label=-1)                           # user said "no"
+        n = custom_model.apply_concept(self.c)
+        self.assertEqual(n, 8)                                           # 10 positives - manual - labeled "no"
+        tagged = set(Post.objects.filter(tags__name='my_style').values_list('id', flat=True))
+        self.assertEqual(tagged, (self.pos - {neg.pk}))
+        self.assertEqual(Tag.objects.get(name='my_style').count, len(tagged))
+        self.assertEqual(self.c.applied.count(), 8)
+        self.assertEqual(custom_model.undo_concept(self.c), 8)
+        left = set(Post.objects.filter(tags__name='my_style').values_list('id', flat=True))
+        self.assertEqual(left, {manual.pk})                              # the hand-made tag survives
+        self.assertEqual(Tag.objects.get(name='my_style').count, 1)
+        self.assertEqual(self.c.applied.count(), 0)
+
+    def test_apply_requires_an_index(self):
+        with self.assertRaises(RuntimeError):
+            custom_model.apply_concept(self.c)
+
+    def test_endpoints(self):
+        with mock.patch.object(custom_model, 'is_ready', return_value=False):
+            self.assertEqual(self.client.post('/api/custom/scan/').status_code, 409)
+        self._index()
+        d = self.client.get(f'/api/custom/concept/{self.c.pk}/candidates/?n=5').json()
+        self.assertEqual((len(d['ids']), d['indexed'], d['posts'], d['above_threshold']), (5, 40, 40, 10))
+        self.assertTrue(set(d['ids']) <= self.pos)
+        untrained = CustomConcept.objects.create(name='other')
+        self.assertEqual(self.client.post(f'/api/custom/concept/{untrained.pk}/apply/').status_code, 409)
+        info = self.client.get('/api/custom/').json()
+        self.assertEqual((info['features_cached'], info['posts']), (40, 40))
+        r = self.client.post(f'/api/custom/concept/{self.c.pk}/undo/').json()
+        self.assertEqual(r['untagged'], 0)

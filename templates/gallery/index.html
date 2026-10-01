@@ -323,6 +323,7 @@ body.select-mode .scroll-fabs { display:none; }
     <button class="sel-act" onclick="openBulkTag('add')"><span class="sa-i">&#65291;</span><span>tag</span></button>
     <button class="sel-act" onclick="openBulkRate()"><span class="sa-i">&#9733;</span><span>rate</span></button>
     <button class="sel-act" onclick="openBulkMerge()"><span class="sa-i">&#9135;</span><span>merge</span></button>
+    <button class="sel-act" onclick="openTeach()" title="teach my model a new tag from the selected posts"><span class="sa-i">&#127891;</span><span>teach AI</span></button>
     <button class="sel-act" onclick="if(selectedIds.size){openFolderPicker([...selectedIds]);}else{toast('select posts first','err');}"><span class="sa-i">&#128193;</span><span>add to folder</span></button>
     {% if active_folder %}<button class="sel-act" onclick="bulkRemoveFromFolder()"><span class="sa-i">&#8722;</span><span>remove from folder</span></button>{% endif %}
     <button class="sel-act danger" onclick="bulkDelete()"><span class="sa-i">&#128465;</span><span>delete</span></button>
@@ -387,6 +388,35 @@ body.select-mode .scroll-fabs { display:none; }
       <button class="btn primary" onclick="finalizeMergeQueue()" id="merge-go-btn">&#8694; merge now</button>
     </div>
     <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-merge-modal').classList.remove('open')">close</button></div>
+  </div>
+</div>
+
+<!-- Teach my model -->
+<div class="modal-backdrop" id="teach-modal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="bulk-modal" style="max-width:480px;">
+    <div class="modal-handle"></div>
+    <h3>&#127891; teach my model</h3>
+    <div style="font-size:.78rem;color:var(--text-dim);margin-bottom:.6rem;line-height:1.5;" id="teach-hint"></div>
+    <div style="display:flex;flex-direction:column;gap:.55rem;">
+      <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);">tag name
+        <input id="teach-name" list="teach-names" autocomplete="off" spellcheck="false" placeholder="e.g. my_art_style" style="width:100%;margin-top:.2rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.85rem;padding:.45rem .55rem;" oninput="teachNameChanged()">
+      </label>
+      <datalist id="teach-names"></datalist>
+      <label style="font-family:var(--mono);font-size:.68rem;color:var(--text-dim);">category
+        <select id="teach-cat" style="width:100%;margin-top:.2rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.85rem;padding:.4rem .5rem;">
+          <option value="ai">ai (auto-generated)</option><option value="general">general</option><option value="character">character</option><option value="artist">artist</option><option value="meta">meta</option>
+        </select>
+      </label>
+      <div style="display:flex;gap:1rem;font-size:.85rem;">
+        <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;"><input type="radio" name="teach-label" value="1" checked style="accent-color:var(--accent);"> these <b>show</b> it</label>
+        <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;"><input type="radio" name="teach-label" value="-1" style="accent-color:var(--danger);"> these <b>don't</b></label>
+      </div>
+      <label style="display:flex;align-items:center;gap:.5rem;font-size:.82rem;cursor:pointer;" id="teach-tagrow"><input type="checkbox" id="teach-also" checked style="accent-color:var(--accent);width:16px;height:16px;"> also tag these posts now</label>
+    </div>
+    <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem;">
+      <button class="btn" onclick="document.getElementById('teach-modal').classList.remove('open')">cancel</button>
+      <button class="btn primary" onclick="doTeach()">save examples</button>
+    </div>
   </div>
 </div>
 
@@ -1178,6 +1208,42 @@ async function bulkVideoThumb() {
   document.getElementById('bulk-rate-modal').classList.remove('open');
   toast(`updated ${d.updated||0} video thumbnail(s) to ${pct}%`);
   finishBulkAction(!!d.updated);
+}
+
+// ── Teach my model ────────────────────────────────────────────
+let _teachConcepts = {};
+async function openTeach() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  let d = {concepts: [], ready: false};
+  try { d = await (await fetch('/api/custom/')).json(); } catch(e) {}
+  _teachConcepts = {};
+  const dl = document.getElementById('teach-names'); dl.textContent = '';
+  d.concepts.forEach(c => { _teachConcepts[c.name] = c; const o = document.createElement('option'); o.value = c.name; dl.appendChild(o); });
+  document.getElementById('teach-hint').textContent =
+    `${selectedIds.size} selected post(s). Mark posts that show the thing you want it to learn (use 10+, ideally 30+, varied examples) — and posts that wrongly got the tag as "don't". ` +
+    (d.ready ? 'Then press "train" for it in Settings → My model.' : 'You still need to clone the default model (Settings → AI models / My model) before training.');
+  document.getElementById('teach-modal').classList.add('open');
+  document.getElementById('teach-name').focus();
+}
+function teachNameChanged() {
+  const c = _teachConcepts[document.getElementById('teach-name').value.trim().toLowerCase().replace(/ /g, '_')];
+  if (c) document.getElementById('teach-cat').value = c.category;
+}
+async function doTeach() {
+  const name = document.getElementById('teach-name').value.trim();
+  if (!name) { toast('give the tag a name', 'err'); return; }
+  const label = parseInt(document.querySelector('input[name="teach-label"]:checked').value, 10);
+  startProgress();
+  try {
+    const r = await fetch('/api/custom/examples/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({ids:[...selectedIds], concept:name, label, category: document.getElementById('teach-cat').value, also_tag: document.getElementById('teach-also').checked})});
+    const d = await r.json();
+    doneProgress();
+    if (!r.ok) { toast(d.error || 'could not save', 'err'); return; }
+    document.getElementById('teach-modal').classList.remove('open');
+    toast(`“${d.concept}”: ${label > 0 ? '+' : '−'}${d.examples} example(s) saved · now ${d.pos} yes / ${d.neg} no` + (d.untagged ? ` · tag removed from ${d.untagged}` : ''));
+    finishBulkAction(!!(d.tagged || d.untagged));
+  } catch(e) { doneProgress(); toast('could not save', 'err'); }
 }
 
 async function bulkRegenThumb() {

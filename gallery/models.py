@@ -243,3 +243,58 @@ class Task(models.Model):
     def elapsed(self):
         end = self.finished_at or timezone.now()
         return max(0, int((end - self.started_at).total_seconds()))
+
+
+# ── "My model": things taught to the cloned default tagger ──────
+class CustomConcept(models.Model):
+    """One thing the user taught the cloned tagger to recognise. `name` is the
+    tag it assigns. The learned classifier itself lives in
+    <AI_MODELS_DIR>/custom/heads.npz; this row holds its settings and metrics."""
+    name       = models.CharField(max_length=200, unique=True)
+    category   = models.CharField(max_length=50, default='ai')       # category of the tag it creates
+    threshold  = models.FloatField(default=0.7)
+    enabled    = models.BooleanField(default=True)
+    n_pos      = models.IntegerField(default=0)                      # examples used by the last training
+    n_neg      = models.IntegerField(default=0)
+    metrics    = models.JSONField(default=dict, blank=True)          # cross-validated precision/recall/...
+    trained_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class CustomExample(models.Model):
+    """A post the user marked as showing (+1) / not showing (-1) a concept, or an
+    auto-sampled negative. `feat` caches the clone's 768-d pooled features
+    (float16) so retraining never has to re-run the image through the model."""
+    concept = models.ForeignKey(CustomConcept, on_delete=models.CASCADE, related_name='examples')
+    post    = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='+')
+    label   = models.SmallIntegerField()                              # +1 / -1
+    auto    = models.BooleanField(default=False)                     # sampled by the trainer, not chosen by the user
+    feat    = models.BinaryField(null=True, blank=True)
+    model_hash = models.CharField(max_length=40, blank=True, default='')   # clone the cached features came from
+
+    class Meta:
+        unique_together = [('concept', 'post')]
+
+
+class PostFeature(models.Model):
+    """Library-wide feature cache for the clone (filled by the 'scan library'
+    task) — makes previewing/applying a concept a matrix multiply."""
+    post       = models.OneToOneField(Post, primary_key=True, on_delete=models.CASCADE, related_name='+')
+    vec        = models.BinaryField()                                 # float16[768]
+    model_hash = models.CharField(max_length=40, db_index=True)
+
+
+class CustomApplied(models.Model):
+    """Posts that 'apply to library' tagged with a concept, so it can be undone
+    without touching tags the user added by hand."""
+    concept = models.ForeignKey(CustomConcept, on_delete=models.CASCADE, related_name='applied')
+    post    = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='+')
+
+    class Meta:
+        unique_together = [('concept', 'post')]

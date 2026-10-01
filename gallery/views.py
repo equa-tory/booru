@@ -10,12 +10,13 @@ from django.db.models import Q, Case, When, IntegerField, F, Count, Value, Outer
 from django.db.models.functions import Mod, Coalesce
 from django.conf import settings
 
-from .models import Post, Photo, Tag, Task, Folder
+from .models import (Post, Photo, Tag, Task, Folder, CustomConcept, CustomExample,
+                     PostFeature, CustomApplied)
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
                     make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
-from . import char_tagger, ai_models
+from . import char_tagger, ai_models, custom_model
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -1257,8 +1258,8 @@ def ai_tag_post(request, pk):
         res = apply_ai_tags(post)
         if res is None:
             return JsonResponse({'error': 'no images', 'ok': False}, status=400)
-        return JsonResponse({'tags': res['general'] + res['character'],
-                             'characters': res['character'], 'ok': True})
+        return JsonResponse({'tags': res['general'] + res['character'] + [n for n, _p in res.get('learned', [])],
+                             'characters': res['character'], 'learned': [n for n, _p in res.get('learned', [])], 'ok': True})
     except Exception as e:
         return JsonResponse({'error': str(e), 'ok': False}, status=500)
 
@@ -1445,10 +1446,10 @@ def run_ai_tagger(file_path, thumb_path='', model=None):
     model = model or _main_model()
     if model == 'pixai':
         return char_tagger.run_pixai_general(file_path, thumb_path)
-    return _run_wd14(file_path, thumb_path)
+    return _run_wd14(file_path, thumb_path, custom=(model == 'custom'))
 
 
-def _run_wd14(file_path, thumb_path=''):
+def _run_wd14(file_path, thumb_path='', custom=False):
     """Run the WD14 tagger on an image. Returns {'general': [...], 'character': [...]}.
 
     - general: rating + general tags >= AI_GENERAL_THRESHOLD, first AI_MAX_GENERAL
@@ -1462,28 +1463,28 @@ def _run_wd14(file_path, thumb_path=''):
     pdf), fall back to the generated thumbnail so video/pdf posts can still be
     auto-tagged from their preview frame.
     """
-    from PIL import Image
+    from .utils import load_image_for_tagging, wd14_input
     import numpy as np
-    from .utils import load_image_for_tagging
 
-    img = load_image_for_tagging(file_path, thumb_path)
-
-    model, tags_list, is_char = _get_wd14_model()
-    target = 448
-    img.thumbnail((target, target), Image.LANCZOS)
-    canvas = Image.new('RGB', (target, target), (255, 255, 255))
-    canvas.paste(img, ((target-img.width)//2, (target-img.height)//2))
-    arr   = np.array(canvas, dtype=np.float32)[:, :, ::-1][np.newaxis, :]
-    probs = np.asarray(model.run(None, {model.get_inputs()[0].name: arr})[0][0])
+    arr = wd14_input(load_image_for_tagging(file_path, thumb_path))
+    if custom:
+        probs, feat = custom_model.run_clone(arr)       # the clone: same default outputs + pooled features
+        tags_list, is_char = _wd14_tags()
+    else:
+        model, tags_list, is_char = _get_wd14_model()
+        probs = np.asarray(model.run(None, {model.get_inputs()[0].name: arr})[0][0])
 
     gen_idx  = np.nonzero((probs >= AI_GENERAL_THRESHOLD) & ~is_char)[0][:AI_MAX_GENERAL]
     char_idx = np.nonzero((probs >= AI_CHARACTER_THRESHOLD) & is_char)[0]
     char_idx = char_idx[np.argsort(-probs[char_idx])][:AI_MAX_CHARACTERS]
-    return {
+    res = {
         'general':   [tags_list[i].replace(' ', '_') for i in gen_idx],
         'character': [tags_list[i].replace(' ', '_') for i in char_idx],
         'model': 'wd14',
     }
+    if custom:
+        res['learned'] = custom_model.learned_tags(feat)   # [(tag, probability)] from the taught heads
+    return res
 
 
 def apply_ai_tags(post, cover=None):
@@ -1501,6 +1502,8 @@ def apply_ai_tags(post, cover=None):
         # A character tag created by the old pipeline sits in category 'ai' —
         # promote it. Never touch tags the user categorised themselves.
         Tag.objects.filter(pk__in=[t.pk for t in touched], category='ai').update(category='character')
+    if res.get('learned'):
+        custom_model.apply_learned(post, [n for n, _p in res['learned']])
     post.ai_tagged = True
     post.char_tagged = True
     if res.get('model') == char_tagger.MODEL_ID:
@@ -2356,8 +2359,218 @@ def char_retag_start(request):
     return JsonResponse({'task_id': _start_task('char_retag', work, message='starting…', exclusive=True).id})
 
 
+# ── My model: clone, teach, train ───────────────────────────────
+import re as _re
+
+CONCEPT_CATEGORIES = {'general', 'character', 'artist', 'meta', 'ai'}
+_CONCEPT_NAME_RE = _re.compile(r"^[a-z0-9_().:'!+&-]{1,100}$")
+
+
+def _concept_dict(c):
+    return {
+        'id': c.id, 'name': c.name, 'category': c.category, 'threshold': round(c.threshold, 3),
+        'enabled': c.enabled, 'metrics': c.metrics, 'trained': bool(c.trained_at),
+        'trained_at': c.trained_at.isoformat() if c.trained_at else None,
+        'pos': getattr(c, 'pos', None), 'neg': getattr(c, 'neg', None),
+        'applied': getattr(c, 'applied_n', 0),
+    }
+
+
+def custom_info(request):
+    from django.db.models import Count, Q
+    try:
+        import onnx  # noqa: F401
+        has_onnx = True
+    except ImportError:
+        has_onnx = False
+    concepts = (CustomConcept.objects
+                .annotate(pos=Count('examples', filter=Q(examples__label__gt=0)),
+                          neg=Count('examples', filter=Q(examples__label__lt=0, examples__auto=False)),
+                          applied_n=Count('applied', distinct=True)))
+    return JsonResponse({
+        'ready': custom_model.is_ready(), 'default_ready': ai_models.is_ready('wd14'), 'onnx': has_onnx,
+        'concepts': [_concept_dict(c) for c in concepts],
+        'features_cached': PostFeature.objects.filter(model_hash=custom_model.model_hash()).count() if custom_model.is_ready() else 0,
+        'posts': Post.objects.count(),
+    })
+
+
+@require_POST
+def custom_clone(request):
+    if custom_model.is_ready():
+        return JsonResponse({'error': 'already cloned — delete it first to re-clone'}, status=409)
+    if not ai_models.is_ready('wd14'):
+        return JsonResponse({'error': 'download the default model first'}, status=409)
+
+    def work(task):
+        def say(msg):
+            task.message = msg
+            task.save(update_fields=['message'])
+        custom_model.clone_default(say)
+        task.message = 'my model is ready'
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('model_clone', work, message='cloning…', exclusive=True).id})
+
+
+def _normalize_concept_name(raw):
+    return (raw or '').strip().lower().replace(' ', '_')
+
+
+@require_POST
+def custom_examples(request):
+    """Teach by example. body: {ids:[post ids], concept, label: 1|-1, category?, also_tag?}
+    +1: these posts show the concept (optionally also tag them now).
+    -1: they do NOT (the tag is removed from them — how wrong auto-tags get corrected)."""
+    data = json.loads(request.body or '{}')
+    name = _normalize_concept_name(data.get('concept'))
+    label = 1 if int(data.get('label', 1)) > 0 else -1
+    ids = [int(i) for i in data.get('ids', []) if str(i).isdigit()]
+    category = data.get('category') or 'ai'
+    if not _CONCEPT_NAME_RE.match(name):
+        return JsonResponse({'error': 'name: 1-100 chars of a-z 0-9 _ ( ) . : \' ! + & -'}, status=400)
+    if category not in CONCEPT_CATEGORIES:
+        return JsonResponse({'error': 'bad category'}, status=400)
+    if not ids:
+        return JsonResponse({'error': 'no posts selected'}, status=400)
+    try:
+        default_names = {n.strip().lower().replace(' ', '_') for n in _wd14_tags()[0]}
+    except RuntimeError:
+        default_names = set()
+    if name in default_names:
+        return JsonResponse({'error': f'"{name}" is already a tag the default model knows — pick a different name'}, status=409)
+
+    concept, created = CustomConcept.objects.get_or_create(name=name, defaults={'category': category})
+    posts = list(Post.objects.filter(pk__in=ids))
+    for post in posts:
+        CustomExample.objects.update_or_create(concept=concept, post=post,
+                                               defaults={'label': label, 'auto': False})
+    tagged = untagged = 0
+    if label > 0 and data.get('also_tag', True):
+        for post in posts:
+            add_tags_to_post(post, [name], category=concept.category)
+            tagged += 1
+    elif label < 0:
+        tag = Tag.objects.filter(name=name).first()
+        if tag:
+            for post in posts:
+                if post.tags.filter(pk=tag.pk).exists():
+                    post.tags.remove(tag)
+                    untagged += 1
+            CustomApplied.objects.filter(concept=concept, post__in=posts).delete()
+            tag.update_count()
+    return JsonResponse({'ok': True, 'concept': name, 'created': created, 'examples': len(posts),
+                         'tagged': tagged, 'untagged': untagged,
+                         'pos': concept.examples.filter(label__gt=0).count(),
+                         'neg': concept.examples.filter(label__lt=0, auto=False).count()})
+
+
+@require_POST
+def custom_train(request, pk):
+    concept = get_object_or_404(CustomConcept, pk=pk)
+    if not custom_model.is_ready():
+        return JsonResponse({'error': 'clone the default model first'}, status=409)
+
+    def work(task):
+        c = CustomConcept.objects.get(pk=pk)
+        task.message = f'training “{c.name}”…'
+        task.save(update_fields=['message'])
+
+        def prog(done, total):
+            _throttled_save(task, done=done, total=total, message=f'“{c.name}”: features {done}/{total}')
+
+        m = custom_model.train_concept(c, progress=prog, check=lambda: check_cancel(task))
+        task.message = (f'“{c.name}”: precision ≈ {round(m["precision_est"] * 100)}%, recall {round(m["recall"] * 100)}% '
+                        f'(cross-validated, {m["n_pos"]}+ / {m["n_neg"]}− examples)')
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('custom_train', work, message=f'training “{concept.name}”…', exclusive=True).id})
+
+
+@require_POST
+def custom_scan(request):
+    """Index the whole library with my model (features cached; resumable)."""
+    if not custom_model.is_ready():
+        return JsonResponse({'error': 'clone the default model first'}, status=409)
+
+    def work(task):
+        total_posts = Post.objects.count()
+        task.message = 'indexing the library…'
+        task.save(update_fields=['message'])
+
+        def prog(done, total):
+            _throttled_save(task, done=done, total=total, message=f'indexed {done}/{total} new post(s)')
+
+        done, failed = custom_model.scan_library(prog, lambda: check_cancel(task))
+        task.message = f'indexed {done} post(s)' + (f', {failed} unreadable' if failed else '') + f' (library: {total_posts})'
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('custom_scan', work, message='indexing…', exclusive=True).id})
+
+
+def custom_candidates(request, pk):
+    """Posts to review for a concept (open them with /?ids=…)."""
+    concept = get_object_or_404(CustomConcept, pk=pk)
+    try:
+        n = max(1, min(200, int(request.GET.get('n', 60))))
+    except ValueError:
+        n = 60
+    mode = 'uncertain' if request.GET.get('mode') == 'uncertain' else 'top'
+    ids, scores, n_above = custom_model.candidates(concept, n, mode)
+    return JsonResponse({'ids': ids, 'scores': scores, 'mode': mode, 'above_threshold': n_above,
+                         'indexed': PostFeature.objects.filter(model_hash=custom_model.model_hash()).count(),
+                         'posts': Post.objects.count()})
+
+
+@require_POST
+def custom_apply(request, pk):
+    concept = get_object_or_404(CustomConcept, pk=pk)
+    if not concept.trained_at:
+        return JsonResponse({'error': 'train it first'}, status=409)
+
+    def work(task):
+        def prog(done, total):
+            _throttled_save(task, done=done, total=total, message=f'tagging “{concept.name}” {done}/{total}')
+        n = custom_model.apply_concept(concept, prog, lambda: check_cancel(task))
+        task.message = f'“{concept.name}” added to {n} post(s) — undo it in Settings → My model'
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('custom_apply', work, message=f'applying “{concept.name}”…', exclusive=True).id})
+
+
+@require_POST
+def custom_undo(request, pk):
+    concept = get_object_or_404(CustomConcept, pk=pk)
+    return JsonResponse({'ok': True, 'untagged': custom_model.undo_concept(concept)})
+
+
+@require_POST
+def custom_concept_update(request, pk):
+    c = get_object_or_404(CustomConcept, pk=pk)
+    data = json.loads(request.body or '{}')
+    if 'threshold' in data:
+        c.threshold = min(0.999, max(0.05, float(data['threshold'])))
+    if 'enabled' in data:
+        c.enabled = bool(data['enabled'])
+    if data.get('category') in CONCEPT_CATEGORIES and data['category'] != c.category:
+        Tag.objects.filter(name=c.name, category__in=['ai', c.category]).update(category=data['category'])
+        c.category = data['category']
+    c.save()
+    custom_model.update_head(c.name, thr=c.threshold, enabled=c.enabled)
+    return JsonResponse({'ok': True, 'concept': _concept_dict(c)})
+
+
+@require_POST
+def custom_concept_delete(request, pk):
+    """Forget a concept: its head and examples go; tags already on posts stay."""
+    c = get_object_or_404(CustomConcept, pk=pk)
+    custom_model.remove_head(c.name)
+    c.delete()
+    return JsonResponse({'ok': True})
+
+
 # ── AI models panel: status / download / delete / main selector / free VRAM ──
-AI_TASK_KINDS = ['ai_tag', 'char_retag', 'model_clone', 'custom_train', 'custom_scan']
+AI_TASK_KINDS = ['ai_tag', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply']
 
 
 def ai_models_info(request):
@@ -2407,6 +2620,8 @@ def ai_model_delete(request, key):
     ai_runtime.forget(key)
     ai_runtime.request_unload_all()          # other workers may hold sessions on the files
     freed = ai_models.delete(key)
+    if key == 'custom':
+        custom_model.on_clone_deleted()      # its caches/heads are meaningless now; examples are kept
     return JsonResponse({'ok': True, 'freed_mb': round(freed / 1048576)})
 
 
