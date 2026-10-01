@@ -209,7 +209,8 @@ class Task(models.Model):
     state is stored in the DB so any gunicorn worker (and any device) can see
     its progress, and so it survives the user closing the page."""
     kind        = models.CharField(max_length=32)                  # merge / scan / ai_tag / dupes
-    status      = models.CharField(max_length=16, default='running')  # running / done / error
+    status      = models.CharField(max_length=16, default='running')  # running / done / error / cancelled
+    cancel_requested = models.BooleanField(default=False)  # set by the stop button; checked cooperatively by the work fn
     done        = models.IntegerField(default=0)
     total       = models.IntegerField(default=0)
     message     = models.CharField(max_length=300, blank=True)

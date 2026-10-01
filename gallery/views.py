@@ -14,7 +14,7 @@ from .models import Post, Photo, Tag, Task, Folder
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
-                    make_gif_from_post)
+                    make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -524,6 +524,8 @@ def _compute_dupe_groups(progress=None):
     n = len(post_data)
     for i in range(n):
         p = post_data[i]
+        if progress and i % 50 == 0:
+            progress(i, n)   # also the cancel point for the O(n^2) phase
         if p['post_id'] in used:
             continue
         group = [p]
@@ -536,9 +538,6 @@ def _compute_dupe_groups(progress=None):
                 continue
             if not _comparable(p, q):
                 continue
-            pair = tuple(sorted([p['post_id'], q['post_id']]))
-            if pair in ignored_pairs:
-                continue
             # Video thumbnails (often dark/title frames) collide far too easily,
             # so require a near-exact match for video-vs-video; images/gifs keep
             # the looser perceptual threshold.
@@ -546,6 +545,9 @@ def _compute_dupe_groups(progress=None):
             threshold = 2 if both_video else 8
             dist = bin(p['phash_int'] ^ q['phash_int']).count('1')
             if dist <= threshold:
+                # cheap distance test first; the ignored-pair lookup only for near matches
+                if tuple(sorted([p['post_id'], q['post_id']])) in ignored_pairs:
+                    continue
                 group.append(q)
                 used.add(q['post_id'])
                 best_dist = dist if best_dist is None else min(best_dist, dist)
@@ -596,6 +598,15 @@ def _start_task(kind, fn, total=0, message=''):
                 t.status = 'done'
                 t.finished_at = timezone.now()
                 t.save()
+        except TaskCancelled:
+            try:
+                t = Task.objects.get(pk=tid)
+                t.status = 'cancelled'
+                t.message = (t.message + ' — stopped')[:300]
+                t.finished_at = timezone.now()
+                t.save()
+            except Exception:
+                pass
         except Exception as e:
             traceback.print_exc()
             try:
@@ -613,9 +624,21 @@ def _start_task(kind, fn, total=0, message=''):
     return task
 
 
+TASK_STALE_CANCEL = timezone.timedelta(minutes=3)    # no progress this long → a stop request force-ends it
+TASK_STALE_SWEEP  = timezone.timedelta(minutes=30)   # no progress this long → assume the worker died
+
+
+def _sweep_stale_tasks():
+    """A background thread dies with its gunicorn worker, leaving its Task row
+    'running' forever (and undismissable). Mark long-silent ones as errored."""
+    Task.objects.filter(status='running', updated_at__lt=timezone.now() - TASK_STALE_SWEEP).update(
+        status='error', error='worker stopped responding (orphaned)', finished_at=timezone.now())
+
+
 def tasks_list(request):
     """Active tasks + recently finished ones (last few minutes), with elapsed
     time. The frontend polls this to show progress / notifications."""
+    _sweep_stale_tasks()
     cutoff = timezone.now() - timezone.timedelta(minutes=5)
     qs = Task.objects.filter(Q(status='running') | Q(finished_at__gte=cutoff))[:20]
     out = []
@@ -625,41 +648,106 @@ def tasks_list(request):
             'done': t.done, 'total': t.total, 'message': t.message,
             'error': t.error, 'elapsed': t.elapsed,
             'finished': bool(t.finished_at),
+            'cancel_requested': t.cancel_requested,
         })
     return JsonResponse({'tasks': out})
 
 
 @require_POST
 def tasks_clear(request):
-    """Dismiss finished/errored tasks from the list."""
+    """Dismiss all finished/errored/cancelled tasks from the list."""
     Task.objects.exclude(status='running').delete()
     return JsonResponse({'ok': True})
 
 
+@require_POST
+def task_dismiss(request, pk):
+    """Dismiss ONE finished task card."""
+    Task.objects.filter(pk=pk).exclude(status='running').delete()
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def task_cancel(request, pk):
+    """Ask a running task to stop. The work fn notices at its next cooperative
+    check (check_cancel). If the task has shown no progress for a while its
+    thread is presumably gone, so it is ended directly instead."""
+    t = get_object_or_404(Task, pk=pk)
+    if t.status != 'running':
+        return JsonResponse({'ok': True, 'status': t.status})
+    if timezone.now() - t.updated_at > TASK_STALE_CANCEL:
+        t.status = 'cancelled'; t.cancel_requested = True
+        t.message = (t.message + ' — stopped')[:300]
+        t.finished_at = timezone.now(); t.save()
+    else:
+        Task.objects.filter(pk=pk).update(cancel_requested=True)
+    return JsonResponse({'ok': True})
+
+
+def _throttled_save(task, interval=0.5, **fields):
+    """Set `fields` on the task and persist them, but at most every `interval`
+    seconds — a per-file commit made the scan itself a major cost. Pass
+    force=True-like behaviour by calling task.save() directly at the end."""
+    import time as _t
+    for k, v in fields.items():
+        setattr(task, k, v)
+    now = _t.monotonic()
+    if now - getattr(task, '_last_save', 0) >= interval:
+        task._last_save = now
+        task.save(update_fields=list(fields))
+
+
 # ── Background variants of the heavy operations ─────────────────
+def _existing_paths_by_dir(abs_paths):
+    """{dir: set(filenames)} for just the directories involved — one listdir
+    per directory instead of one stat per file."""
+    listing = {}
+    for d in {os.path.dirname(p) for p in abs_paths}:
+        try:
+            listing[d] = set(os.listdir(d))
+        except OSError:
+            listing[d] = set()
+    return listing
+
+
 def _do_scan(task):
+    import time as _t
+    if not os.path.isdir(settings.MEDIA_ROOT):
+        # e.g. the drive isn't mounted — every file would look "missing" and the
+        # prune below would wipe the whole library from the DB
+        raise RuntimeError(f'MEDIA_ROOT not available: {settings.MEDIA_ROOT}')
+    # Phase A: prune rows whose file vanished. Cheap: ids/paths only, one
+    # listdir per directory, and model instances only for the (rare) missing ones.
+    check_cancel(task)
+    rows = list(Photo.objects.values_list('id', 'rel_path'))
+    abs_of = {pk: (rp if os.path.isabs(rp) else os.path.join(settings.MEDIA_ROOT, rp)) for pk, rp in rows}
+    listing = _existing_paths_by_dir(abs_of.values())
+    missing_ids = [pk for pk, ap in abs_of.items()
+                   if os.path.basename(ap) not in listing.get(os.path.dirname(ap), ())]
     removed = 0
-    for photo in Photo.objects.all():
-        if not os.path.exists(photo.file_path):
-            if photo.thumb_path and os.path.exists(photo.thumb_path):
-                try: os.remove(photo.thumb_path)
-                except OSError: pass
-            photo.delete(); removed += 1
+    for photo in Photo.objects.filter(pk__in=missing_ids):
+        if photo.thumb_path and os.path.exists(photo.thumb_path):
+            try: os.remove(photo.thumb_path)
+            except OSError: pass
+        photo.delete(); removed += 1
     empty = Post.objects.filter(images__isnull=True)
-    removed += empty.count(); empty.delete()
-    for tag in Tag.objects.all(): tag.update_count()
-    Tag.objects.filter(count=0).delete()
+    n_empty = empty.count()
+    if n_empty:
+        removed += n_empty; empty.delete()
 
     task.message = 'scanning inbox…'; task.save(update_fields=['message'])
     new_posts, extend_posts = scan_inbox()
     task.total = len(new_posts) + len(extend_posts); task.save(update_fields=['total'])
     added = 0
     for i, (title, paths) in enumerate(new_posts):
-        create_post_from_files(paths, title=title)
+        check_cancel(task)
+        create_post_from_files(paths, title=title, recount=False)
         added += len(paths)
-        task.done = i + 1; task.message = f'added {added} file(s)'; task.save(update_fields=['done', 'message'])
+        _throttled_save(task, done=i + 1, message=f'added {added} file(s)')
+        _t.sleep(0)   # let the progress poll / other requests interleave (gevent)
     base = len(new_posts)
     for j, (post, paths) in enumerate(extend_posts):
+        check_cancel(task)
         start_order = post.images.count()
         added_video = False
         for k, path in enumerate(sorted(paths)):
@@ -668,15 +756,32 @@ def _do_scan(task):
         added += len(paths)
         if added_video:
             try:
-                sync_sound_tag(post)
+                sync_sound_tag(post, recount=False)
             except Exception as e:
                 print(f'sound-tag error post {post.id}: {e}')
-        task.done = base + j + 1; task.save(update_fields=['done'])
-    # fix placeholder video/pdf thumbs
-    for photo in Photo.objects.filter(is_video=True):
-        if not photo.thumb_path or not os.path.exists(photo.thumb_path) or os.path.getsize(photo.thumb_path) < 5000:
-            thumb = make_video_thumb(photo.file_path)
-            if thumb: photo.thumb_path = thumb; photo.save(update_fields=['rel_thumb_path'])
+        _throttled_save(task, done=base + j + 1, message=f'added {added} file(s)')
+        _t.sleep(0)
+    task.save(update_fields=['done', 'message'])
+    # one batched recount instead of two queries per tag per file
+    if added or removed:
+        task.message = 'updating tag counts…'; task.save(update_fields=['message'])
+        recount_tags()
+        Tag.objects.filter(count=0).delete()
+    # Phase D: only videos whose thumbnail file is MISSING (a plain stat, no
+    # ffmpeg). It used to also re-run ffmpeg on every scan for any thumb under
+    # 5 KB — dark/flat clips hit that every time. Use "bulk video thumb" to
+    # force-regenerate those.
+    check_cancel(task)
+    vids = list(Photo.objects.filter(is_video=True).values_list('id', 'rel_thumb_path'))
+    vthumb_abs = {pk: (rt if os.path.isabs(rt) else os.path.join(settings.MEDIA_ROOT, rt))
+                  for pk, rt in vids if rt}
+    vlisting = _existing_paths_by_dir(vthumb_abs.values())
+    need = [pk for pk, rt in vids
+            if not rt or os.path.basename(vthumb_abs[pk]) not in vlisting.get(os.path.dirname(vthumb_abs[pk]), ())]
+    for photo in Photo.objects.filter(pk__in=need):
+        check_cancel(task)
+        thumb = make_video_thumb(photo.file_path)
+        if thumb: photo.thumb_path = thumb; photo.save(update_fields=['rel_thumb_path'])
     task.message = f'added {added}, removed {removed} (total {Post.objects.count()})'
     task.save(update_fields=['message'])
 
@@ -733,6 +838,7 @@ def merge_bg(request):
     def work(task):
         import time as _t
         for i, group in enumerate(groups):
+            check_cancel(task)
             _merge_one_group(group)
             task.done = i + 1
             task.message = f'merged {i + 1}/{len(groups)} group(s)'
@@ -750,6 +856,7 @@ def ai_tag_all_bg(request):
         posts = list(Post.objects.filter(ai_tagged=False))
         task.total = len(posts); task.save(update_fields=['total'])
         for i, post in enumerate(posts):
+            check_cancel(task)
             cover = post.images.order_by('order', 'id').first()
             if cover:
                 try:
@@ -775,6 +882,7 @@ def sound_tag_all_bg(request):
         task.total = len(posts); task.save(update_fields=['total'])
         found = 0
         for i, post in enumerate(posts):
+            check_cancel(task)
             try:
                 if sync_sound_tag(post):
                     found += 1
@@ -804,6 +912,12 @@ def post_to_gif_bg(request, pk):
     def work(task):
         src = Post.objects.get(pk=pk)  # re-fetch: this closure runs in its own thread
         gif_path = make_gif_from_post(src, fps, task=task)
+        try:
+            check_cancel(task)
+        except TaskCancelled:
+            try: os.remove(gif_path)   # don't leave a stray file for the next scan to ingest
+            except OSError: pass
+            raise
         new_post = create_post_from_files([gif_path], title=src.title)
         for tag in src.tags.all():
             new_post.tags.add(tag)
@@ -837,6 +951,7 @@ def _dupes_cache_path():
 
 def _do_dupes(task):
     def on_progress(done, total):
+        check_cancel(task)
         task.total = total
         task.done = done
         task.message = f'comparing {done}/{total} post(s)…'

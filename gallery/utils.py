@@ -168,7 +168,7 @@ def has_audio_stream(src_path):
         return False
 
 
-def sync_sound_tag(post):
+def sync_sound_tag(post, recount=True):
     """Add/remove the `sound` meta tag on a post based on whether any of its
     video Photos has an audio stream. No-op (returns None) for non-video posts.
     Returns True/False for whether the post has sound, so callers can count hits."""
@@ -179,12 +179,13 @@ def sync_sound_tag(post):
     want = any(has_audio_stream(p.file_path) for p in vids)
     has = post.tags.filter(name=SOUND_TAG).exists()
     if want and not has:
-        add_tags_to_post(post, [SOUND_TAG], category='meta')
+        add_tags_to_post(post, [SOUND_TAG], category='meta', recount=recount)
     elif not want and has:
         tag = Tag.objects.filter(name=SOUND_TAG).first()
         if tag:
             post.tags.remove(tag)
-            tag.update_count()
+            if recount:
+                tag.update_count()
     return want
 
 
@@ -415,19 +416,22 @@ def ingest_photo(path, post, order=0):
     return photo
 
 
-def create_post_from_files(paths, title=''):
+def create_post_from_files(paths, title='', recount=True):
     from gallery.models import Post
     post = Post.objects.create(title=title)
     for i, path in enumerate(sorted(paths, key=natural_key)):
         ingest_photo(path, post, order=i)
-    # add format-based auto tags
+    # add format-based auto tags — union once per post, not once per file
+    tags = []
     for path in paths:
-        tags = auto_tags_for(path)
-        if tags:
-            add_tags_to_post(post, tags, category='meta')
+        for t in auto_tags_for(path):
+            if t not in tags:
+                tags.append(t)
+    if tags:
+        add_tags_to_post(post, tags, category='meta', recount=recount)
     if any(is_video(p) for p in paths):
         try:
-            sync_sound_tag(post)
+            sync_sound_tag(post, recount=recount)
         except Exception as e:
             print(f'sound-tag error post {post.id}: {e}')
     return post
@@ -521,6 +525,8 @@ def rebase_photo_paths(task=None):
         task.total = len(photos); task.save(update_fields=['total'])
     converted = already_relative = left_absolute = 0
     for i, photo in enumerate(photos):
+        if i % 200 == 0:
+            check_cancel(task)
         fields = []
         any_left_abs = False
         for attr in ('rel_path', 'rel_thumb_path'):
@@ -547,20 +553,56 @@ def rebase_photo_paths(task=None):
     return converted, already_relative, left_absolute
 
 
-def add_tags_to_post(post, tag_names, category='general'):
+class TaskCancelled(Exception):
+    """Raised inside a background work fn when the user pressed "stop"."""
+
+
+def check_cancel(task):
+    """Cooperative cancel point. `task` is a per-thread in-memory copy, so the
+    flag is re-read from the DB (set by /api/tasks/<id>/cancel/ in any worker).
+    Call between units of work, never mid-post, so nothing is left half-built."""
+    from gallery.models import Task
+    if task is not None and Task.objects.filter(pk=task.pk, cancel_requested=True).exists():
+        raise TaskCancelled()
+
+
+def recount_tags(tag_ids=None):
+    """Recompute Tag.count for every tag (or just `tag_ids`) with ONE aggregate
+    query and a bulk update of only the rows that changed — replaces calling
+    Tag.update_count() (a COUNT + UPDATE round-trip) per tag."""
+    from django.db.models import Count
     from gallery.models import Tag
-    # Only recount the tags this call actually touched — adding tag X can't
-    # change any OTHER tag's count, so re-counting every tag on the post
-    # (the old behavior) was O(all tags on the post) writes for a single add.
+    qs = Tag.objects.annotate(n=Count('posts'))
+    if tag_ids is not None:
+        qs = qs.filter(pk__in=list(tag_ids))
+    changed = []
+    for t in qs:
+        if t.count != t.n:
+            t.count = t.n
+            changed.append(t)
+    if changed:
+        Tag.objects.bulk_update(changed, ['count'], batch_size=500)
+
+
+def add_tags_to_post(post, tag_names, category='general', recount=True):
+    """Add tags to a post and (by default) refresh the counts of the tags it
+    touched. Bulk callers (scan) pass recount=False and call recount_tags()
+    once at the end. Returns the touched Tag objects."""
+    from gallery.models import Tag
     touched = []
+    seen = set()
     for name in tag_names:
         name = name.strip().lower().replace(' ', '_')
-        if not name: continue
+        if not name or name in seen: continue
+        seen.add(name)
         tag, _ = Tag.objects.get_or_create(name=name, defaults={'category': category})
-        post.tags.add(tag)
         touched.append(tag)
-    for tag in touched:
-        tag.update_count()
+    if touched:
+        post.tags.add(*touched)
+    if recount:
+        for tag in touched:
+            tag.update_count()
+    return touched
 
 
 def delete_post(post, also_files=False):

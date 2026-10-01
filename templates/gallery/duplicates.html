@@ -270,6 +270,7 @@ function watchDupeScan(taskId) {
         return;
       }
       if (t && t.status === 'error') toast(t.error || 'scan failed', 'err');
+      if (t && t.status === 'cancelled') toast('scan stopped');
       await loadDupeResult();
     } catch (e) {
       _dupePollTimer = setTimeout(tick, 2000);
