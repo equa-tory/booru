@@ -12,6 +12,12 @@ MIDDLEWARE = [    'django.middleware.security.SecurityMiddleware',    'gallery.m
 
 ROOT_URLCONF = 'booru.urls'
 
+# Unique cookie names: other local Django apps use the default `sessionid` /
+# `csrftoken`, and cookies are shared across ports on the same host, so they
+# kept logging each other out.
+SESSION_COOKIE_NAME = 'booru_sessionid'
+CSRF_COOKIE_NAME = 'booru_csrftoken'
+
 TEMPLATES = [{
     'BACKEND': 'django.template.backends.django.DjangoTemplates',
     'DIRS': [BASE_DIR / 'templates'],

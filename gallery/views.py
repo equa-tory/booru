@@ -413,11 +413,11 @@ def post_detail(request, pk):
     if referer and '/post/' not in referer:
         # came from index — use it
         back_url = referer
-    elif 'back_url' in request.session:
-        back_url = request.session['back_url']
+    elif 'booru_back_url' in request.session:
+        back_url = request.session['booru_back_url']
     # save back_url in session for post-to-post navigation
     if back_url:
-        request.session['back_url'] = back_url
+        request.session['booru_back_url'] = back_url
 
     # Full search query string (tags + filters + sort) for neighbor navigation
     search_params = []
@@ -1996,7 +1996,7 @@ def login_view(request):
     if request.method == 'POST':
         pwd = request.POST.get('password', '')
         if pwd == getattr(settings, 'GALLERY_PASSWORD', ''):
-            request.session['authed'] = True
+            request.session['booru_authed'] = True
             request.session.set_expiry(60 * 60 * 24 * 30)  # 30 days
             next_url = request.GET.get('next', '/')
             from django.shortcuts import redirect

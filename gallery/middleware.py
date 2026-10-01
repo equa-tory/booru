@@ -20,7 +20,7 @@ class LoginRequiredMiddleware:
         if request.path.endswith('sw.js'):
             return self.get_response(request)
 
-        if request.path not in self.EXEMPT_PATHS and not request.session.get('authed'):
+        if request.path not in self.EXEMPT_PATHS and not request.session.get('booru_authed'):
             return redirect(f'/login/?next={request.path}')
 
         return self.get_response(request)
