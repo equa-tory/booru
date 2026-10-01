@@ -3,16 +3,18 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
-A self-hosted, single-user "booru"-style photo/video/PDF gallery built on Django 6 + SQLite, with an htmx-driven frontend. No cloud, one shared password (`GALLERY_PASSWORD` in `booru/settings.py`). Files on disk are the source of truth; the DB only stores paths + metadata and never moves/renames originals except via explicit "organize"/"merge" actions.
+A self-hosted, single-user "booru"-style photo/video/PDF gallery built on Django 6 + SQLite, with an htmx-driven frontend. No cloud, one shared password (`GALLERY_PASSWORD`; set it in the untracked `booru/local_settings.py`, which overrides `booru/settings.py` — see `local_settings.py.example`. The repo is public, so never put real secrets in `settings.py`). Files on disk are the source of truth; the DB only stores paths + metadata and never moves/renames originals except via explicit "organize"/"merge" actions.
 
 ## Commands
 - Dev server: `python manage.py runserver`
 - Migrate / make migrations: `python manage.py migrate` / `python manage.py makemigrations`
-- Production (Linux/systemd): `./start.sh` — runs makemigrations+migrate, reloads/restarts the `booru` systemd unit, then execs gunicorn (gevent workers, port 3001). Windows dev uses runserver.
+- Production (Linux/systemd): `./start.sh` — uses `venv/bin/python3`, runs makemigrations+migrate, `sudo`-restarts the `booru` systemd unit, then runs gunicorn (4 gevent workers, port 3001, 900s timeout). Windows dev uses runserver.
+- Dependencies: `pip install -r requirements.txt` (pinned; includes gunicorn/gevent/onnxruntime/PyMuPDF). No linter is configured.
 - Tests: `python manage.py test` (note: `gallery/tests.py` is currently an empty stub — there is no real suite yet).
 - Downloads watcher (optional sidecar): `python watch_downloads.py --downloads <dir> --inbox <media/inbox>` — auto-moves new downloads/zips into the inbox.
 
 ## Adding media
+Paths like `media/inbox/` below are relative to `settings.MEDIA_ROOT`, which may point outside the repo (overridden in the untracked `booru/local_settings.py`; the `settings.py` default is `./media`).
 Two paths, both funnel through `gallery/utils.py::scan_inbox`:
 1. Drop files into `media/inbox/` (subfolders OK), then click "scan inbox" (POST `/api/scan-bg/`).
 2. Browser upload (POST `/api/upload/`) writes into `media/inbox/` then ingests.
@@ -20,7 +22,7 @@ Convention: `media/inbox/_/<folder>/` = one multi-image Post; loose files in `me
 
 ## Architecture
 - Single Django app `gallery`; project package `booru`.
-- Models (`gallery/models.py`): `Post` (a gallery item) has many `Photo` (individual files, incl. video/PDF, `is_video` flag, `phash` for dedupe). `Tag` (M2M to Post) has a `category` (general/character/artist/meta/ai) and a denormalized `count` kept current via `Tag.update_count()`. `Folder` is either manual (explicit M2M posts) or "smart" (stores a query string re-run through `_build_post_qs`). `Task` is a DB-backed row tracking background jobs so progress survives page reloads and is visible to every gunicorn worker.
+- Models (`gallery/models.py`): `Post` (a gallery item) has many `Photo` (individual files, incl. video/PDF, `is_video` flag, `phash` for dedupe). `Tag` (M2M to Post) has a `category` (general/character/artist/meta/ai) and a denormalized `count` kept current via `Tag.update_count()`. `Folder` is either manual (explicit M2M posts) or "smart" (stores a query string re-run through `_build_post_qs`), and nests into a tree via `parent` (self-FK, `on_delete=CASCADE`) — organizational; opening a folder shows only its own directly-assigned posts unless `include_subfolders` is set (the "⊞" toggle on a folder row), which folds in every descendant folder's posts too (`Folder.descendant_ids()`, applied in `_build_post_qs`). `Task` is a DB-backed row tracking background jobs so progress survives page reloads and is visible to every gunicorn worker.
 - `Photo.rel_path`/`rel_thumb_path` are stored relative to `settings.MEDIA_ROOT` (so relocating the whole media folder only means updating `MEDIA_ROOT`); the `file_path`/`thumb_path` properties resolve them to absolute paths and transparently tolerate legacy absolute values from before this became relative. `rebase_photo_paths()` in `utils.py` (wired to the "rebase paths" button) bulk-converts any remaining absolute rows.
 - Ingestion/thumbnailing lives in `gallery/utils.py`: `ingest_photo`, `create_post_from_files`, `make_thumb`/`make_video_thumb` (ffmpeg)/`make_pdf_thumb` (PyMuPDF→pdftoppm fallback), `compute_phash`/`phash_distance`. Thumbnails are keyed by md5 of the source path and written to `media/thumbs/`.
 - Views (`gallery/views.py`) are the whole controller layer — page renders + a large JSON API (URLs in `gallery/urls.py`). Frontend is server-rendered templates (`templates/gallery/`) + `static/js/htmx.min.js`; there is no JS build step. Infinite scroll pulls JSON from `/api/posts/`.
@@ -46,6 +48,9 @@ Heavy operations (scan, merge, ai_tag, dupes) run via `_start_task(kind, fn)` wh
 `duplicates` view groups posts by cover-image perceptual hash (`phash_distance`); videos only compare with videos (tighter threshold), GIF vs still is avoided, and `Post.not_dupes` (symmetrical M2M) pairs are skipped.
 
 ## Gotchas
+- `README.md` is stale (describes no-login, CLIP/transformers tagging, swapping `run_ai_tagger`); trust this file and the code instead.
+- User prefs (recent items, etc.) are stored in a plain `prefs.json` at `BASE_DIR` (`_prefs_path()` in `views.py`, `/api/prefs/`, `/api/pref/set/`), not in the DB, and it is untracked.
+- `booru-main/` in the repo root is an untracked stray copy of the project; ignore it and don't edit files there.
 - SQLite is tuned for concurrency in `settings.py` (WAL, `busy_timeout`, `transaction_mode=IMMEDIATE`) because gunicorn gevent workers otherwise serialize on the write lock.
 - Gallery grid relies on `prefetch_related('tags','images')`; `Post.cover`/`image_count`/`has_video` read the prefetched cache to avoid N+1 queries — preserve the prefetch when touching those code paths.
 - The hardcoded UNC path prefix in `duplicates`/`post_detail` (`\\192.168.1.50\@\Media_SRV\Photo\`) is the owner's file-server path for "open in explorer" links.

@@ -180,3 +180,28 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# ── booru project-specific ──────────────────────────────────────────────
+# Secrets / machine-specific config (repo is public)
+booru/local_settings.py
+
+# Runtime data: DB (+ WAL/SHM/backups), user prefs, caches
+db.sqlite3*
+*.sqlite3.bak
+*.bak
+prefs.json
+.dupes_cache.json
+
+# Media + collected static (files on disk are the source of truth, not git)
+/media/
+/staticfiles/
+
+# Stray copy of the project
+booru-main/
+
+# Editors / OS / tooling
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

@@ -1,0 +1,5 @@
+# Copy to booru/local_settings.py (untracked) and edit. Anything defined here
+# overrides booru/settings.py.
+MEDIA_ROOT = '/path/to/your/media'
+GALLERY_PASSWORD = 'change-me'
+# SECRET_KEY = 'something-long-and-random'

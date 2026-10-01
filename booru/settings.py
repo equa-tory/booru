@@ -48,9 +48,15 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'  # сюда collectstatic
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-#MEDIA_ROOT = '/@/Media_SRV/Photo'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Simple gallery password (change this!)
+# Simple gallery password (override in booru/local_settings.py)
 GALLERY_PASSWORD = 'booru'
+
+# Machine-specific overrides (MEDIA_ROOT, GALLERY_PASSWORD, SECRET_KEY...).
+# booru/local_settings.py is untracked; see local_settings.py.example.
+try:
+    from .local_settings import *  # noqa: F401,F403
+except ImportError:
+    pass
