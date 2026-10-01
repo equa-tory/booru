@@ -24,6 +24,11 @@ class Post(models.Model):
     title      = models.CharField(max_length=500, blank=True)
     tags       = models.ManyToManyField(Tag, blank=True, related_name='posts')
     ai_tagged  = models.BooleanField(default=False)
+    # True once the post went through the fixed tagger (per-category thresholds,
+    # characters kept + saved as category 'character'). Posts AI-tagged before
+    # that have ai_tagged=True but char_tagged=False — the candidates for a
+    # future characters-only re-tag.
+    char_tagged = models.BooleanField(default=False)
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
     rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)

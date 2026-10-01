@@ -134,6 +134,16 @@ header {
 .task-card .tc-stop[disabled] { opacity:.5; cursor:default; }
 .tc-clearall { align-self:flex-end; cursor:pointer; color:var(--text-dim); font-family:var(--mono); font-size:.68rem; background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:.15rem .5rem; }
 body.notif-off #task-panel { display:none; }
+/* debug overlays on grid cards (toggled from settings → debug overlays) */
+.photo-card .dbg { position:absolute; left:.3rem; bottom:1.55rem; z-index:3; display:flex; flex-direction:column; gap:2px; pointer-events:none; }
+.photo-card .dbg span { display:none; width:fit-content; max-width:8.5rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 4px; border-radius:3px; background:rgba(0,0,0,.78); border:1px solid transparent; font:600 .58rem/1.5 var(--mono); }
+body.dbg-id .photo-card .dbg .d-id, body.dbg-ai .photo-card .dbg .d-ai, body.dbg-ch .photo-card .dbg .d-ch, body.dbg-folder .photo-card .dbg .d-folder { display:block; }
+.dbg .d-id { color:#cbd5e1; }
+.dbg .d-ai.on, .dbg .d-ch.on { color:#3fb950; border-color:#3fb950; }
+.dbg .d-ai.off { color:#f85149; border-color:#f85149; }
+.dbg .d-ch.off { color:#e3b341; border-color:#e3b341; }
+.dbg .d-folder.on { color:var(--accent); border-color:var(--accent); }
+.dbg .d-folder.off { color:#94a3b8; border-color:#475569; }
 
 /* ── Layout ───────────────────────────────────────────── */
 .layout { display: flex; flex: 1; }
@@ -1070,7 +1080,18 @@ function applyNotif() {
   document.querySelectorAll('.notif-btn').forEach(b => b.classList.toggle('active', !off));
   if (off) { const p = document.getElementById('task-panel'); if (p) p.innerHTML = ''; }
 }
-document.addEventListener('DOMContentLoaded', () => { applyNotif(); pollTasks(); });
+/* debug overlays: per-device toggles kept in localStorage, applied as body classes */
+function dbgState() { try { return JSON.parse(localStorage.getItem('dbgOverlay') || '{}') || {}; } catch(e) { return {}; } }
+function applyDbg() {
+  const st = dbgState();
+  ['id','ai','ch','folder'].forEach(k => document.body.classList.toggle('dbg-' + k, !!st[k]));
+}
+function setDbg(key, on) {
+  const st = dbgState(); st[key] = !!on;
+  try { localStorage.setItem('dbgOverlay', JSON.stringify(st)); } catch(e) {}
+  applyDbg();
+}
+document.addEventListener('DOMContentLoaded', () => { applyNotif(); applyDbg(); pollTasks(); });
 
 /* ── Global progress bar ───────────────────────────────────────
    startProgress()  — begin an indeterminate action (creeps to 90%)

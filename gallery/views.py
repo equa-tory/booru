@@ -157,7 +157,7 @@ def _apply_seeded_order(posts, seed):
 
 def _ordered_by_ids(id_list):
     """Posts limited to id_list, preserving the given order (for 'similar')."""
-    posts = Post.objects.prefetch_related('tags', 'images').filter(id__in=id_list)
+    posts = Post.objects.prefetch_related('tags', 'images', 'folders').filter(id__in=id_list)
     order = Case(*[When(id=pk, then=pos) for pos, pk in enumerate(id_list)],
                  output_field=IntegerField())
     return posts.order_by(order)
@@ -182,7 +182,7 @@ def _build_post_qs(request):
         id_list = [int(x) for x in explicit_ids.split(',') if x.strip().isdigit()]
         return _ordered_by_ids(id_list), q_tags, 'ids', '', ''
 
-    posts = Post.objects.prefetch_related('tags', 'images').all()
+    posts = Post.objects.prefetch_related('tags', 'images', 'folders').all()
 
     # Only pay for the extra correlated subquery when a pages: token is
     # actually present (tokens inside "( ... )" OR groups are still separate
@@ -387,6 +387,9 @@ def posts_json(request):
             'is_video':   cover.is_video,
             'has_video':  post.has_video,
             'has_gif':    post.has_gif,
+            'ai':         post.ai_tagged,
+            'chars':      post.char_tagged,
+            'folders':    [f.name for f in post.folders.all()],   # prefetched
             'url':        f'/post/{post.pk}/{suffix}',
         })
 
@@ -866,14 +869,10 @@ def ai_tag_all_bg(request):
         task.total = len(posts); task.save(update_fields=['total'])
         for i, post in enumerate(posts):
             check_cancel(task)
-            cover = post.images.order_by('order', 'id').first()
-            if cover:
-                try:
-                    tags = run_ai_tagger(cover.file_path, cover.thumb_path)
-                    add_tags_to_post(post, tags, category='ai')
-                    post.ai_tagged = True; post.save(update_fields=['ai_tagged'])
-                except Exception as e:
-                    print(f'ai-tag error post {post.id}: {e}')
+            try:
+                apply_ai_tags(post)
+            except Exception as e:
+                print(f'ai-tag error post {post.id}: {e}')
             task.done = i + 1
             task.message = f'tagged {i + 1}/{len(posts)} post(s)'
             task.save(update_fields=['done', 'message'])
@@ -1098,16 +1097,9 @@ def upload(request):
             posts_created.append(post)
 
     if do_ai_tag:
-        from .views import run_ai_tagger
         for post in posts_created:
             try:
-                # tag using first image
-                cover = post.images.first()
-                if cover:
-                    tags = run_ai_tagger(cover.file_path, cover.thumb_path)
-                    add_tags_to_post(post, tags, category='ai')
-                    post.ai_tagged = True
-                    post.save(update_fields=['ai_tagged'])
+                apply_ai_tags(post, post.images.first())
             except Exception as e:
                 print(f"AI tag error: {e}")
 
@@ -1204,14 +1196,11 @@ def delete_post_view(request, pk):
 def ai_tag_post(request, pk):
     post = get_object_or_404(Post, pk=pk)
     try:
-        cover = post.images.order_by('order', 'id').first()
-        if not cover:
+        res = apply_ai_tags(post)
+        if res is None:
             return JsonResponse({'error': 'no images', 'ok': False}, status=400)
-        tags = run_ai_tagger(cover.file_path, cover.thumb_path)
-        add_tags_to_post(post, tags, category='ai')
-        post.ai_tagged = True
-        post.save(update_fields=['ai_tagged'])
-        return JsonResponse({'tags': tags, 'ok': True})
+        return JsonResponse({'tags': res['general'] + res['character'],
+                             'characters': res['character'], 'ok': True})
     except Exception as e:
         return JsonResponse({'error': str(e), 'ok': False}, status=500)
 
@@ -1361,15 +1350,11 @@ def ai_tag_all(request):
     posts   = Post.objects.filter(ai_tagged=False)
     results = []
     for post in posts:
-        cover = post.images.order_by('order', 'id').first()
-        if not cover:
-            continue
         try:
-            tags = run_ai_tagger(cover.file_path, cover.thumb_path)
-            add_tags_to_post(post, tags, category='ai')
-            post.ai_tagged = True
-            post.save(update_fields=['ai_tagged'])
-            results.append({'id': post.id, 'tags': tags})
+            res = apply_ai_tags(post)
+            if res is None:
+                continue
+            results.append({'id': post.id, 'tags': res['general'] + res['character']})
         except Exception as e:
             results.append({'id': post.id, 'error': str(e)})
     return JsonResponse({'results': results, 'count': len(results)})
@@ -1377,8 +1362,25 @@ def ai_tag_all(request):
 
 # ── AI tagger ─────────────────────────────────────────────────
 
+# WD14 emits one probability per tag; the tag list is ordered rating → general →
+# character. Characters are scored with their OWN (much higher) threshold: the
+# model is confident when it knows a character, and a low bar mostly adds
+# wrong guesses. Override in booru/local_settings.py.
+AI_GENERAL_THRESHOLD   = getattr(settings, 'AI_GENERAL_THRESHOLD', 0.35)
+AI_CHARACTER_THRESHOLD = getattr(settings, 'AI_CHARACTER_THRESHOLD', 0.85)
+AI_MAX_GENERAL         = 40
+AI_MAX_CHARACTERS      = 12
+
+
 def run_ai_tagger(file_path, thumb_path=''):
-    """Run the WD14 tagger on an image.
+    """Run the WD14 tagger on an image. Returns {'general': [...], 'character': [...]}.
+
+    - general: rating + general tags >= AI_GENERAL_THRESHOLD, first AI_MAX_GENERAL
+      in the model's (frequency) order — unchanged from the original behaviour.
+    - character: character tags >= AI_CHARACTER_THRESHOLD, most confident first.
+      They used to share the general list's 40-tag cap, and since characters come
+      last in the model's order they were silently cut whenever a picture had
+      40+ general tags (about half of the confident character hits).
 
     If the original can't be opened as an image (e.g. it's an mp4/video or a
     pdf), fall back to the generated thumbnail so video/pdf posts can still be
@@ -1409,28 +1411,74 @@ def run_ai_tagger(file_path, thumb_path=''):
             else:
                 raise
 
-    model, tags_list = _get_wd14_model()
+    model, tags_list, is_char = _get_wd14_model()
     target = 448
     img.thumbnail((target, target), Image.LANCZOS)
     canvas = Image.new('RGB', (target, target), (255, 255, 255))
     canvas.paste(img, ((target-img.width)//2, (target-img.height)//2))
     arr   = np.array(canvas, dtype=np.float32)[:, :, ::-1][np.newaxis, :]
-    probs = model.run(None, {model.get_inputs()[0].name: arr})[0][0]
-    return [tags_list[i].replace(' ', '_') for i, s in enumerate(probs) if s >= 0.35][:40]
+    probs = np.asarray(model.run(None, {model.get_inputs()[0].name: arr})[0][0])
+
+    gen_idx  = np.nonzero((probs >= AI_GENERAL_THRESHOLD) & ~is_char)[0][:AI_MAX_GENERAL]
+    char_idx = np.nonzero((probs >= AI_CHARACTER_THRESHOLD) & is_char)[0]
+    char_idx = char_idx[np.argsort(-probs[char_idx])][:AI_MAX_CHARACTERS]
+    return {
+        'general':   [tags_list[i].replace(' ', '_') for i in gen_idx],
+        'character': [tags_list[i].replace(' ', '_') for i in char_idx],
+    }
+
+
+def apply_ai_tags(post, cover=None):
+    """Tag one post from its cover with the WD14 tagger and record the result:
+    general tags in category 'ai', characters in category 'character', and both
+    ai_tagged / char_tagged flags set. Returns the run_ai_tagger dict, or None
+    when the post has no image."""
+    cover = cover or post.images.order_by('order', 'id').first()
+    if not cover:
+        return None
+    res = run_ai_tagger(cover.file_path, cover.thumb_path)
+    add_tags_to_post(post, res['general'], category='ai')
+    if res['character']:
+        touched = add_tags_to_post(post, res['character'], category='character')
+        # A character tag created by the old pipeline sits in category 'ai' —
+        # promote it. Never touch tags the user categorised themselves.
+        Tag.objects.filter(pk__in=[t.pk for t in touched], category='ai').update(category='character')
+    post.ai_tagged = True
+    post.char_tagged = True
+    post.save(update_fields=['ai_tagged', 'char_tagged'])
+    return res
 
 
 _wd14_cache = None
+_wd14_tags_cache = None
+
+
+def _wd14_tags():
+    """(names, is_character mask) from the model's selected_tags.csv (category 4
+    = character, 0 = general, 9 = rating). Cheap — does not load the model."""
+    global _wd14_tags_cache
+    if _wd14_tags_cache: return _wd14_tags_cache
+    from huggingface_hub import hf_hub_download
+    import csv
+    import numpy as np
+    tags_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'selected_tags.csv')
+    with open(tags_path, encoding='utf-8') as f:
+        rows = list(csv.DictReader(f))
+    _wd14_tags_cache = ([r['name'] for r in rows],
+                        np.array([r['category'] == '4' for r in rows], dtype=bool))
+    return _wd14_tags_cache
+
+
 def _get_wd14_model():
     global _wd14_cache
     if _wd14_cache: return _wd14_cache
     from huggingface_hub import hf_hub_download
-    import onnxruntime as ort, csv
+    import onnxruntime as ort
     model_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'model.onnx')
-    tags_path  = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'selected_tags.csv')
     session = ort.InferenceSession(model_path,
                 providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-    tags = [row['name'] for row in csv.DictReader(open(tags_path, encoding='utf-8'))]
-    _wd14_cache = (session, tags)
+    names, is_char = _wd14_tags()
+    _wd14_cache = (session, names, is_char)
     return _wd14_cache
 
 
@@ -1877,21 +1925,15 @@ def post_not_dupes(request, pk):
     return JsonResponse({'not_dupe_ids': ids})
 
 
-@require_POST
-def regen_thumb(request, pk):
-    """Regenerate the thumbnail for a single image/video/gif/pdf. Also re-reads
-    dimensions + pHash, which fixes files that were still downloading when they
-    were first ingested (so the original thumb was a placeholder/blank).
-    For videos, an optional `pct` (0-100) picks which frame to grab."""
-    photo = get_object_or_404(Photo, pk=pk)
-    try:
-        pct = float(json.loads(request.body or '{}').get('pct', 0))
-    except Exception:
-        pct = 0
+def _regen_photo_thumb(photo, pct=0):
+    """Regenerate one Photo's thumbnail (image / gif / video / pdf). Also
+    re-reads dimensions + pHash, which fixes files that were still downloading
+    when first ingested (so the original thumb was a placeholder/blank).
+    Returns (ok, error_message)."""
     from .utils import (make_thumb, compute_phash, _thumb_path_for,
                         is_video as _is_video, is_pdf as _is_pdf)
     if not os.path.exists(photo.file_path):
-        return JsonResponse({'ok': False, 'error': 'source file missing'}, status=404)
+        return False, 'source file missing'
 
     # drop any stale/placeholder thumb first so a fresh one is written cleanly
     for tp in {photo.thumb_path, _thumb_path_for(photo.file_path)}:
@@ -1903,7 +1945,7 @@ def regen_thumb(request, pk):
 
     thumb = make_thumb(photo.file_path, pct=pct)   # dispatches to video/pdf/image
     if not thumb:
-        return JsonResponse({'ok': False, 'error': 'could not render thumbnail'}, status=500)
+        return False, 'could not render thumbnail'
 
     photo.thumb_path = thumb
     vid = _is_video(photo.file_path)
@@ -1924,7 +1966,44 @@ def regen_thumb(request, pk):
         if ph:
             photo.phash = ph
     photo.save(update_fields=['rel_thumb_path', 'phash', 'is_video', 'width', 'height'])
+    return True, ''
+
+
+@require_POST
+def regen_thumb(request, pk):
+    """Regenerate the thumbnail for a single image/video/gif/pdf.
+    For videos, an optional `pct` (0-100) picks which frame to grab."""
+    photo = get_object_or_404(Photo, pk=pk)
+    try:
+        pct = float(json.loads(request.body or '{}').get('pct', 0))
+    except Exception:
+        pct = 0
+    ok, err = _regen_photo_thumb(photo, pct)
+    if not ok:
+        return JsonResponse({'ok': False, 'error': err},
+                            status=404 if err == 'source file missing' else 500)
     return JsonResponse({'ok': True, 'thumb_url': photo.thumb_url})
+
+
+@require_POST
+def bulk_regen_thumb(request):
+    """Regenerate the COVER thumbnail of each selected post whose cover is a
+    picture (image / gif / pdf). Video covers are left to bulk_video_thumb,
+    which also picks the frame (pct)."""
+    ids = json.loads(request.body or '{}').get('ids', [])
+    updated = failed = skipped_videos = 0
+    for post in Post.objects.filter(id__in=ids).prefetch_related('images'):
+        cover = post.cover
+        if not cover:
+            continue
+        if cover.is_video:
+            skipped_videos += 1
+            continue
+        ok, _err = _regen_photo_thumb(cover)
+        if ok: updated += 1
+        else: failed += 1
+    return JsonResponse({'ok': True, 'updated': updated, 'failed': failed,
+                         'skipped_videos': skipped_videos})
 
 
 @require_POST
@@ -2082,6 +2161,34 @@ def set_pref(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'ok': True})
+
+
+# ── Debug overlay helpers ───────────────────────────────────────
+def debug_stats(request):
+    """Counters for the settings panel's debug section."""
+    return JsonResponse({
+        'posts': Post.objects.count(),
+        'ai_tagged': Post.objects.filter(ai_tagged=True).count(),
+        'char_tagged': Post.objects.filter(char_tagged=True).count(),
+        'ai_not_char': Post.objects.filter(ai_tagged=True, char_tagged=False).count(),
+        'in_folder': Post.objects.filter(folders__isnull=False).distinct().count(),
+        'character_tags': Tag.objects.filter(category='character').count(),
+    })
+
+
+@require_POST
+def recategorize_characters(request):
+    """Move tags that are WD14 character names out of category 'ai' into
+    'character' (the old tagger saved every AI tag as 'ai'). Only touches tags
+    still in 'ai' — anything you categorised yourself is left alone. Pure
+    category change: no image is re-tagged."""
+    names, is_char = _wd14_tags()
+    char_names = {n.strip().lower().replace(' ', '_') for n, c in zip(names, is_char) if c}
+    updated = 0
+    ids = [i for i, n in Tag.objects.filter(category='ai').values_list('id', 'name') if n in char_names]
+    for k in range(0, len(ids), 500):
+        updated += Tag.objects.filter(pk__in=ids[k:k + 500]).update(category='character')
+    return JsonResponse({'ok': True, 'updated': updated})
 
 
 # ── Database backups (logic in gallery/backup.py) ───────────────

@@ -39,6 +39,21 @@
     </div>
 
     <div class="set-sec">
+      <h3>debug overlays <span style="text-transform:none;letter-spacing:0;font-weight:400;">· badges on every grid card, this device only</span></h3>
+      <div class="set-grid" style="margin-bottom:.4rem;">
+        <label class="set-check"><input type="checkbox" id="dbg-ai" onchange="setDbg('ai', this.checked)"> AI tagged <span class="set-note" style="margin:0;">✓ / ✗</span></label>
+        <label class="set-check"><input type="checkbox" id="dbg-ch" onchange="setDbg('ch', this.checked)"> characters checked <span class="set-note" style="margin:0;">✓ / ✗</span></label>
+        <label class="set-check"><input type="checkbox" id="dbg-folder" onchange="setDbg('folder', this.checked)"> in a folder <span class="set-note" style="margin:0;">name / none</span></label>
+        <label class="set-check"><input type="checkbox" id="dbg-id" onchange="setDbg('id', this.checked)"> post id</label>
+      </div>
+      <div class="set-note" id="dbg-stats">&nbsp;</div>
+      <div class="set-note"><b>CH ✗</b> on an <b>AI ✓</b> post = tagged by the old tagger (characters may be missing). Posts tagged from now on get <b>CH ✓</b>.</div>
+      <div class="set-actions" style="margin-top:.4rem;">
+        <button class="btn" onclick="recategorizeCharacters()" title="move existing character tags from category ai to character (category change only, no re-tagging)">&#9998; fix character tag categories</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
       <h3>backups <span id="bk-state" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></h3>
       <div class="set-grid">
         <div class="set-field"><label for="bk-max">max backups kept</label><input type="number" id="bk-max" min="1" max="100"></div>
@@ -70,6 +85,24 @@ function openSettings() {
   document.getElementById('settings-modal').classList.add('open');
   if (typeof closeMobMenu === 'function') closeMobMenu();
   loadBackupInfo();
+  loadDbgStats();
+}
+async function loadDbgStats() {
+  ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });
+  try {
+    const d = await (await fetch('/api/debug/stats/')).json();
+    const n = x => Number(x).toLocaleString();
+    document.getElementById('dbg-stats').textContent =
+      `${n(d.posts)} posts · ${n(d.ai_tagged)} AI-tagged · ${n(d.char_tagged)} characters checked · ${n(d.ai_not_char)} tagged by the old tagger · ${n(d.in_folder)} in a folder · ${n(d.character_tags)} character-category tags`;
+  } catch(e) { document.getElementById('dbg-stats').textContent = ''; }
+}
+async function recategorizeCharacters() {
+  if (!confirm('Move every tag that is a known character name from category "ai" to "character"?\n\nOnly the category label changes (sidebar grouping/colour) — no post is re-tagged, and tags you categorised yourself are not touched.')) return;
+  try {
+    const d = await (await fetch('/api/tags/recategorize-characters/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}})).json();
+    toast(d.ok ? `${d.updated} tag(s) moved to character` : (d.error || 'failed'), d.ok ? '' : 'err');
+    loadDbgStats();
+  } catch(e) { toast('failed', 'err'); }
 }
 function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
 

@@ -2388,7 +2388,7 @@ async function aiTag() {
   const d=await(await fetch(`/api/post/${POST_ID}/ai-tag/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}})).json();
   doneProgress();
   btn.disabled=false; btn.textContent='ai auto-tag';
-  if(d.ok){toast(`added ${d.tags.length} tag(s)`);location.reload();}
+  if(d.ok){toast(`added ${d.tags.length} tag(s)` + ((d.characters||[]).length ? ` incl. ${d.characters.length} character(s)` : ''));location.reload();}
   else toast('ai error: '+d.error,'err');
 }
 

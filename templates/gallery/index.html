@@ -367,6 +367,7 @@ body.select-mode .scroll-fabs { display:none; }
       <button class="btn" onclick="bulkFav(true)">&#9829; fav</button>
       <button class="btn" onclick="bulkFav(false)">&#9825; unfav</button>
       <button class="btn" onclick="bulkVideoThumb()">&#9654; vid thumb&nbsp;%</button>
+      <button class="btn" onclick="bulkRegenThumb()" title="re-render the cover thumbnail of the selected picture/gif/pdf posts">&#8635; pic thumbs</button>
     </div>
     <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-rate-modal').classList.remove('open')">cancel</button></div>
   </div>
@@ -542,6 +543,12 @@ function makeCard(post) {
   let html = `<img src="${post.thumb_url}" loading="lazy" decoding="async">`;
   html += `<div class="overlay"><span class="tag-count-badge">${post.tag_count} tags${post.img_count > 1 ? ' &middot; ' + post.img_count : ''}</span></div>`;
   html += `<div class="sel-check">&#10003;</div>`;
+  const fl = post.folders || [];
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  html += `<div class="dbg"><span class="d-id">#${post.id}</span>`
+        + `<span class="d-ai ${post.ai ? 'on' : 'off'}">AI ${post.ai ? '&#10003;' : '&#10007;'}</span>`
+        + `<span class="d-ch ${post.chars ? 'on' : 'off'}">CH ${post.chars ? '&#10003;' : '&#10007;'}</span>`
+        + `<span class="d-folder ${fl.length ? 'on' : 'off'}">${fl.length ? '&#128193; ' + esc(fl[0]) + (fl.length > 1 ? ' +' + (fl.length - 1) : '') : 'no folder'}</span></div>`;
   if (post.img_count > 1) html += `<div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">${post.img_count}</div>`;
   if (post.is_video) html += `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;"><div style="background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff;">&#9654;</div></div>`;
   if (post.rating) html += `<div class="card-rating">${post.rating}&#9733;</div>`;
@@ -1170,6 +1177,25 @@ async function bulkVideoThumb() {
   document.getElementById('bulk-rate-modal').classList.remove('open');
   toast(`updated ${d.updated||0} video thumbnail(s) to ${pct}%`);
   finishBulkAction(!!d.updated);
+}
+
+async function bulkRegenThumb() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  if (!confirm(`Re-render the cover thumbnail of the ${selectedIds.size} selected post(s)?\nPictures, gifs and pdfs only — video covers are skipped (use "vid thumb %").`)) return;
+  startProgress();
+  try {
+    const d = await (await fetch('/api/bulk-regen-thumb/', {
+      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+      body: JSON.stringify({ids:[...selectedIds]})
+    })).json();
+    doneProgress();
+    document.getElementById('bulk-rate-modal').classList.remove('open');
+    let msg = `regenerated ${d.updated||0} thumbnail(s)`;
+    if (d.failed) msg += `, ${d.failed} failed (file missing?)`;
+    if (d.skipped_videos) msg += `, ${d.skipped_videos} video(s) skipped`;
+    toast(msg, d.failed ? 'err' : '');
+    finishBulkAction(!!d.updated);
+  } catch(e) { doneProgress(); toast('could not regenerate thumbnails','err'); }
 }
 
 async function bulkDelete() {

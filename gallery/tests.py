@@ -1,4 +1,5 @@
 import os
+import unittest
 import shutil
 import tempfile
 from unittest import mock
@@ -306,3 +307,173 @@ class TaskHeartbeatTests(TestCase):
         with mock.patch.object(views.threading, 'Thread'):
             b = self.client.post('/api/scan-bg/').json()['task_id']
         self.assertNotEqual(b, dead.pk)
+
+
+# ── AI tagger: characters ───────────────────────────────────────
+import numpy as np
+
+
+class _FakeInput:
+    name = 'input'
+
+
+class _FakeModel:
+    def __init__(self, probs): self.probs = np.array(probs, dtype=np.float32)
+    def get_inputs(self): return [_FakeInput()]
+    def run(self, _out, _feed): return [self.probs[None, :]]
+
+
+def _fake_wd14(probs_by_name):
+    """names: 2 ratings, 60 general, 3 characters (like the real CSV order)."""
+    names = ['rating_a', 'rating_b'] + [f'g{i}' for i in range(60)] + ['char_a', 'char_b', 'char_c']
+    is_char = np.array([n.startswith('char_') for n in names])
+    probs = [probs_by_name.get(n, 0.0) for n in names]
+    return (_FakeModel(probs), names, is_char)
+
+
+class AiTaggerTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.img = os.path.join(self.tmp, 'a.png')
+        Image.new('RGB', (30, 30), (10, 20, 30)).save(self.img)
+
+    def _probs(self):
+        p = {'rating_a': 0.9, 'rating_b': 0.1}
+        p.update({f'g{i}': 0.5 for i in range(60)})          # 60 general tags over the bar
+        p.update({'char_a': 0.95, 'char_b': 0.5, 'char_c': 0.90})
+        return p
+
+    def test_characters_are_not_cut_by_the_general_cap(self):
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14(self._probs())):
+            res = views.run_ai_tagger(self.img)
+        self.assertEqual(len(res['general']), 40)                   # general cap unchanged
+        self.assertEqual(res['general'][0], 'rating_a')              # same index order as before
+        self.assertEqual(res['character'], ['char_a', 'char_c'])     # most confident first; char_b (0.5) < 0.85
+
+    def test_character_threshold_is_configurable(self):
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14(self._probs())), \
+             mock.patch.object(views, 'AI_CHARACTER_THRESHOLD', 0.4):
+            res = views.run_ai_tagger(self.img)
+        self.assertEqual(res['character'], ['char_a', 'char_c', 'char_b'])
+
+    def test_apply_ai_tags_sets_categories_and_flags(self):
+        post = Post.objects.create()
+        photo = Photo(post=post, order=0); photo.file_path = self.img; photo.thumb_path = ''; photo.save()
+        # an old-pipeline character tag stuck in category 'ai', and one the user categorised themselves
+        Tag.objects.create(name='char_a', category='ai')
+        Tag.objects.create(name='char_c', category='artist')
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14(self._probs())):
+            res = views.apply_ai_tags(post)
+        post.refresh_from_db()
+        self.assertTrue(post.ai_tagged and post.char_tagged)
+        self.assertEqual(Tag.objects.get(name='char_a').category, 'character')   # promoted from 'ai'
+        self.assertEqual(Tag.objects.get(name='char_c').category, 'artist')      # left alone
+        self.assertEqual(Tag.objects.get(name='g0').category, 'ai')
+        self.assertEqual(set(post.tags.values_list('name', flat=True)) & {'char_a', 'char_c', 'g0'},
+                         {'char_a', 'char_c', 'g0'})
+
+    def test_ai_tag_endpoint_reports_characters(self):
+        post = Post.objects.create()
+        photo = Photo(post=post, order=0); photo.file_path = self.img; photo.thumb_path = ''; photo.save()
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14(self._probs())):
+            d = self.client.post(f'/api/post/{post.pk}/ai-tag/').json()
+        self.assertTrue(d['ok'])
+        self.assertEqual(d['characters'], ['char_a', 'char_c'])
+        self.assertEqual(len(d['tags']), 42)
+
+    def test_recategorize_only_moves_ai_character_names(self):
+        names = ['hatsune_miku', 'smile']
+        with mock.patch.object(views, '_wd14_tags', return_value=(names, np.array([True, False]))):
+            Tag.objects.create(name='hatsune_miku', category='ai')
+            Tag.objects.create(name='smile', category='ai')
+            Tag.objects.create(name='hatsune_miku_(vocaloid)', category='ai')
+            r = self.client.post('/api/tags/recategorize-characters/').json()
+        self.assertEqual(r['updated'], 1)
+        self.assertEqual(Tag.objects.get(name='hatsune_miku').category, 'character')
+        self.assertEqual(Tag.objects.get(name='smile').category, 'ai')
+
+
+class OverlayAndThumbTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        o = override_settings(MEDIA_ROOT=self.root); o.enable(); self.addCleanup(o.disable)
+        os.makedirs(os.path.join(self.root, 'thumbs'))
+
+    def _post(self, name='a.png', **kw):
+        path = os.path.join(self.root, name)
+        Image.new('RGB', (200, 100), (200, 50, 50)).save(path)
+        from .utils import create_post_from_files
+        return create_post_from_files([path], **kw)
+
+    def test_grid_and_json_carry_overlay_state(self):
+        a = self._post('a.png'); b = self._post('b.png')
+        Post.objects.filter(pk=a.pk).update(ai_tagged=True, char_tagged=True)
+        from .models import Folder
+        f = Folder.objects.create(name='faves'); f.posts.add(a)
+        j = {p['id']: p for p in self.client.get('/api/posts/').json()['posts']}
+        self.assertEqual((j[a.pk]['ai'], j[a.pk]['chars'], j[a.pk]['folders']), (True, True, ['faves']))
+        self.assertEqual((j[b.pk]['ai'], j[b.pk]['chars'], j[b.pk]['folders']), (False, False, []))
+        html = self.client.get('/').content.decode()
+        self.assertIn('class="d-folder on"', html)
+        self.assertIn('class="d-folder off"', html)
+        self.assertIn('class="d-ai off"', html)
+        self.assertIn('faves', html)
+
+    def test_debug_stats(self):
+        a = self._post('a.png'); self._post('b.png')
+        Post.objects.filter(pk=a.pk).update(ai_tagged=True)
+        d = self.client.get('/api/debug/stats/').json()
+        self.assertEqual((d['posts'], d['ai_tagged'], d['char_tagged'], d['ai_not_char']), (2, 1, 0, 1))
+
+    def test_bulk_regen_thumb_handles_pictures_and_skips_videos(self):
+        pic = self._post('a.png')
+        vid = self._post('v.png')
+        Photo.objects.filter(post=vid).update(is_video=True)       # pretend this cover is a video
+        thumb = pic.cover.thumb_path
+        self.assertTrue(os.path.exists(thumb))
+        os.remove(thumb)                                           # broken/missing thumbnail
+        r = self.client.post('/api/bulk-regen-thumb/', {'ids': [pic.pk, vid.pk]},
+                             content_type='application/json').json()
+        self.assertEqual((r['updated'], r['failed'], r['skipped_videos']), (1, 0, 1))
+        self.assertTrue(os.path.exists(Post.objects.get(pk=pic.pk).cover.thumb_path))
+
+    def test_bulk_regen_thumb_reports_missing_source(self):
+        pic = self._post('a.png')
+        os.remove(pic.cover.file_path)
+        r = self.client.post('/api/bulk-regen-thumb/', {'ids': [pic.pk]}, content_type='application/json').json()
+        self.assertEqual((r['updated'], r['failed']), (0, 1))
+
+
+# ── Template JavaScript parses ──────────────────────────────────
+import re
+import subprocess
+
+
+@unittest.skipUnless(shutil.which('node'), 'node not installed')
+class TemplateJsSyntaxTests(TestCase):
+    """The pages are big hand-written templates with lots of inline JS; a stray
+    typo silently kills the whole page, so syntax-check every inline <script>."""
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def _check(self, url):
+        html = self.client.get(url).content.decode()
+        scripts = [s for s in re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', html, re.S) if s.strip()]
+        self.assertTrue(scripts)
+        for i, src in enumerate(scripts):
+            with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as f:
+                f.write(src)
+            self.addCleanup(os.remove, f.name)
+            r = subprocess.run(['node', '--check', f.name], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f'{url} script #{i}: {r.stderr[:400]}')
+
+    def test_index(self):
+        self._check('/')
+
+    def test_post_detail(self):
+        post = Post.objects.create()
+        self._check(f'/post/{post.pk}/')
