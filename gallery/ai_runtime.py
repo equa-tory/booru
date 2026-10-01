@@ -7,9 +7,13 @@
   ComfyUI). Each gunicorn worker is its own process with its own sessions.
 - A CUDA failure (cuDNN mismatch, out of memory...) switches this process to
   CPU for CUDA_RETRY_SECONDS, then CUDA is tried again.
+- "Free VRAM now": request_unload_all() drops a signal file that EVERY worker's
+  reaper notices within a few seconds and answers by force-unloading all models.
 """
 import gc
 import logging
+import os
+import subprocess
 import threading
 import time
 
@@ -26,6 +30,10 @@ _cuda_off_until = 0.0     # monotonic time; CUDA is skipped until then
 _cuda_off_reason = ''
 _preloaded = False
 _reaper_started = False
+_force_until = 0.0        # monotonic; until then every model counts as idle (keeps freeing reloads)
+_seen_signal = 0.0        # mtime of the unload signal this process has already acted on
+REAPER_TICK = 3           # seconds between checks (one os.stat)
+FORCE_WINDOW = 60         # seconds a forced unload keeps freeing models that get reloaded
 
 
 def _now():
@@ -140,11 +148,90 @@ def unload_idle(ttl=None):
     return n
 
 
+def _signal_path():
+    from . import ai_models
+    return os.path.join(ai_models.models_dir(), '.unload')
+
+
+def _signal_mtime():
+    try:
+        return os.stat(_signal_path()).st_mtime
+    except OSError:
+        return 0.0
+
+
+def request_unload_all():
+    """Ask every worker process to unload all models (cross-process)."""
+    p = _signal_path()
+    tmp = p + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(str(time.time()))
+    os.replace(tmp, p)
+
+
+def force_unload():
+    """Drop every loaded model in THIS process right now, even one that is
+    mid-inference (the running call keeps its own reference until it returns).
+    Returns how many were loaded."""
+    global _force_until
+    n = 0
+    with _lock:
+        _force_until = _now() + FORCE_WINDOW
+        for m in _models.values():
+            if m._sess is not None:
+                m._sess = None
+                n += 1
+    gc.collect()
+    if n:
+        log.info('AI runtime: force-unloaded %d model(s)', n)
+    return n
+
+
+def forget(key):
+    """Unload and unregister a model (used before deleting its files)."""
+    with _lock:
+        m = _models.pop(key, None)
+    if m is not None:
+        m._sess = None
+        gc.collect()
+
+
+def gpu_info():
+    """{'name','used_mb','total_mb'} from nvidia-smi, or None when unavailable."""
+    try:
+        r = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.used,memory.total',
+                            '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=3)
+        name, used, total = [x.strip() for x in r.stdout.strip().splitlines()[0].split(',')]
+        return {'name': name, 'used_mb': int(used), 'total_mb': int(total)}
+    except Exception:                        # noqa: BLE001
+        return None
+
+
+_last_idle_check = 0.0
+
+
+def _reaper_tick():
+    """One reaper step: act on a new unload signal, keep freeing models during the
+    force window, otherwise do the normal idle sweep (every 30 s)."""
+    global _seen_signal, _last_idle_check
+    sig = _signal_mtime()
+    if sig > _seen_signal:
+        _seen_signal = sig
+        force_unload()
+    elif _now() < _force_until:
+        unload_idle(ttl=0)
+    elif _now() - _last_idle_check >= 30:
+        _last_idle_check = _now()
+        unload_idle()
+
+
 def _reaper_loop():
+    global _seen_signal
+    _seen_signal = max(_seen_signal, _signal_mtime())      # ignore signals sent before this process loaded anything
     while True:
-        time.sleep(30)
+        time.sleep(REAPER_TICK)
         try:
-            unload_idle()
+            _reaper_tick()
         except Exception as e:               # noqa: BLE001
             log.warning('AI reaper: %s', e)
 

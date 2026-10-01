@@ -15,7 +15,7 @@ from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
                     make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
-from . import char_tagger
+from . import char_tagger, ai_models
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -1430,7 +1430,25 @@ AI_MAX_GENERAL         = 40
 AI_MAX_CHARACTERS      = 12
 
 
-def run_ai_tagger(file_path, thumb_path=''):
+def _main_model():
+    """Which model does the main AI tagging: the selected one if it is ready on
+    disk, else the default WD14 (selector in Settings -> AI models)."""
+    want = _pref('aiMainModel', 'wd14')
+    if want in ('pixai', 'custom') and ai_models.is_ready(want):
+        return want
+    return 'wd14'
+
+
+def run_ai_tagger(file_path, thumb_path='', model=None):
+    """Tag one image with the selected main model (default WD14 / PixAI / my
+    model). Returns {'general': [...], 'character': [...], 'model': key}."""
+    model = model or _main_model()
+    if model == 'pixai':
+        return char_tagger.run_pixai_general(file_path, thumb_path)
+    return _run_wd14(file_path, thumb_path)
+
+
+def _run_wd14(file_path, thumb_path=''):
     """Run the WD14 tagger on an image. Returns {'general': [...], 'character': [...]}.
 
     - general: rating + general tags >= AI_GENERAL_THRESHOLD, first AI_MAX_GENERAL
@@ -1464,6 +1482,7 @@ def run_ai_tagger(file_path, thumb_path=''):
     return {
         'general':   [tags_list[i].replace(' ', '_') for i in gen_idx],
         'character': [tags_list[i].replace(' ', '_') for i in char_idx],
+        'model': 'wd14',
     }
 
 
@@ -1484,10 +1503,12 @@ def apply_ai_tags(post, cover=None):
         Tag.objects.filter(pk__in=[t.pk for t in touched], category='ai').update(category='character')
     post.ai_tagged = True
     post.char_tagged = True
-    if post.char_model != char_tagger.MODEL_ID:      # never downgrade a PixAI result
+    if res.get('model') == char_tagger.MODEL_ID:
+        post.char_model = char_tagger.MODEL_ID       # PixAI was the main tagger: it already did the characters
+    elif post.char_model != char_tagger.MODEL_ID:    # never downgrade a PixAI result
         post.char_model = 'wd14'
     post.save(update_fields=['ai_tagged', 'char_tagged', 'char_model'])
-    if _pref('aiCharAuto') and char_tagger.model_ready():
+    if res.get('model') != char_tagger.MODEL_ID and _pref('aiCharAuto') and char_tagger.model_ready():
         try:
             res['character'] = list(dict.fromkeys(res['character'] + apply_character_model(post, cover)))
         except Exception as e:
@@ -1529,10 +1550,11 @@ def _wd14_tags():
     = character, 0 = general, 9 = rating). Cheap — does not load the model."""
     global _wd14_tags_cache
     if _wd14_tags_cache: return _wd14_tags_cache
-    from huggingface_hub import hf_hub_download
     import csv
     import numpy as np
-    tags_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'selected_tags.csv')
+    tags_path = ai_models.cached_file('wd14', 'selected_tags.csv')
+    if not tags_path:
+        raise RuntimeError('default model not downloaded — Settings → AI models')
     with open(tags_path, encoding='utf-8') as f:
         rows = list(csv.DictReader(f))
     _wd14_tags_cache = ([r['name'] for r in rows],
@@ -1540,19 +1562,15 @@ def _wd14_tags():
     return _wd14_tags_cache
 
 
-_wd14_path = None
-
-
 def _get_wd14_model():
     """(model, names, is_char). `model` is a ManagedModel (gallery/ai_runtime.py):
     CUDA when available, CPU fallback, unloaded again when idle."""
-    global _wd14_path
     from . import ai_runtime
-    if _wd14_path is None:
-        from huggingface_hub import hf_hub_download
-        _wd14_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'model.onnx')
+    path = ai_models.cached_file('wd14', 'model.onnx')
+    if not path:
+        raise RuntimeError('default model not downloaded — Settings → AI models')
     names, is_char = _wd14_tags()
-    return ai_runtime.get_model('wd14', _wd14_path), names, is_char
+    return ai_runtime.get_model('wd14', path), names, is_char
 
 
 # ── Tag helpers ────────────────────────────────────────────────
@@ -2216,6 +2234,20 @@ def get_prefs(request):
     except Exception:
         return JsonResponse({'prefs': {}})
 
+def _set_pref(key, value):
+    """Read-modify-write one key of prefs.json (atomic replace)."""
+    try:
+        with open(_prefs_path()) as f:
+            prefs = json.load(f)
+    except Exception:
+        prefs = {}
+    prefs[key] = value
+    tmp = _prefs_path() + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(prefs, f)
+    os.replace(tmp, _prefs_path())
+
+
 @require_POST
 def set_pref(request):
     data = json.loads(request.body)
@@ -2223,14 +2255,7 @@ def set_pref(request):
     if not key:
         return JsonResponse({'error': 'no key'}, status=400)
     try:
-        with open(_prefs_path()) as f:
-            prefs = json.load(f)
-    except Exception:
-        prefs = {}
-    prefs[key] = value
-    try:
-        with open(_prefs_path(), 'w') as f:
-            json.dump(prefs, f)
+        _set_pref(key, value)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'ok': True})
@@ -2329,6 +2354,102 @@ def char_retag_start(request):
         task.save(update_fields=['done', 'message'])
 
     return JsonResponse({'task_id': _start_task('char_retag', work, message='starting…', exclusive=True).id})
+
+
+# ── AI models panel: status / download / delete / main selector / free VRAM ──
+AI_TASK_KINDS = ['ai_tag', 'char_retag', 'model_clone', 'custom_train', 'custom_scan']
+
+
+def ai_models_info(request):
+    """Everything the settings panel's AI models section shows. Loads no model."""
+    from . import ai_runtime
+    return JsonResponse({
+        'models': [ai_models.status(k) for k in ai_models.KEYS],
+        'main': _main_model(),
+        'main_pref': _pref('aiMainModel', 'wd14'),
+        'gpu': ai_runtime.gpu_info(),
+        'runtime': ai_runtime.runtime_info(),
+        'busy': Task.objects.filter(status='running', kind__in=AI_TASK_KINDS).exists(),
+    })
+
+
+@require_POST
+def ai_model_download(request, key):
+    if key not in ai_models.HF_KEYS:
+        return JsonResponse({'error': 'unknown or not downloadable model'}, status=400)
+    info = ai_models.MODELS[key]
+
+    def work(task):
+        task.message = f"downloading {info['name']}…"
+        task.total = round(info['bytes'] / 1048576)
+        task.save(update_fields=['message', 'total'])
+
+        def prog(done, total):
+            _throttled_save(task, interval=2, done=min(round(done / 1048576), task.total))
+
+        ai_models.download(key, prog)
+        task.done = task.total
+        task.message = f"{info['name']} ready"
+        task.save(update_fields=['done', 'message'])
+
+    return JsonResponse({'task_id': _start_task('model_download', work, message='downloading…', exclusive=True).id})
+
+
+@require_POST
+def ai_model_delete(request, key):
+    from . import ai_runtime
+    if key not in ai_models.KEYS:
+        return JsonResponse({'error': 'unknown model'}, status=404)
+    if Task.objects.filter(status='running', kind__in=AI_TASK_KINDS + ['model_download']).exists():
+        return JsonResponse({'error': 'wait for (or stop) the running AI tasks first'}, status=409)
+    if _main_model() == key:
+        return JsonResponse({'error': 'it is the selected main tagger — switch to another one first'}, status=409)
+    ai_runtime.forget(key)
+    ai_runtime.request_unload_all()          # other workers may hold sessions on the files
+    freed = ai_models.delete(key)
+    return JsonResponse({'ok': True, 'freed_mb': round(freed / 1048576)})
+
+
+@require_POST
+def ai_main_set(request):
+    key = json.loads(request.body or '{}').get('model')
+    if key not in ('wd14', 'pixai', 'custom'):
+        return JsonResponse({'error': 'unknown model'}, status=400)
+    if not ai_models.is_ready(key):
+        return JsonResponse({'error': 'that model is not on disk yet — download/clone it first'}, status=409)
+    _set_pref('aiMainModel', key)
+    return JsonResponse({'ok': True, 'main': key})
+
+
+@require_POST
+def ai_free_vram(request):
+    """Unload every AI model in every worker, no matter what: running AI tasks
+    are asked to stop (they would just load the model again), a signal makes all
+    gunicorn workers drop their sessions within seconds, and this one drops now."""
+    from . import ai_runtime
+    before = ai_runtime.gpu_info()
+    stopped = Task.objects.filter(status='running', kind__in=AI_TASK_KINDS).update(cancel_requested=True)
+    ai_runtime.request_unload_all()
+    here = ai_runtime.force_unload()
+    return JsonResponse({'ok': True, 'tasks_stopped': stopped, 'unloaded_here': here, 'before': before})
+
+
+@require_POST
+def ai_restart_workers(request):
+    """Graceful reload of the gunicorn workers: also releases each worker's
+    CUDA context (~120 MiB) that model unloading cannot. Running background
+    tasks stop with their worker."""
+    import signal
+    ppid = os.getppid()
+    try:
+        with open(f'/proc/{ppid}/cmdline', 'rb') as f:
+            cmd = f.read().decode(errors='ignore')
+    except OSError:
+        cmd = ''
+    if 'gunicorn' not in cmd:
+        return JsonResponse({'error': 'not running under gunicorn'}, status=409)
+    threading.Timer(1.0, lambda: os.kill(ppid, signal.SIGHUP)).start()
+    return JsonResponse({'ok': True})
 
 
 # ── Debug overlay helpers ───────────────────────────────────────

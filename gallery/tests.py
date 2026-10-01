@@ -755,3 +755,184 @@ class SidebarTagTests(TestCase):
         self.assertEqual({t.name: t.filtered_count for t in out}, {'alpha': 2, 'beta': 1})
         html = self.client.get('/?tag=alpha').content.decode()
         self.assertIn('data-name="beta"', html)
+
+
+# ── Part B: models panel, selector, free VRAM ───────────────────
+_prefs_dir = None
+_prefs_patch = None
+
+
+def setUpModule():
+    """Never let a test read or write the real prefs.json (it holds the user's
+    aiMainModel / aiCharAuto / backup settings)."""
+    global _prefs_dir, _prefs_patch
+    _prefs_dir = tempfile.mkdtemp()
+    _prefs_patch = mock.patch.object(views, '_prefs_path', return_value=os.path.join(_prefs_dir, 'prefs.json'))
+    _prefs_patch.start()
+
+
+def tearDownModule():
+    _prefs_patch.stop()
+    shutil.rmtree(_prefs_dir, ignore_errors=True)
+
+
+from . import ai_models
+
+
+class AiModelsPanelTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
+        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))   # no pref leaks into other tests
+        views._set_pref('aiMainModel', 'wd14')
+        ai_runtime._models.clear()
+        self.addCleanup(ai_runtime._models.clear)
+
+    def _ready(self, **ready):
+        """Pretend which models are on disk."""
+        return mock.patch.object(ai_models, 'is_ready', side_effect=lambda k: ready.get(k, False))
+
+    def _custom_files(self):
+        d = ai_models.custom_dir(); os.makedirs(d, exist_ok=True)
+        for n in ('model.onnx', 'meta.json'):
+            with open(os.path.join(d, n), 'wb') as f: f.write(b'x' * 10)
+
+    def test_info_lists_all_models(self):
+        with self._ready(wd14=True):
+            d = self.client.get('/api/ai/models/').json()
+        self.assertEqual([m['key'] for m in d['models']], ['wd14', 'pixai', 'custom'])
+        self.assertTrue(d['models'][0]['ready'])
+        self.assertEqual(d['main'], 'wd14')
+        self.assertIn('gpu', d)
+
+    def test_main_falls_back_to_default_when_selected_model_is_missing(self):
+        views._set_pref('aiMainModel', 'pixai')
+        with self._ready(wd14=True, pixai=False):
+            self.assertEqual(views._main_model(), 'wd14')
+        with self._ready(wd14=True, pixai=True):
+            self.assertEqual(views._main_model(), 'pixai')
+
+    def test_set_main_validates_and_persists(self):
+        post = lambda m: self.client.post('/api/ai/main/', {'model': m}, content_type='application/json')
+        self.assertEqual(post('nonsense').status_code, 400)
+        with self._ready(wd14=True, pixai=False):
+            self.assertEqual(post('pixai').status_code, 409)          # not downloaded
+            self.assertEqual(post('wd14').status_code, 200)
+        with self._ready(wd14=True, pixai=True):
+            self.assertEqual(post('pixai').json()['main'], 'pixai')
+            self.assertEqual(views._pref('aiMainModel'), 'pixai')
+
+    def test_delete_guards(self):
+        self._custom_files()
+        with self._ready(wd14=True, custom=True):
+            Task.objects.create(kind='ai_tag')
+            self.assertEqual(self.client.post('/api/ai/models/custom/delete/').status_code, 409)   # AI task running
+            Task.objects.all().delete()
+            views._set_pref('aiMainModel', 'custom')
+            self.assertEqual(self.client.post('/api/ai/models/custom/delete/').status_code, 409)   # it is the main tagger
+            views._set_pref('aiMainModel', 'wd14')
+            self.assertEqual(self.client.post('/api/ai/models/nope/delete/').status_code, 404)
+            r = self.client.post('/api/ai/models/custom/delete/').json()
+        self.assertTrue(r['ok'])
+        self.assertFalse(os.path.exists(ai_models.custom_dir()))
+
+    def test_download_endpoint_is_exclusive_and_rejects_custom(self):
+        self.assertEqual(self.client.post('/api/ai/models/custom/download/').status_code, 400)
+        with mock.patch.object(views.threading, 'Thread'):
+            a = self.client.post('/api/ai/models/pixai/download/').json()['task_id']
+            b = self.client.post('/api/ai/models/wd14/download/').json()['task_id']
+        self.assertEqual(a, b)                                   # one download at a time
+
+    def test_download_task_reports_progress_and_finishes(self):
+        captured = {}
+        with mock.patch.object(views, '_start_task', side_effect=lambda k, fn, **kw: captured.update(fn=fn) or types.SimpleNamespace(id=1)):
+            self.client.post('/api/ai/models/pixai/download/')
+        task = Task.objects.create(kind='model_download')
+        def fake_download(key, on_progress):
+            on_progress(500 * 1048576, 1)
+        with mock.patch.object(ai_models, 'download', side_effect=fake_download) as dl:
+            captured['fn'](task)
+        dl.assert_called_once()
+        task.refresh_from_db()
+        self.assertEqual(task.done, task.total)
+        self.assertIn('ready', task.message)
+
+    def test_free_vram_stops_ai_tasks_and_signals_every_worker(self):
+        ai_runtime._seen_signal = 0.0
+        t = Task.objects.create(kind='char_retag')
+        other = Task.objects.create(kind='scan')
+        m = ai_runtime.get_model('t', '/x.onnx'); m._sess = object()
+        with mock.patch.object(ai_runtime, 'gpu_info', return_value={'name': 'GPU', 'used_mb': 2000, 'total_mb': 8000}):
+            d = self.client.post('/api/ai/free-vram/').json()
+        self.assertEqual((d['tasks_stopped'], d['unloaded_here'], d['before']['used_mb']), (1, 1, 2000))
+        t.refresh_from_db(); other.refresh_from_db()
+        self.assertTrue(t.cancel_requested)
+        self.assertFalse(other.cancel_requested)                 # only AI tasks are stopped
+        self.assertIsNone(m._sess)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, '.unload')))
+
+    def test_other_worker_unloads_when_it_sees_the_signal(self):
+        # this process stands in for ANOTHER worker: it holds a model and has not seen the signal yet
+        m = ai_runtime.get_model('t', '/x.onnx'); m._sess = object(); m.last_used = ai_runtime._now()
+        ai_runtime._seen_signal = ai_runtime._signal_mtime()
+        ai_runtime._force_until = 0.0
+        ai_runtime._reaper_tick()
+        self.assertIsNotNone(m._sess)                            # no signal, recently used: stays loaded
+        time.sleep(0.02)
+        ai_runtime.request_unload_all()
+        ai_runtime._reaper_tick()
+        self.assertIsNone(m._sess)                               # signal seen -> force-unloaded
+        m._sess = object(); m.last_used = ai_runtime._now()      # an in-flight task reloads it...
+        ai_runtime._reaper_tick()
+        self.assertIsNone(m._sess)                               # ...and the force window frees it again
+        ai_runtime._force_until = 0.0
+
+    def test_old_signal_is_ignored_by_a_fresh_worker(self):
+        ai_runtime.request_unload_all()
+        ai_runtime._seen_signal = ai_runtime._signal_mtime()     # what _reaper_loop does at start
+        m = ai_runtime.get_model('t', '/x.onnx'); m._sess = object(); m.last_used = ai_runtime._now()
+        ai_runtime._force_until = 0.0
+        ai_runtime._reaper_tick()
+        self.assertIsNotNone(m._sess)
+
+    def test_restart_workers_refuses_outside_gunicorn(self):
+        self.assertEqual(self.client.post('/api/ai/restart-workers/').status_code, 409)
+
+    def test_gpu_info_parses_nvidia_smi(self):
+        fake = types.SimpleNamespace(stdout='Tesla P4, 2269, 8192\n')
+        with mock.patch.object(ai_runtime.subprocess, 'run', return_value=fake):
+            self.assertEqual(ai_runtime.gpu_info(), {'name': 'Tesla P4', 'used_mb': 2269, 'total_mb': 8192})
+        with mock.patch.object(ai_runtime.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertIsNone(ai_runtime.gpu_info())
+
+    def test_pixai_as_main_tagger_dispatch_and_flags(self):
+        post = Post.objects.create()
+        path = os.path.join(self.tmp, 'a.png'); Image.new('RGB', (20, 20)).save(path)
+        ph = Photo(post=post, order=0); ph.file_path = path; ph.thumb_path = ''; ph.save()
+        res = {'general': ['solo', 'smile'], 'character': ['char_q'], 'model': 'pixai'}
+        with mock.patch.object(views, '_main_model', return_value='pixai'), \
+             mock.patch.object(char_tagger, 'run_pixai_general', return_value=res) as px, \
+             mock.patch.object(views, '_pref', side_effect=lambda k, d=None: True if k == 'aiCharAuto' else d), \
+             mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', side_effect=AssertionError('char pass must be skipped')):
+            views.apply_ai_tags(post)
+        px.assert_called_once()
+        post.refresh_from_db()
+        self.assertEqual((post.ai_tagged, post.char_tagged, post.char_model), (True, True, 'pixai'))
+        self.assertEqual(Tag.objects.get(name='char_q').category, 'character')
+
+    def test_run_pixai_general_filters_orders_and_caps(self):
+        names = [f'g{i}' for i in range(60)] + ['char_a', 'char_b']
+        mask = np.array([n.startswith('char_') for n in names])
+        probs = np.array([0.31 + i * 0.001 for i in range(60)] + [0.9, 0.5], dtype=np.float32)
+        probs[5] = 0.1                                           # below the 0.30 bar
+        with mock.patch.object(char_tagger, '_infer', return_value=(probs, names, mask)):
+            res = char_tagger.run_pixai_general('x')
+        self.assertEqual(len(res['general']), 40)                # cap
+        self.assertEqual(res['general'][0], 'g59')               # most confident first
+        self.assertEqual(res['general'][-1], 'g20')              # the cap cuts the least confident
+        self.assertNotIn('g5', res['general'])
+        self.assertEqual(res['character'], ['char_a'])           # char_b 0.5 < 0.85
+        self.assertEqual(res['model'], 'pixai')

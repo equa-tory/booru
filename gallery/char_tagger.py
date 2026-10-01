@@ -1,95 +1,51 @@
-"""Second-opinion CHARACTER tagger: PixAI tagger v0.9 (EVA02, 448px, 13,461 tags
-of which 3,720 characters, trained on Danbooru through Jan 2025) via the DeepGHS
-ONNX export. WD14 stays the main tagger; this one only ever adds character tags.
+"""PixAI tagger v0.9 (EVA02, 448px, 13,461 tags of which 3,720 characters, trained
+on Danbooru through Jan 2025) via the DeepGHS ONNX export.
 
-~318M params / 0.62 TFLOPs per image: about 0.3 s on a Tesla P4, so it is run on
-demand (per-post button, settings bulk run) rather than on every scan. FP32 only
-— the P4 has no fast FP16/int8, so the 1.27 GB FP32 export is also the right one.
+Two uses:
+- run_character_tagger(): a second-opinion CHARACTERS-ONLY pass next to WD14
+  (per-post button, settings bulk re-tag, optional auto-run). Only ever adds tags.
+- run_pixai_general(): general + character tags, for when PixAI is selected as
+  the main AI tagger. It has no rating tags (explicit/questionable...) and a
+  different vocabulary than WD14 — the settings panel warns about both.
+
+~318M params / 0.62 TFLOPs per image: about 0.3 s on a Tesla P4. FP32 only — the
+P4 has no fast FP16/int8, so the 1.27 GB FP32 export is also the right one.
+Files/download/delete are handled by gallery/ai_models.py.
 """
 import csv
-import glob
-import os
 import threading
 
 from django.conf import settings
 
-REPO = 'deepghs/pixai-tagger-v0.9-onnx'
+from . import ai_models
+
 MODEL_ID = 'pixai'                 # value stored in Post.char_model
 SIZE = 448
-EXPECTED_BYTES = 1_270_000_000     # model.onnx, for the download progress bar
+EXPECTED_BYTES = ai_models.MODELS['pixai']['bytes']
 CHAR_THRESHOLD = getattr(settings, 'AI_CHAR_MODEL_THRESHOLD', 0.85)   # the repo's thresholds.csv value
+GENERAL_THRESHOLD = getattr(settings, 'AI_PIXAI_GENERAL_THRESHOLD', 0.30)
 MAX_CHARACTERS = 12
+MAX_GENERAL = 40
 
 _tags_cache = None
 _tags_lock = threading.Lock()
 
 
-# ── files / download ────────────────────────────────────────────
-def _hub_dir():
-    from huggingface_hub import constants
-    return os.path.join(constants.HF_HUB_CACHE, 'models--' + REPO.replace('/', '--'))
-
-
+# ── files / download (thin wrappers over ai_models) ─────────────
 def _cached(filename):
-    """Local path of a cached repo file, or None. No network access."""
-    from huggingface_hub import try_to_load_from_cache
-    p = try_to_load_from_cache(REPO, filename)
-    return p if isinstance(p, str) and os.path.exists(p) else None
+    return ai_models.cached_file('pixai', filename)
 
 
 def model_ready():
-    return bool(_cached('model.onnx') and _cached('selected_tags.csv'))
+    return ai_models.is_ready('pixai')
 
 
 def model_bytes():
-    p = _cached('model.onnx')
-    try:
-        return os.path.getsize(p) if p else 0
-    except OSError:
-        return 0
-
-
-def download_progress_bytes():
-    """Bytes of an in-flight download (the .incomplete blob), 0 if none."""
-    total = 0
-    for f in glob.glob(os.path.join(_hub_dir(), 'blobs', '*.incomplete')):
-        try:
-            total += os.path.getsize(f)
-        except OSError:
-            pass
-    return total
+    return ai_models.size_bytes('pixai')
 
 
 def download_model(on_progress=None):
-    """Download the model files into the Hugging Face cache (resumable). While
-    it runs, on_progress(done_bytes, total_bytes) is called about every 2 s."""
-    from huggingface_hub import constants, snapshot_download
-    constants.HF_HUB_DOWNLOAD_TIMEOUT = 30    # a stalled connection must error out, not hang for ever
-    constants.HF_HUB_DISABLE_XET = True       # the Xet transfer path stalls/restarts on this network; plain HTTP is reliable
-    err = []
-
-    def _dl():
-        # snapshot_download resumes from the .incomplete blob, so just retry
-        for attempt in range(1, 6):
-            try:
-                snapshot_download(REPO, allow_patterns=['model.onnx', 'selected_tags.csv', 'preprocess.json', 'thresholds.csv'])
-                err.clear()
-                return
-            except BaseException as e:    # noqa: BLE001
-                err[:] = [e]
-                import time as _t
-                _t.sleep(3 * attempt)
-
-    t = threading.Thread(target=_dl, name='booru-pixai-download', daemon=True)
-    t.start()
-    while t.is_alive():
-        t.join(2)
-        if on_progress:
-            on_progress(download_progress_bytes(), EXPECTED_BYTES)
-    if err:
-        raise err[0]
-    if not model_ready():
-        raise RuntimeError('download finished but the model files are not in the cache')
+    ai_models.download('pixai', on_progress)
 
 
 # ── inference ───────────────────────────────────────────────────
@@ -118,14 +74,13 @@ def _preprocess(img):
     return arr.transpose(2, 0, 1)[None, ...].copy()          # 1x3xHxW
 
 
-def run_character_tagger(file_path, thumb_path=''):
-    """[(name, probability), ...] for characters >= CHAR_THRESHOLD, most
-    confident first (at most MAX_CHARACTERS)."""
+def _infer(file_path, thumb_path=''):
+    """(probabilities over all 13,461 tags, names, is_char mask)."""
     import numpy as np
     from . import ai_runtime
     from .utils import load_image_for_tagging
     if not model_ready():
-        raise RuntimeError('character model not downloaded yet')
+        raise RuntimeError('PixAI model not downloaded yet — Settings → AI models')
     img = load_image_for_tagging(file_path, thumb_path)
     model = ai_runtime.get_model(MODEL_ID, _cached('model.onnx'))
     names, is_char = _tags()
@@ -133,6 +88,26 @@ def run_character_tagger(file_path, thumb_path=''):
     out = np.asarray(model.run(['prediction'], {model.get_inputs()[0].name: _preprocess(img)})[0][0], dtype=np.float32)
     if out.min() < 0.0 or out.max() > 1.0:                   # logits -> probabilities
         out = 1.0 / (1.0 + np.exp(-out))
+    return out, names, is_char
+
+
+def run_character_tagger(file_path, thumb_path=''):
+    """[(name, probability), ...] for characters >= CHAR_THRESHOLD, most
+    confident first (at most MAX_CHARACTERS)."""
+    import numpy as np
+    out, names, is_char = _infer(file_path, thumb_path)
     idx = np.nonzero((out >= CHAR_THRESHOLD) & is_char)[0]
     idx = idx[np.argsort(-out[idx])][:MAX_CHARACTERS]
     return [(names[i], float(out[i])) for i in idx]
+
+
+def run_pixai_general(file_path, thumb_path=''):
+    """Same dict shape as the WD14 tagger: {'general': [...], 'character': [...]}.
+    General tags >= GENERAL_THRESHOLD, most confident first (cap MAX_GENERAL)."""
+    import numpy as np
+    out, names, is_char = _infer(file_path, thumb_path)
+    g = np.nonzero((out >= GENERAL_THRESHOLD) & ~is_char)[0]
+    g = g[np.argsort(-out[g])][:MAX_GENERAL]
+    c = np.nonzero((out >= CHAR_THRESHOLD) & is_char)[0]
+    c = c[np.argsort(-out[c])][:MAX_CHARACTERS]
+    return {'general': [names[i] for i in g], 'character': [names[i] for i in c], 'model': MODEL_ID}

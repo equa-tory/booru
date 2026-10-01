@@ -39,12 +39,24 @@
     </div>
 
     <div class="set-sec">
+      <h3>ai models</h3>
+      <div class="set-note" id="aim-runtime">&nbsp;</div>
+      <div class="bk-list" id="aim-list" style="max-height:none;"></div>
+      <div class="set-note" style="margin-top:.6rem;"><b>Main AI tagger</b> — used by "ai auto-tag", "ai tag all" and upload tagging:</div>
+      <div id="aim-main" style="display:flex;flex-direction:column;gap:.25rem;margin:.3rem 0;"></div>
+      <div class="set-note" id="aim-warn" style="color:#e3b341;"></div>
+      <div class="set-actions" style="align-items:center;margin-top:.4rem;">
+        <button class="btn danger" onclick="freeVram()" title="unload every AI model from every worker now, even if a task is using it (running AI tasks are stopped)">&#9167; free VRAM now</button>
+        <button class="btn" onclick="restartWorkers()" title="graceful gunicorn reload — also releases each worker's CUDA context (~120 MiB); running background tasks stop">&#8635; restart workers too</button>
+        <span class="set-note" id="aim-vram" style="margin:0;"></span>
+      </div>
+    </div>
+
+    <div class="set-sec">
       <h3>ai tagging</h3>
-      <div class="set-note" id="ai-runtime">&nbsp;</div>
       <div class="set-note" id="ai-charmodel">&nbsp;</div>
       <label class="set-check" style="margin:.4rem 0;"><input type="checkbox" id="ai-auto" onchange="setAiAuto(this.checked)"> also run the character model whenever a post is AI-tagged</label>
       <div class="set-actions" style="align-items:center;">
-        <button class="btn" id="ai-dl" onclick="downloadCharModel()" style="display:none;">&#11015; download character model (1.3 GB)</button>
         <button class="btn" id="ai-retag" onclick="startCharRetag()" title="adds character tags only; resumable — posts already checked by the character model are skipped">&#9786; re-tag characters</button>
         <label class="set-note" style="margin:0;display:flex;align-items:center;gap:.3rem;">for <input type="number" id="ai-limit" min="0" value="100" style="width:4.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.25rem .35rem;"> posts <span>(0 = all remaining)</span></label>
       </div>
@@ -100,6 +112,7 @@ function openSettings() {
   loadBackupInfo();
   loadDbgStats();
   loadAiInfo();
+  loadAiModels();
 }
 async function loadDbgStats() {
   ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });
@@ -121,17 +134,10 @@ async function recategorizeCharacters() {
 async function loadAiInfo() {
   let d;
   try { d = await (await fetch('/api/ai/info/')).json(); } catch(e) { return; }
-  const r = d.runtime || {};
-  const rt = document.getElementById('ai-runtime');
-  if (!r.ok) rt.textContent = 'onnxruntime not available: ' + (r.error || '');
-  else if (r.cuda_available && r.cuda_enabled) rt.textContent = `onnxruntime ${r.onnxruntime} · GPU (CUDA) enabled — models load on demand and are freed after ${r.idle_unload_seconds}s idle`;
-  else if (r.cuda_available) rt.textContent = `onnxruntime ${r.onnxruntime} · CUDA failed, running on CPU for now (${r.cuda_off_reason})`;
-  else rt.textContent = `onnxruntime ${r.onnxruntime} · CPU only — run ./install.sh --gpu to use the GPU (about 7× faster)`;
   const c = d.char_model, ready = c.ready;
   document.getElementById('ai-charmodel').textContent = ready
     ? `character model: ${c.name} ready (${c.mb} MB, threshold ${c.threshold}) · ${Number(d.pixai_done).toLocaleString()} posts checked, ${Number(d.pixai_todo).toLocaleString()} not yet`
-    : `character model: ${c.name} not downloaded yet`;
-  document.getElementById('ai-dl').style.display = ready ? 'none' : '';
+    : `character model: ${c.name} not downloaded yet (download it above — or just press re-tag, which downloads it first)`;
   document.getElementById('ai-auto').checked = !!d.auto;
 }
 async function setAiAuto(on) {
@@ -140,14 +146,91 @@ async function setAiAuto(on) {
     toast(on ? 'character model will run with AI tagging' : 'character model only runs on demand');
   } catch(e) { toast('could not save', 'err'); }
 }
-async function downloadCharModel() {
-  try {
-    const r = await fetch('/api/ai/char-model/download/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
-    if (!r.ok) { toast('could not start download', 'err'); return; }
-    toast('downloading the character model…');
-    if (typeof pollTasks !== 'undefined') pollTasks(true);
-  } catch(e) { toast('could not start download', 'err'); }
+/* ── AI models: status / download / delete / main selector / free VRAM ── */
+const AIM_DESC = {
+  wd14:   'tags + ratings; what your library was tagged with',
+  pixai:  'newer characters (3,720); 1.27 GB',
+  custom: 'clone of the default + things you taught it',
+};
+async function _aimPost(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body || {})});
+  let d = {}; try { d = await r.json(); } catch(e) {}
+  return {ok: r.ok, status: r.status, d};
 }
+async function loadAiModels() {
+  let d;
+  try { d = await (await fetch('/api/ai/models/')).json(); } catch(e) { return; }
+  const r = d.runtime || {};
+  const rt = document.getElementById('aim-runtime');
+  if (!r.ok) rt.textContent = 'onnxruntime not available: ' + (r.error || '');
+  else if (r.cuda_available && r.cuda_enabled) rt.textContent = `onnxruntime ${r.onnxruntime} · GPU (CUDA) — models load on demand and are freed after ${r.idle_unload_seconds}s idle`;
+  else if (r.cuda_available) rt.textContent = `onnxruntime ${r.onnxruntime} · CUDA failed, on CPU for now (${r.cuda_off_reason})`;
+  else rt.textContent = `onnxruntime ${r.onnxruntime} · CPU only — run ./install.sh --gpu to use the GPU (about 7× faster)`;
+  document.getElementById('aim-vram').textContent = d.gpu ? `${d.gpu.name}: ${Number(d.gpu.used_mb).toLocaleString()} / ${Number(d.gpu.total_mb).toLocaleString()} MiB used` : '';
+
+  const list = document.getElementById('aim-list'); list.textContent = '';
+  d.models.forEach(m => {
+    if (m.key === 'custom' && !m.ready) return;            // "my model" rows come with the clone feature
+    const row = document.createElement('div'); row.className = 'bk-row';
+    const left = document.createElement('div'); left.style.minWidth = '0';
+    const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = m.name;
+    const meta = document.createElement('div'); meta.className = 'bk-meta';
+    meta.textContent = (m.ready ? `on disk · ${m.mb} MB` : `not on disk${m.expected_mb ? ' · ' + m.expected_mb + ' MB' : ''}`) + ' · ' + (AIM_DESC[m.key] || '');
+    left.append(nm, meta);
+    const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:.3rem;flex-shrink:0;';
+    if (!m.ready && m.key !== 'custom') {
+      const b = document.createElement('button'); b.className = 'btn'; b.textContent = '⬇ download'; b.onclick = () => downloadModel(m.key); btns.append(b);
+    }
+    if (m.ready) {
+      const b = document.createElement('button'); b.className = 'btn danger'; b.textContent = 'delete'; b.onclick = () => deleteModel(m.key, m.name, m.mb); btns.append(b);
+    }
+    row.append(left, btns); list.appendChild(row);
+  });
+
+  const main = document.getElementById('aim-main'); main.textContent = '';
+  const labels = {wd14: 'Default WD14', pixai: 'PixAI v0.9', custom: 'My model'};
+  d.models.forEach(m => {
+    const lab = document.createElement('label'); lab.className = 'set-check';
+    const inp = document.createElement('input'); inp.type = 'radio'; inp.name = 'aim-main'; inp.value = m.key;
+    inp.checked = d.main === m.key; inp.disabled = !m.ready;
+    inp.onchange = () => setMainModel(m.key);
+    const sp = document.createElement('span'); sp.textContent = labels[m.key] + (m.ready ? '' : ' (not on disk)');
+    lab.append(inp, sp); main.appendChild(lab);
+  });
+  document.getElementById('aim-warn').textContent = d.main === 'pixai'
+    ? 'PixAI as the main tagger: no rating tags (explicit/questionable…), a different tag vocabulary than the rest of your library, and ~2.4× slower than the default.' : '';
+}
+async function downloadModel(key) {
+  const {ok} = await _aimPost(`/api/ai/models/${key}/download/`);
+  if (!ok) { toast('could not start download', 'err'); return; }
+  toast('downloading…'); if (typeof pollTasks !== 'undefined') pollTasks(true);
+}
+async function deleteModel(key, name, mb) {
+  if (!confirm(`Delete "${name}" from disk (${mb} MB)?\n\nIt has to be downloaded/created again before it can be used.`)) return;
+  const {ok, d} = await _aimPost(`/api/ai/models/${key}/delete/`);
+  toast(ok ? `deleted — ${d.freed_mb} MB freed` : (d.error || 'could not delete'), ok ? '' : 'err');
+  loadAiModels(); loadAiInfo();
+}
+async function setMainModel(key) {
+  const {ok, d} = await _aimPost('/api/ai/main/', {model: key});
+  if (!ok) toast(d.error || 'could not switch', 'err'); else toast('main AI tagger: ' + key);
+  loadAiModels();
+}
+async function freeVram() {
+  if (!confirm('Unload every AI model from every worker right now?\n\nRunning AI tasks (AI tag all, character re-tag…) are stopped — they would just load the model again. Models load again automatically on next use.')) return;
+  const {ok, d} = await _aimPost('/api/ai/free-vram/');
+  if (!ok) { toast('failed', 'err'); return; }
+  toast(`unloading in all workers… (${d.tasks_stopped} task(s) stopped)`);
+  setTimeout(loadAiModels, 5000);
+}
+async function restartWorkers() {
+  if (!confirm('Gracefully restart the gunicorn workers?\n\nThis also releases the CUDA context each worker keeps (~120 MiB). Running background tasks stop with their worker. The page reloads in a few seconds.')) return;
+  const {ok, d} = await _aimPost('/api/ai/restart-workers/');
+  if (!ok) { toast(d.error || 'failed', 'err'); return; }
+  toast('restarting workers…'); setTimeout(() => location.reload(), 8000);
+}
+// refresh the panel when a background task (e.g. a model download) finishes
+function onTasksIdle() { if (document.getElementById('settings-modal').classList.contains('open')) { loadAiModels(); loadAiInfo(); } }
 async function startCharRetag() {
   const limit = parseInt(document.getElementById('ai-limit').value || '0', 10) || 0;
   if (!confirm(`Run the character model on ${limit ? 'up to ' + limit : 'ALL remaining'} post(s), newest first?\n\nIt only adds character tags (nothing is removed) and you can stop it any time; the next run continues where it stopped.`)) return;

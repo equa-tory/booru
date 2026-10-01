@@ -205,3 +205,6 @@ booru-main/
 .DS_Store
 Thumbs.db
 *.swp
+
+# local AI models ("my model" clone, unload signal)
+ai_models/
