@@ -222,6 +222,16 @@ class Task(models.Model):
     class Meta:
         ordering = ['-started_at']
 
+    def save(self, *args, **kwargs):
+        # Progress is saved with save(update_fields=[...]), which Django does NOT
+        # treat as touching an auto_now field — so updated_at never moved while a
+        # task ran. It doubles as the heartbeat the stale-task sweep and the stop
+        # button rely on, so always include it.
+        uf = kwargs.get('update_fields')
+        if uf is not None and 'updated_at' not in uf:
+            kwargs['update_fields'] = [*uf, 'updated_at']
+        super().save(*args, **kwargs)
+
     @property
     def elapsed(self):
         end = self.finished_at or timezone.now()

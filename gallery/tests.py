@@ -267,3 +267,42 @@ class BackupApiTests(TestCase):
         r = self.client.post('/api/backup/restore/', {'name': 'booru-20250101-000000.sqlite3'},
                              content_type='application/json')
         self.assertEqual(r.status_code, 400)       # empty file isn't a booru DB
+
+
+class TaskHeartbeatTests(TestCase):
+    def test_progress_save_bumps_updated_at(self):
+        t = Task.objects.create(kind='scan')
+        old = timezone.now() - timezone.timedelta(hours=1)
+        Task.objects.filter(pk=t.pk).update(updated_at=old)
+        t.done = 5
+        t.save(update_fields=['done'])          # how every work fn reports progress
+        t.refresh_from_db()
+        self.assertGreater(t.updated_at, old + timezone.timedelta(minutes=30))
+
+    def test_live_long_running_task_is_not_swept_or_force_cancelled(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        t = Task.objects.create(kind='scan')
+        Task.objects.filter(pk=t.pk).update(started_at=timezone.now() - timezone.timedelta(days=1))
+        t.done = 1; t.save(update_fields=['done'])      # heartbeat just now
+        self.client.get('/api/tasks/')
+        self.client.post(f'/api/tasks/{t.pk}/cancel/')
+        t.refresh_from_db()
+        self.assertEqual(t.status, 'running')           # a day old, but alive
+        self.assertTrue(t.cancel_requested)
+
+    def test_second_scan_tap_reuses_the_running_scan(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        with mock.patch.object(views.threading, 'Thread') as th:
+            a = self.client.post('/api/scan-bg/').json()['task_id']
+            b = self.client.post('/api/scan-bg/').json()['task_id']
+        self.assertEqual(a, b)
+        self.assertEqual(Task.objects.filter(kind='scan').count(), 1)
+        self.assertEqual(th.call_count, 1)              # one worker thread, not two
+
+    def test_dead_scan_does_not_block_a_new_one(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        dead = Task.objects.create(kind='scan')
+        Task.objects.filter(pk=dead.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=20))
+        with mock.patch.object(views.threading, 'Thread'):
+            b = self.client.post('/api/scan-bg/').json()['task_id']
+        self.assertNotEqual(b, dead.pk)

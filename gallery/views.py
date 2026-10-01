@@ -581,11 +581,20 @@ import traceback
 from django.utils import timezone
 
 
-def _start_task(kind, fn, total=0, message=''):
+def _start_task(kind, fn, total=0, message='', exclusive=False):
     """Create a Task row and run `fn(task)` in a background thread so the work
     survives the page being closed and its progress is visible to every worker
-    (state lives in the DB)."""
-    task = Task.objects.create(kind=kind, total=total, message=message)
+    (state lives in the DB). With exclusive=True, a live task of the same kind
+    is returned instead of starting a second one (tapping "scan inbox" twice
+    used to run two scans over the same files at once)."""
+    from django.db import transaction
+    with transaction.atomic():   # IMMEDIATE write lock: check+create can't race across workers
+        if exclusive:
+            live = Task.objects.filter(kind=kind, status='running',
+                                       updated_at__gte=timezone.now() - TASK_STALE_CANCEL).first()
+            if live:
+                return live
+        task = Task.objects.create(kind=kind, total=total, message=message)
     tid = task.id
 
     def runner():
@@ -624,7 +633,7 @@ def _start_task(kind, fn, total=0, message=''):
     return task
 
 
-TASK_STALE_CANCEL = timezone.timedelta(minutes=3)    # no progress this long → a stop request force-ends it
+TASK_STALE_CANCEL = timezone.timedelta(minutes=5)    # no progress this long → a stop request force-ends it
 TASK_STALE_SWEEP  = timezone.timedelta(minutes=30)   # no progress this long → assume the worker died
 
 
@@ -788,7 +797,7 @@ def _do_scan(task):
 
 @require_POST
 def scan_bg(request):
-    return JsonResponse({'task_id': _start_task('scan', _do_scan, message='scan starting…').id})
+    return JsonResponse({'task_id': _start_task('scan', _do_scan, message='scan starting…', exclusive=True).id})
 
 
 def _merge_one_group(group):
@@ -869,7 +878,7 @@ def ai_tag_all_bg(request):
             task.message = f'tagged {i + 1}/{len(posts)} post(s)'
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
-    return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…').id})
+    return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…', exclusive=True).id})
 
 
 @require_POST
@@ -892,7 +901,7 @@ def sound_tag_all_bg(request):
             task.message = f'{found} with sound / {i + 1} checked'
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
-    return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…').id})
+    return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…', exclusive=True).id})
 
 
 @require_POST
@@ -942,7 +951,7 @@ def rebase_paths_bg(request):
         task.message = (f'{converted} converted, {already_relative} already relative, '
                          f'{left_absolute} left absolute (outside MEDIA_ROOT)')
         task.save(update_fields=['message'])
-    return JsonResponse({'task_id': _start_task('rebase_paths', work, message='rebasing paths…').id})
+    return JsonResponse({'task_id': _start_task('rebase_paths', work, message='rebasing paths…', exclusive=True).id})
 
 
 def _dupes_cache_path():
@@ -973,7 +982,7 @@ def dupes_scan(request):
     frontend polls the existing /api/tasks/ endpoint for progress, then fetches
     the cached result from dupes_result once the task finishes."""
     return JsonResponse({'task_id': _start_task('dupes', _do_dupes,
-                                                 message='scanning for duplicates…').id})
+                                                 message='scanning for duplicates…', exclusive=True).id})
 
 
 def dupes_result(request):
@@ -2094,7 +2103,7 @@ def backup_config_save(request):
 
 @require_POST
 def backup_run(request):
-    return JsonResponse({'task_id': _start_task('backup', _backup.run_backup, message='backing up…').id})
+    return JsonResponse({'task_id': _start_task('backup', _backup.run_backup, message='backing up…', exclusive=True).id})
 
 
 def _start_restore(path, label):
