@@ -210,7 +210,7 @@ def run_backup(task=None):
         need = os.path.getsize(db_path())
         if shutil.disk_usage(d).free < need * 1.1:
             raise RuntimeError(f'not enough free space in {d}')
-        name = f'{AUTO_PREFIX}{time.strftime("%Y%m%d-%H%M%S")}.sqlite3'
+        name = f'{AUTO_PREFIX}{time.strftime("%Y%m%d-%H%M%S", time.gmtime())}.sqlite3'   # UTC: names must sort chronologically (rotation relies on it)
         if task is not None:
             task.message = f'writing {name}…'; task.save(update_fields=['message'])
         live = sqlite3.connect(db_path(), timeout=30)
