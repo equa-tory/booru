@@ -130,6 +130,28 @@ def compute_phash(path, hash_size=8):
         return ''
 
 
+def load_image_for_tagging(file_path, thumb_path=''):
+    """Open an image as RGB (transparency flattened onto white) for the AI
+    taggers. Videos/PDFs — or any file PIL cannot open — use the generated
+    thumbnail instead, so those posts can be tagged from their preview frame."""
+    def _load(path):
+        img = Image.open(path).convert('RGBA')
+        bg = Image.new('RGBA', img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        return bg.convert('RGB')
+
+    ext = os.path.splitext(file_path)[1].lower()
+    unopenable = ext in {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.m4a', '.3gp', '.pdf'}
+    if unopenable and thumb_path and os.path.exists(thumb_path):
+        return _load(thumb_path)
+    try:
+        return _load(file_path)
+    except Exception:
+        if thumb_path and os.path.exists(thumb_path):
+            return _load(thumb_path)
+        raise
+
+
 def phash_distance(a, b):
     if not a or not b or len(a) != len(b): return 999
     return bin(int(a, 16) ^ int(b, 16)).count('1')

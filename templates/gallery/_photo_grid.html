@@ -16,7 +16,7 @@
   <div class="dbg">
     <span class="d-id">#{{ post.pk }}</span>
     <span class="d-ai {% if post.ai_tagged %}on{% else %}off{% endif %}">AI {% if post.ai_tagged %}&#10003;{% else %}&#10007;{% endif %}</span>
-    <span class="d-ch {% if post.char_tagged %}on{% else %}off{% endif %}">CH {% if post.char_tagged %}&#10003;{% else %}&#10007;{% endif %}</span>
+    <span class="d-ch {% if post.char_tagged %}on{% if post.char_model == 'pixai' %} px{% endif %}{% else %}off{% endif %}">CH {% if post.char_model == 'pixai' %}px &#10003;{% elif post.char_tagged %}wd &#10003;{% else %}&#10007;{% endif %}</span>
     <span class="d-folder {% if fl %}on{% else %}off{% endif %}">{% if fl %}&#128193; {{ fl.0.name }}{% if fl|length > 1 %} +{{ fl|length|add:"-1" }}{% endif %}{% else %}no folder{% endif %}</span>
   </div>
   {% endwith %}

@@ -29,6 +29,8 @@ class Post(models.Model):
     # that have ai_tagged=True but char_tagged=False — the candidates for a
     # future characters-only re-tag.
     char_tagged = models.BooleanField(default=False)
+    # which model last tagged this post's characters: '' (old tagger / never), 'wd14', 'pixai'
+    char_model  = models.CharField(max_length=16, blank=True, default='')
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
     rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)

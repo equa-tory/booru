@@ -15,6 +15,7 @@ from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
                     make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
+from . import char_tagger
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -389,6 +390,7 @@ def posts_json(request):
             'has_gif':    post.has_gif,
             'ai':         post.ai_tagged,
             'chars':      post.char_tagged,
+            'char_model': post.char_model,
             'folders':    [f.name for f in post.folders.all()],   # prefetched
             'url':        f'/post/{post.pk}/{suffix}',
         })
@@ -1388,28 +1390,9 @@ def run_ai_tagger(file_path, thumb_path=''):
     """
     from PIL import Image
     import numpy as np
+    from .utils import load_image_for_tagging
 
-    def _load(path):
-        img = Image.open(path).convert('RGBA')
-        bg  = Image.new('RGBA', img.size, (255, 255, 255))
-        bg.paste(img, mask=img.split()[3])
-        return bg.convert('RGB')
-
-    img = None
-    ext = os.path.splitext(file_path)[1].lower()
-    is_unopenable = ext in {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v',
-                            '.m4a', '.3gp', '.pdf'}
-    # For known non-image formats, go straight to the thumbnail.
-    if is_unopenable and thumb_path and os.path.exists(thumb_path):
-        img = _load(thumb_path)
-    else:
-        try:
-            img = _load(file_path)
-        except Exception:
-            if thumb_path and os.path.exists(thumb_path):
-                img = _load(thumb_path)
-            else:
-                raise
+    img = load_image_for_tagging(file_path, thumb_path)
 
     model, tags_list, is_char = _get_wd14_model()
     target = 448
@@ -1445,11 +1428,43 @@ def apply_ai_tags(post, cover=None):
         Tag.objects.filter(pk__in=[t.pk for t in touched], category='ai').update(category='character')
     post.ai_tagged = True
     post.char_tagged = True
-    post.save(update_fields=['ai_tagged', 'char_tagged'])
+    if post.char_model != char_tagger.MODEL_ID:      # never downgrade a PixAI result
+        post.char_model = 'wd14'
+    post.save(update_fields=['ai_tagged', 'char_tagged', 'char_model'])
+    if _pref('aiCharAuto') and char_tagger.model_ready():
+        try:
+            res['character'] = list(dict.fromkeys(res['character'] + apply_character_model(post, cover)))
+        except Exception as e:
+            print(f'character model error post {post.id}: {e}')
     return res
 
 
-_wd14_cache = None
+def _pref(key, default=None):
+    try:
+        with open(_prefs_path()) as f:
+            return json.load(f).get(key, default)
+    except Exception:
+        return default
+
+
+def apply_character_model(post, cover=None):
+    """Run the PixAI character model on the post's cover and ADD its character
+    tags (category 'character'; nothing is removed). Marks the post
+    char_model='pixai'. Returns the character names found (maybe empty), or
+    None when the post has no image."""
+    cover = cover or post.images.order_by('order', 'id').first()
+    if not cover:
+        return None
+    names = [n for n, _p in char_tagger.run_character_tagger(cover.file_path, cover.thumb_path)]
+    if names:
+        touched = add_tags_to_post(post, names, category='character')
+        Tag.objects.filter(pk__in=[t.pk for t in touched], category='ai').update(category='character')
+    post.char_tagged = True
+    post.char_model = char_tagger.MODEL_ID
+    post.save(update_fields=['char_tagged', 'char_model'])
+    return names
+
+
 _wd14_tags_cache = None
 
 
@@ -1469,17 +1484,19 @@ def _wd14_tags():
     return _wd14_tags_cache
 
 
+_wd14_path = None
+
+
 def _get_wd14_model():
-    global _wd14_cache
-    if _wd14_cache: return _wd14_cache
-    from huggingface_hub import hf_hub_download
-    import onnxruntime as ort
-    model_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'model.onnx')
-    session = ort.InferenceSession(model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    """(model, names, is_char). `model` is a ManagedModel (gallery/ai_runtime.py):
+    CUDA when available, CPU fallback, unloaded again when idle."""
+    global _wd14_path
+    from . import ai_runtime
+    if _wd14_path is None:
+        from huggingface_hub import hf_hub_download
+        _wd14_path = hf_hub_download('SmilingWolf/wd-vit-tagger-v3', 'model.onnx')
     names, is_char = _wd14_tags()
-    _wd14_cache = (session, names, is_char)
-    return _wd14_cache
+    return ai_runtime.get_model('wd14', _wd14_path), names, is_char
 
 
 # ── Tag helpers ────────────────────────────────────────────────
@@ -2163,6 +2180,101 @@ def set_pref(request):
     return JsonResponse({'ok': True})
 
 
+# ── Character model (PixAI) + AI runtime ────────────────────────
+def ai_info(request):
+    """State for the settings panel's AI section. Loads no model."""
+    from . import ai_runtime
+    ready = char_tagger.model_ready()
+    return JsonResponse({
+        'runtime': ai_runtime.runtime_info(),
+        'char_model': {
+            'name': 'PixAI tagger v0.9', 'ready': ready,
+            'mb': round(char_tagger.model_bytes() / 1048576) if ready else 0,
+            'threshold': char_tagger.CHAR_THRESHOLD,
+        },
+        'auto': bool(_pref('aiCharAuto')),
+        'pixai_done': Post.objects.filter(char_model=char_tagger.MODEL_ID).count(),
+        'pixai_todo': Post.objects.exclude(char_model=char_tagger.MODEL_ID).filter(images__isnull=False).distinct().count(),
+    })
+
+
+def _ensure_char_model(task):
+    """Download the character model if missing, reporting MB to the task."""
+    if char_tagger.model_ready():
+        return
+    task.message = 'downloading character model (1.3 GB)…'
+    task.total = round(char_tagger.EXPECTED_BYTES / 1048576)
+    task.save(update_fields=['message', 'total'])
+
+    def prog(done, total):
+        _throttled_save(task, interval=2, done=min(round(done / 1048576), task.total))
+
+    char_tagger.download_model(prog)
+    task.done = 0
+    task.save(update_fields=['done'])
+
+
+@require_POST
+def char_model_download(request):
+    def work(task):
+        _ensure_char_model(task)
+        task.message = 'character model ready'
+        task.save(update_fields=['message'])
+    return JsonResponse({'task_id': _start_task('model_download', work, message='downloading…', exclusive=True).id})
+
+
+@require_POST
+def post_tag_characters(request, pk):
+    """Run the second (PixAI) character model on one post."""
+    post = get_object_or_404(Post, pk=pk)
+    if not char_tagger.model_ready():
+        return JsonResponse({'ok': False, 'error': 'character model not downloaded yet — settings → AI tagging'}, status=409)
+    try:
+        names = apply_character_model(post)
+    except Exception as e:
+        return JsonResponse({'ok': False, 'error': str(e)}, status=500)
+    if names is None:
+        return JsonResponse({'ok': False, 'error': 'no images'}, status=400)
+    return JsonResponse({'ok': True, 'characters': names})
+
+
+@require_POST
+def char_retag_start(request):
+    """Re-tag characters with the PixAI model for up to `limit` posts that it
+    has not checked yet (newest first; 0 = all). Resumable: each processed post
+    is marked char_model='pixai', so the next run continues where this one
+    stopped. Adds tags only — nothing is removed."""
+    try:
+        limit = max(0, int(json.loads(request.body or '{}').get('limit') or 0))
+    except (TypeError, ValueError):
+        limit = 0
+
+    def work(task):
+        import time as _t
+        _ensure_char_model(task)
+        qs = (Post.objects.exclude(char_model=char_tagger.MODEL_ID).filter(images__isnull=False)
+              .distinct().order_by('-id').values_list('id', flat=True))
+        ids = list(qs[:limit] if limit else qs)
+        task.total = len(ids); task.done = 0
+        task.message = f'checking {len(ids)} post(s)…'
+        task.save(update_fields=['total', 'done', 'message'])
+        found = errors = 0
+        for i, pid in enumerate(ids):
+            check_cancel(task)
+            try:
+                names = apply_character_model(Post.objects.get(pk=pid))
+                found += len(names or [])
+            except Exception as e:
+                errors += 1
+                print(f'character re-tag error post {pid}: {e}')
+            _throttled_save(task, done=i + 1,
+                            message=f'{i + 1}/{len(ids)} · {found} character tag(s) found' + (f' · {errors} error(s)' if errors else ''))
+            _t.sleep(0)
+        task.save(update_fields=['done', 'message'])
+
+    return JsonResponse({'task_id': _start_task('char_retag', work, message='starting…', exclusive=True).id})
+
+
 # ── Debug overlay helpers ───────────────────────────────────────
 def debug_stats(request):
     """Counters for the settings panel's debug section."""
@@ -2170,6 +2282,7 @@ def debug_stats(request):
         'posts': Post.objects.count(),
         'ai_tagged': Post.objects.filter(ai_tagged=True).count(),
         'char_tagged': Post.objects.filter(char_tagged=True).count(),
+        'pixai': Post.objects.filter(char_model='pixai').count(),
         'ai_not_char': Post.objects.filter(ai_tagged=True, char_tagged=False).count(),
         'in_folder': Post.objects.filter(folders__isnull=False).distinct().count(),
         'character_tags': Tag.objects.filter(category='character').count(),

@@ -6,6 +6,7 @@
 #   ./install.sh                  interactive
 #   ./install.sh --yes            no questions (use env vars below / defaults)
 #   ./install.sh --no-service     everything except the systemd unit
+#   ./install.sh --gpu            also switch the AI taggers to the NVIDIA GPU (onnxruntime-gpu + CUDA 12 libs, ~3 GB)
 #   ./install.sh --print-unit     just print the rendered unit and exit
 #
 # Env overrides: MEDIA_ROOT  GALLERY_PASSWORD  BACKUP_DIR  PORT
@@ -14,13 +15,14 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
-YES=0; SERVICE=1; PRINT_UNIT=0
+YES=0; SERVICE=1; PRINT_UNIT=0; GPU=0
 for a in "$@"; do
   case "$a" in
     --yes|-y) YES=1 ;;
     --no-service) SERVICE=0 ;;
+    --gpu) GPU=1 ;;
     --print-unit) PRINT_UNIT=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
@@ -36,6 +38,11 @@ ask()  { # ask VAR "prompt" default  — keeps an env-provided value, prompts on
   if [[ $YES -eq 1 || ! -t 0 ]]; then printf -v "$var" '%s' "$def"; return; fi
   read -r -p "$prompt [$def]: " reply || true
   printf -v "$var" '%s' "${reply:-$def}"
+}
+pip_install() {  # the machine's configured pip index (e.g. a local mirror) may be down/empty — retry against PyPI
+  venv/bin/pip install --quiet "$@" && return 0
+  warn "pip install failed with the configured index — retrying against pypi.org"
+  venv/bin/pip install --quiet --index-url https://pypi.org/simple "$@"
 }
 as_root() { if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi; }
 
@@ -59,7 +66,20 @@ done
 if [[ ! -x venv/bin/python ]]; then say "creating virtualenv"; python3 -m venv venv; fi
 say "installing dependencies (requirements.txt)"
 venv/bin/pip install --quiet --upgrade pip || warn "could not upgrade pip (offline?) — continuing"
-venv/bin/pip install --quiet -r requirements.txt
+pip_install -r requirements.txt
+
+if [[ $GPU -eq 1 ]]; then
+  command -v nvidia-smi >/dev/null || warn "nvidia-smi not found — is the NVIDIA driver installed? continuing anyway"
+  say "installing GPU runtime (replaces CPU onnxruntime; large download)"
+  venv/bin/pip uninstall -y --quiet onnxruntime >/dev/null 2>&1 || true
+  pip_install -r requirements-gpu.txt
+  venv/bin/python - <<'PY' || warn "CUDA provider not available — the taggers will keep using the CPU"
+import onnxruntime as ort
+ort.preload_dlls()
+assert 'CUDAExecutionProvider' in ort.get_available_providers(), ort.get_available_providers()
+print('   onnxruntime', ort.__version__, '- CUDA provider available')
+PY
+fi
 
 # ── local settings (untracked: password, media + backup folders) ──
 LOCAL=booru/local_settings.py

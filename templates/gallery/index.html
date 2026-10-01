@@ -547,7 +547,7 @@ function makeCard(post) {
   const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   html += `<div class="dbg"><span class="d-id">#${post.id}</span>`
         + `<span class="d-ai ${post.ai ? 'on' : 'off'}">AI ${post.ai ? '&#10003;' : '&#10007;'}</span>`
-        + `<span class="d-ch ${post.chars ? 'on' : 'off'}">CH ${post.chars ? '&#10003;' : '&#10007;'}</span>`
+        + `<span class="d-ch ${post.chars ? 'on' + (post.char_model === 'pixai' ? ' px' : '') : 'off'}">CH ${post.char_model === 'pixai' ? 'px &#10003;' : (post.chars ? 'wd &#10003;' : '&#10007;')}</span>`
         + `<span class="d-folder ${fl.length ? 'on' : 'off'}">${fl.length ? '&#128193; ' + esc(fl[0]) + (fl.length > 1 ? ' +' + (fl.length - 1) : '') : 'no folder'}</span></div>`;
   if (post.img_count > 1) html += `<div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">${post.img_count}</div>`;
   if (post.is_video) html += `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;"><div style="background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff;">&#9654;</div></div>`;

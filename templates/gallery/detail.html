@@ -582,6 +582,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <!-- Actions -->
     <div class="info-section">
       <button class="btn" onclick="aiTag()" style="width:100%;justify-content:center;margin-bottom:.4rem;" id="ai-btn">&#10022; ai auto-tag</button>
+      <button class="btn" onclick="tagCharacters()" style="width:100%;justify-content:center;margin-bottom:.4rem;" id="chars-btn" title="second opinion: runs the PixAI character model on this post and adds the characters it finds">&#9786; tag characters</button>
 
       <div style="display:flex;gap:.4rem;margin-bottom:.5rem;">
         <button class="btn" style="flex:1;justify-content:center;font-size:.78rem;" onclick="findSimilar()" id="similar-btn" title="open the gallery filtered to visually + tag-similar posts">&#9783; find similar</button>
@@ -2390,6 +2391,18 @@ async function aiTag() {
   btn.disabled=false; btn.textContent='ai auto-tag';
   if(d.ok){toast(`added ${d.tags.length} tag(s)` + ((d.characters||[]).length ? ` incl. ${d.characters.length} character(s)` : ''));location.reload();}
   else toast('ai error: '+d.error,'err');
+}
+
+async function tagCharacters() {
+  const btn=document.getElementById('chars-btn'); btn.disabled=true; btn.textContent='tagging...';
+  startProgress();
+  try {
+    const r=await fetch(`/api/post/${POST_ID}/tag-characters/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}});
+    const d=await r.json();
+    doneProgress();
+    if(d.ok){toast(d.characters.length ? `characters: ${d.characters.join(', ')}` : 'no characters recognised');location.reload();}
+    else {toast(d.error||'error','err'); btn.disabled=false; btn.innerHTML='&#9786; tag characters';}
+  } catch(e) { doneProgress(); toast('could not tag characters','err'); btn.disabled=false; btn.innerHTML='&#9786; tag characters'; }
 }
 
 /* ── Find similar posts (visual pHash + tag overlap) ─────────── */

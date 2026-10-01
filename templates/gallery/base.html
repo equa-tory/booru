@@ -140,6 +140,7 @@ body.notif-off #task-panel { display:none; }
 body.dbg-id .photo-card .dbg .d-id, body.dbg-ai .photo-card .dbg .d-ai, body.dbg-ch .photo-card .dbg .d-ch, body.dbg-folder .photo-card .dbg .d-folder { display:block; }
 .dbg .d-id { color:#cbd5e1; }
 .dbg .d-ai.on, .dbg .d-ch.on { color:#3fb950; border-color:#3fb950; }
+.dbg .d-ch.px { color:#22d3ee; border-color:#22d3ee; }
 .dbg .d-ai.off { color:#f85149; border-color:#f85149; }
 .dbg .d-ch.off { color:#e3b341; border-color:#e3b341; }
 .dbg .d-folder.on { color:var(--accent); border-color:var(--accent); }
@@ -1006,7 +1007,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading character model', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;

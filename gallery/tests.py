@@ -477,3 +477,196 @@ class TemplateJsSyntaxTests(TestCase):
     def test_post_detail(self):
         post = Post.objects.create()
         self._check(f'/post/{post.pk}/')
+
+
+# ── AI runtime (CUDA/CPU fallback, idle unload) ─────────────────
+import types
+
+from . import ai_runtime, char_tagger
+
+
+class _Sess:
+    def __init__(self, provider, fail=False):
+        self.provider, self.fail, self.calls = provider, fail, 0
+    def get_inputs(self): return [_FakeInput()]
+    def run(self, _o, _f):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError('CUDNN_FE failure 11')
+        return [np.array([[0.1, 0.9]], dtype=np.float32)]
+
+
+class AiRuntimeTests(TestCase):
+    def setUp(self):
+        ai_runtime._models.clear()
+        ai_runtime._cuda_off_until = 0.0
+        self.addCleanup(ai_runtime._models.clear)
+        self.addCleanup(setattr, ai_runtime, '_cuda_off_until', 0.0)
+        p = mock.patch.object(ai_runtime, '_start_reaper'); p.start(); self.addCleanup(p.stop)
+
+    def test_cuda_failure_falls_back_to_cpu_and_keeps_working(self):
+        made = []
+        def fake_make(path, use_cuda):
+            s = _Sess('CUDA', fail=True) if use_cuda else _Sess('CPU')
+            made.append((use_cuda, s)); return s, s.provider
+        with mock.patch.object(ai_runtime, '_make_session', side_effect=fake_make):
+            m = ai_runtime.get_model('t', '/x.onnx')
+            out = m.run(None, {'input': 1})
+            self.assertAlmostEqual(float(out[0][0][1]), 0.9, places=5)   # result came from the CPU retry
+            self.assertEqual(m.provider, 'CPU')
+            self.assertFalse(ai_runtime.cuda_enabled())              # CUDA parked for a while
+            self.assertEqual([c for c, _ in made], [True, False])
+            m.run(None, {'input': 1})
+            self.assertEqual(len(made), 2)                           # no re-creation on the next call
+
+    def test_cpu_error_is_not_swallowed(self):
+        with mock.patch.object(ai_runtime, '_make_session', return_value=(_Sess('CPU', fail=True), 'CPU')):
+            with self.assertRaises(RuntimeError):
+                ai_runtime.get_model('t', '/x.onnx').run(None, {})
+
+    def test_idle_models_are_unloaded_and_reloaded_on_demand(self):
+        with mock.patch.object(ai_runtime, '_make_session', side_effect=lambda p, c: (_Sess('CPU'), 'CPU')) as mk:
+            m = ai_runtime.get_model('t', '/x.onnx')
+            m.run(None, {})
+            self.assertEqual(ai_runtime.unload_idle(ttl=10_000), 0)  # recently used: stays
+            self.assertEqual(ai_runtime.unload_idle(ttl=0), 1)       # idle: freed
+            self.assertIsNone(m._sess)
+            m.run(None, {})
+            self.assertEqual(mk.call_count, 2)                       # transparently reloaded
+
+    def test_runtime_info_does_not_load_models(self):
+        info = ai_runtime.runtime_info()
+        self.assertIn('cuda_available', info)
+        self.assertEqual(info['loaded_in_this_worker'], {})
+
+
+class CharTaggerTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.img = os.path.join(self.tmp, 'a.png')
+        Image.new('RGBA', (60, 30), (255, 0, 0, 128)).save(self.img)
+        # 5 general + 4 characters; character tags are interleaved, like the real csv
+        self.names = ['1girl', 'char_a', 'solo', 'char_b', 'smile', 'char_c', 'x', 'char_d', 'y']
+        self.mask = np.array([n.startswith('char_') for n in self.names])
+
+    def _patch(self, probs):
+        model = _FakeModel(probs)
+        ps = [mock.patch.object(char_tagger, 'model_ready', return_value=True),
+              mock.patch.object(char_tagger, '_cached', return_value='/fake/model.onnx'),
+              mock.patch.object(char_tagger, '_tags', return_value=(self.names, self.mask)),
+              mock.patch.object(ai_runtime, 'get_model', return_value=model)]
+        for p in ps: p.start(); self.addCleanup(p.stop)
+        return model
+
+    def test_preprocess_matches_preprocess_json(self):
+        arr = char_tagger._preprocess(Image.new('RGB', (100, 40), (255, 0, 128)))
+        self.assertEqual(arr.shape, (1, 3, 448, 448))                # squashed to 448x448, NCHW
+        self.assertAlmostEqual(float(arr[0, 0, 0, 0]), 1.0, places=4)    # R=255 -> +1
+        self.assertAlmostEqual(float(arr[0, 1, 0, 0]), -1.0, places=4)   # G=0   -> -1
+
+    def test_only_characters_above_threshold_most_confident_first(self):
+        self._patch([0.99, 0.90, 0.99, 0.95, 0.99, 0.50, 0.99, 0.86, 0.1])
+        got = char_tagger.run_character_tagger(self.img)
+        self.assertEqual([n for n, _ in got], ['char_b', 'char_a', 'char_d'])    # char_c 0.5 < 0.85; no general tags
+        self.assertAlmostEqual(got[0][1], 0.95, places=5)
+
+    def test_logits_are_converted_to_probabilities(self):
+        self._patch([5, 4.0, 5, -3.0, 5, 0.0, 5, 2.0, -5])           # logits
+        got = [n for n, _ in char_tagger.run_character_tagger(self.img)]
+        self.assertEqual(got, ['char_a', 'char_d'])                  # sigmoid(4)=.98, sigmoid(2)=.88 pass 0.85
+
+    def test_refuses_when_model_missing(self):
+        with mock.patch.object(char_tagger, 'model_ready', return_value=False):
+            with self.assertRaises(RuntimeError):
+                char_tagger.run_character_tagger(self.img)
+
+    # -- views
+    def _post_with_image(self):
+        post = Post.objects.create()
+        path = os.path.join(self.tmp, f'img{post.pk}.png')       # rel_path is unique per photo
+        shutil.copy(self.img, path)
+        ph = Photo(post=post, order=0); ph.file_path = path; ph.thumb_path = ''; ph.save()
+        return post
+
+    def test_post_endpoint_needs_downloaded_model(self):
+        post = self._post_with_image()
+        with mock.patch.object(char_tagger, 'model_ready', return_value=False):
+            r = self.client.post(f'/api/post/{post.pk}/tag-characters/')
+        self.assertEqual(r.status_code, 409)
+
+    def test_post_endpoint_adds_characters_and_marks_pixai(self):
+        post = self._post_with_image()
+        Tag.objects.create(name='char_a', category='ai')              # old-pipeline tag gets promoted
+        with mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', return_value=[('char_a', .9), ('char_z', .8)]):
+            d = self.client.post(f'/api/post/{post.pk}/tag-characters/').json()
+        self.assertEqual(d['characters'], ['char_a', 'char_z'])
+        post.refresh_from_db()
+        self.assertEqual((post.char_tagged, post.char_model), (True, 'pixai'))
+        self.assertEqual(Tag.objects.get(name='char_a').category, 'character')
+        self.assertEqual(Tag.objects.get(name='char_z').category, 'character')
+
+    def test_wd14_tagging_never_downgrades_a_pixai_post(self):
+        post = self._post_with_image()
+        Post.objects.filter(pk=post.pk).update(char_model='pixai')
+        post.refresh_from_db()
+        probs = {'rating_a': 0.9}
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14(probs)):
+            views.apply_ai_tags(post)
+        post.refresh_from_db()
+        self.assertEqual(post.char_model, 'pixai')
+
+    def test_auto_option_runs_the_character_model_after_wd14(self):
+        post = self._post_with_image()
+        with mock.patch.object(views, '_get_wd14_model', return_value=_fake_wd14({'char_a': 0.95})), \
+             mock.patch.object(views, '_pref', side_effect=lambda k, d=None: True if k == 'aiCharAuto' else d), \
+             mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', return_value=[('char_z', .9)]):
+            res = views.apply_ai_tags(post)
+        post.refresh_from_db()
+        self.assertEqual(post.char_model, 'pixai')
+        self.assertEqual(res['character'], ['char_a', 'char_z'])      # WD14's + PixAI's, de-duplicated
+
+    def test_retag_work_is_resumable_cancellable_and_skips_done_posts(self):
+        done = Post.objects.create(char_model='pixai'); Photo.objects.create(post=done, order=0, rel_path='x.png')
+        todo = [self._post_with_image() for _ in range(3)]
+        captured = {}
+        def fake_start(kind, fn, **kw):
+            captured['fn'] = fn; captured['kind'] = kind
+            return types.SimpleNamespace(id=1)
+        with mock.patch.object(views, '_start_task', side_effect=fake_start):
+            self.client.post('/api/ai/char-retag/', {'limit': 2}, content_type='application/json')
+        self.assertEqual(captured['kind'], 'char_retag')
+        task = Task.objects.create(kind='char_retag')
+        seen = []
+        def fake_run(path, thumb=''):
+            seen.append(path); return [('char_q', .9)]
+        with mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', side_effect=fake_run):
+            captured['fn'](task)
+        self.assertEqual(len(seen), 2)                                # limit=2, newest first
+        marked = list(Post.objects.filter(char_model='pixai').values_list('pk', flat=True))
+        self.assertEqual(set(marked), {done.pk, todo[2].pk, todo[1].pk})   # the oldest todo post is left for the next run
+        # resume: the next run takes the remaining one
+        task2 = Task.objects.create(kind='char_retag')
+        with mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', return_value=[]):
+            captured['fn'](task2)
+        self.assertTrue(Post.objects.get(pk=todo[0].pk).char_model == 'pixai')
+        # cancel
+        extra = self._post_with_image()
+        t3 = Task.objects.create(kind='char_retag', cancel_requested=True)
+        with mock.patch.object(char_tagger, 'model_ready', return_value=True), \
+             mock.patch.object(char_tagger, 'run_character_tagger', return_value=[]):
+            with self.assertRaises(TaskCancelled):
+                captured['fn'](t3)
+        self.assertEqual(Post.objects.get(pk=extra.pk).char_model, '')
+
+    def test_ai_info(self):
+        with mock.patch.object(char_tagger, 'model_ready', return_value=False):
+            d = self.client.get('/api/ai/info/').json()
+        self.assertFalse(d['char_model']['ready'])
+        self.assertIn('runtime', d)
+        self.assertIn('pixai_todo', d)

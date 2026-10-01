@@ -1,0 +1,11 @@
+# NVIDIA GPU runtime for the AI taggers (about 7x faster than CPU on a Tesla P4).
+# Replaces the CPU `onnxruntime` from requirements.txt — install with:
+#     ./install.sh --gpu
+# (or: pip uninstall -y onnxruntime && pip install -r requirements-gpu.txt)
+#
+# - onnxruntime-gpu 1.26 = last release whose default wheel is CUDA 12; builds
+#   from 1.27 on default to CUDA 13, which dropped Pascal (Tesla P4 / GTX 10xx).
+# - cuDNN is pinned to 9.10.x: cuDNN 9.27 fails on Pascal ("CUDNN_FE failure 11"),
+#   9.5.1 and 9.10.2 were tested working on a Tesla P4.
+onnxruntime-gpu[cuda,cudnn]==1.26.0
+nvidia-cudnn-cu12==9.10.2.21
