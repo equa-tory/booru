@@ -1,0 +1,23 @@
+# systemd unit template — install.sh fills in the @PLACEHOLDERS@ and installs it
+# as /etc/systemd/system/booru.service
+[Unit]
+Description=booru.local photo gallery
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP_DIR@/venv/bin/gunicorn \
+    --workers 4 \
+    --worker-class gevent \
+    --worker-connections 100 \
+    --bind 0.0.0.0:@PORT@ \
+    --timeout 900 \
+    booru.wsgi:application
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -3,3 +3,4 @@
 MEDIA_ROOT = '/path/to/your/media'
 GALLERY_PASSWORD = 'change-me'
 # SECRET_KEY = 'something-long-and-random'
+# BACKUP_DIR = '/path/to/backups'   # default folder for DB backups (default: ./backups)

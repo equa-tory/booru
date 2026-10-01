@@ -2075,6 +2075,78 @@ def set_pref(request):
     return JsonResponse({'ok': True})
 
 
+# ── Database backups (logic in gallery/backup.py) ───────────────
+from . import backup as _backup
+
+
+def backup_info(request):
+    return JsonResponse(_backup.info())
+
+
+@require_POST
+def backup_config_save(request):
+    try:
+        cfg = _backup.save_config(json.loads(request.body or '{}'))
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    return JsonResponse({'ok': True, 'config': cfg})
+
+
+@require_POST
+def backup_run(request):
+    return JsonResponse({'task_id': _start_task('backup', _backup.run_backup, message='backing up…').id})
+
+
+def _start_restore(path, label):
+    if Task.objects.filter(status='running').exists():
+        return JsonResponse({'error': 'wait for (or stop) the running tasks first'}, status=409)
+    try:
+        _backup.validate_backup(path)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    def work(task):
+        _backup.restore_from(path, task)
+        task.message = f'restored from {label}'
+        task.save(update_fields=['message'])
+
+    return JsonResponse({'task_id': _start_task('restore', work, message='restoring…').id})
+
+
+@require_POST
+def backup_restore(request):
+    """body: {name} — a file currently listed in the backup folder."""
+    name = (json.loads(request.body or '{}').get('name') or '')
+    if name != os.path.basename(name) or name not in {b['name'] for b in _backup.list_backups()}:
+        return JsonResponse({'error': 'no such backup'}, status=404)
+    return _start_restore(os.path.join(_backup.get_config()['path'], name), name)
+
+
+@require_POST
+def backup_upload_restore(request):
+    """multipart 'file' — a .sqlite3 uploaded from the browser; kept in the
+    backup folder (as uploaded-<time>.sqlite3) and then restored."""
+    f = request.FILES.get('file')
+    if not f:
+        return JsonResponse({'error': 'no file'}, status=400)
+    if Task.objects.filter(status='running').exists():
+        return JsonResponse({'error': 'wait for (or stop) the running tasks first'}, status=409)
+    d = _backup.get_config()['path']
+    try:
+        os.makedirs(d, exist_ok=True)
+        dest = os.path.join(d, f'uploaded-{timezone.now().strftime("%Y%m%d-%H%M%S")}.sqlite3')
+        with open(dest, 'wb') as out:
+            for chunk in f.chunks():
+                out.write(chunk)
+    except OSError as e:
+        return JsonResponse({'error': f'cannot save upload: {e.strerror or e}'}, status=500)
+    resp = _start_restore(dest, f.name)
+    if resp.status_code != 200:
+        try: os.remove(dest)
+        except OSError: pass
+    return resp
+
+
 @require_POST
 def recent_add(request):
     """Atomically prepend a post-view event to the server-side recents list.

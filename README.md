@@ -2,7 +2,16 @@
 
 A minimal Danbooru-style local photo gallery. No login, no cloud, no bullshit.
 
-## Setup
+## Install (Linux, systemd)
+
+```bash
+./install.sh            # venv + deps + local settings + migrate + systemd service
+./install.sh --yes      # no questions (env: MEDIA_ROOT, GALLERY_PASSWORD, BACKUP_DIR, PORT)
+```
+
+Settings that must not be committed (password, media/backup folders) live in the untracked `booru/local_settings.py` (see `booru/local_settings.py.example`). Database backups and restore are in the **⚙ settings** dialog.
+
+## Setup (manual / dev)
 
 ```bash
 pip install django pillow

@@ -8,9 +8,10 @@ A self-hosted, single-user "booru"-style photo/video/PDF gallery built on Django
 ## Commands
 - Dev server: `python manage.py runserver`
 - Migrate / make migrations: `python manage.py migrate` / `python manage.py makemigrations`
+- Fresh install / re-install: `./install.sh [--yes] [--no-service]` — venv, `pip install -r requirements.txt`, generates the untracked `booru/local_settings.py` (password, media + backup folders, SECRET_KEY), migrates, renders `booru.service` (template with `@APP_DIR@/@USER@/@PORT@`) into `/etc/systemd/system/` and restarts it (default port 3002). Idempotent.
 - Production (Linux/systemd): `./start.sh` — uses `venv/bin/python3`, runs makemigrations+migrate, `sudo`-restarts the `booru` systemd unit, then runs gunicorn (4 gevent workers, port 3001, 900s timeout). Windows dev uses runserver.
 - Dependencies: `pip install -r requirements.txt` (pinned; includes gunicorn/gevent/onnxruntime/PyMuPDF). No linter is configured.
-- Tests: `python manage.py test` (note: `gallery/tests.py` is currently an empty stub — there is no real suite yet).
+- Tests: `python manage.py test` (single test: `python manage.py test gallery.tests.ScanTests.test_scan_prunes_deleted_files_and_empty_posts`). `gallery/tests.py` covers scan, task cancel/dismiss, tag recount, auth cookies and backup/restore; scan tests run against a temp `MEDIA_ROOT`, backup tests against a temp SQLite file, never the real data.
 - Downloads watcher (optional sidecar): `python watch_downloads.py --downloads <dir> --inbox <media/inbox>` — auto-moves new downloads/zips into the inbox.
 
 ## Adding media
@@ -35,14 +36,19 @@ Reuse these helpers rather than writing new query logic. `random` sort uses a se
 
 ## Background tasks
 Heavy operations (scan, merge, ai_tag, dupes) run via `_start_task(kind, fn)` which spawns a daemon thread and records progress in a `Task` row. Each thread MUST `connection.close()` when done (already handled in the runner). The frontend polls `/api/tasks/`. There are both synchronous (`scan`, `merge_posts`, `ai_tag_all`) and background (`scan_bg`, `merge_bg`, `ai_tag_all_bg`) variants of the big operations — the `_bg` ones are the ones wired to the UI.
+Tasks are cancellable: the stop button sets `Task.cancel_requested` (`/api/tasks/<id>/cancel/`) and every work fn calls `check_cancel(task)` (`gallery/utils.py`, raises `TaskCancelled`) between units of work — new long loops must do the same, and must never be cancelled mid-post. Finished cards dismiss individually (`/api/tasks/<id>/dismiss/`); `running` rows with no progress for 30 min are swept to `error` (the thread died with its worker). Bulk code should batch tag counts (`add_tags_to_post(..., recount=False)` + one `recount_tags()`), not call `Tag.update_count()` per tag/file.
 
 ## AI tagging
 `run_ai_tagger` runs the WD14 ONNX tagger (`SmilingWolf/wd-vit-tagger-v3`, lazily downloaded + cached in `_get_wd14_model`, CUDA→CPU providers). For videos/PDFs it tags the generated thumbnail instead of the original. Tags applied land in the `ai` category and set `Post.ai_tagged=True`.
 - Separately, `sync_sound_tag`/`has_audio_stream` (ffprobe-based, in `gallery/utils.py`) add/remove a `sound` tag on video posts; driven per-post during ingest and in bulk via the `sound_tag_all_bg` background task.
 
 ## Middleware & caching (`gallery/middleware.py`)
+- Auth uses unique names (`booru_sessionid`, `booru_csrftoken`, session key `booru_authed`) because other local Django apps share the default cookie names across ports and logged each other out — don't revert to the defaults.
 - `LoginRequiredMiddleware`: session password gate; `sw.js` and `/login|/logout` are exempt.
 - `CacheHeadersMiddleware`: `/static/` cached a year (immutable), `/media/` a day; thumbnails cache-bust via a `?v=<mtime>` param added in `Photo.thumb_url`.
+
+## Database backups (`gallery/backup.py`)
+Only `db.sqlite3` is backed up (media files are never touched), via sqlite's online-backup API in one step (consistent under WAL, no stray `-wal/-shm`). Settings (enabled, max backups, interval hours, folder) live under the `backup` key of `prefs.json`; the default folder is `settings.BACKUP_DIR`. UI: the "⚙ settings" modal (`templates/gallery/_settings_modal.html`), which also hosts the maintenance buttons (tag sound, keys, re-tidy all, rebase paths). A scheduler thread started from `GalleryConfig.ready()` (gunicorn/runserver only) checks every 10 min; a flock'd lock file in the backup folder keeps the 4 workers from duplicating a run. Rotation only deletes `booru-*.sqlite3`. Restore (from the folder listing or an upload) validates the file, saves `pre-restore.sqlite3`, overwrites the live DB in place, carries `django_session` rows across, runs `migrate`, and re-creates its own Task row (the restored DB doesn't contain it).
 
 ## Duplicate detection
 `duplicates` view groups posts by cover-image perceptual hash (`phash_distance`); videos only compare with videos (tighter threshold), GIF vs still is avoided, and `Post.not_dupes` (symmetrical M2M) pairs are skipped.

@@ -1,0 +1,174 @@
+<!-- Settings modal: maintenance actions + database backups. Included from base.html. -->
+<style>
+#settings-modal .modal { max-width: 560px; max-height: 92vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.set-sec { border-top: 1px solid var(--border); padding-top: .9rem; margin-top: .9rem; }
+.set-sec:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.set-sec h3 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: .6rem; font-weight: 600; }
+.set-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.set-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .6rem; }
+.set-grid .wide { grid-column: 1 / -1; }
+.set-field label { display: block; font-family: var(--mono); font-size: .68rem; color: var(--text-dim); margin-bottom: .2rem; }
+.set-field input[type=number], .set-field input[type=text] {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-family: var(--mono); font-size: .8rem; padding: .4rem .5rem;
+}
+.set-field input:focus { outline: none; border-color: var(--accent); }
+.set-check { display: flex; align-items: center; gap: .5rem; font-size: .82rem; cursor: pointer; }
+.set-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.set-note { font-family: var(--mono); font-size: .68rem; color: var(--text-dim); margin: .4rem 0; line-height: 1.5; }
+.bk-list { display: flex; flex-direction: column; gap: .3rem; max-height: 200px; overflow-y: auto; margin: .4rem 0; }
+.bk-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: .35rem .5rem; font-family: var(--mono); font-size: .72rem; }
+.bk-row .bk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.bk-row .bk-meta { color: var(--text-dim); font-size: .66rem; }
+.bk-row .btn { flex-shrink: 0; padding: .15rem .55rem; font-size: .7rem; }
+</style>
+
+<div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this)closeSettings()">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>&#9881; settings</h2>
+
+    <div class="set-sec">
+      <h3>maintenance</h3>
+      <div class="set-actions">
+        <button class="btn" onclick="closeSettings();soundTagAll()" title="re-check every video for an audio track and sync the sound tag">&#9834; tag sound</button>
+        <a class="btn" href="/shortcuts/" title="keyboard shortcuts">&#9000; keys</a>
+        <button class="btn" onclick="closeSettings();organizeSinglesDeep()" title="re-tidy ALL files (including already in subfolders) into YYYY-MM/DD — run once">&#128194; re-tidy all</button>
+        <button class="btn" onclick="closeSettings();rebasePaths()" title="convert absolute file paths still in the DB to paths relative to MEDIA_ROOT — run BEFORE moving the media folder">&#128506; rebase paths</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <h3>backups <span id="bk-state" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></h3>
+      <div class="set-grid">
+        <div class="set-field"><label for="bk-max">max backups kept</label><input type="number" id="bk-max" min="1" max="100"></div>
+        <div class="set-field"><label for="bk-hours">backup every (hours)</label><input type="number" id="bk-hours" min="1" max="8760"></div>
+        <div class="set-field wide"><label for="bk-path">backup folder</label><input type="text" id="bk-path" spellcheck="false" autocomplete="off"></div>
+        <label class="set-check wide"><input type="checkbox" id="bk-enabled"> automatic backups</label>
+      </div>
+      <div class="set-actions">
+        <button class="btn primary" id="bk-save" onclick="saveBackupConfig()">save</button>
+        <button class="btn" id="bk-run" onclick="runBackupNow()">backup now</button>
+      </div>
+      <div class="set-note" id="bk-status"></div>
+
+      <h3 style="margin-top:.9rem;">restore</h3>
+      <div class="bk-list" id="bk-list"></div>
+      <div class="set-actions">
+        <button class="btn" onclick="document.getElementById('bk-upload').click()">&#11014; upload &amp; restore…</button>
+        <input type="file" id="bk-upload" accept=".sqlite3,.sqlite,.db" style="display:none" onchange="uploadRestore(this)">
+      </div>
+      <div class="set-note">Only the database is backed up (tags, ratings, folders, post/file records) — the media files on disk are never touched. Restoring replaces the current database; a safety copy of it is saved as <code>pre-restore.sqlite3</code> in the backup folder first.</div>
+    </div>
+
+    <div class="modal-actions"><button class="btn" onclick="closeSettings()">close</button></div>
+  </div>
+</div>
+
+<script>
+function openSettings() {
+  document.getElementById('settings-modal').classList.add('open');
+  if (typeof closeMobMenu === 'function') closeMobMenu();
+  loadBackupInfo();
+}
+function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
+
+function _bkSize(n) { return n == null ? '?' : n >= 1073741824 ? (n/1073741824).toFixed(1)+' GB' : (n/1048576).toFixed(n >= 10485760 ? 0 : 1)+' MB'; }
+function _bkWhen(ts) { return ts ? new Date(ts*1000).toLocaleString([], {dateStyle:'medium', timeStyle:'short'}) : 'never'; }
+function _bkAgo(ts) {
+  const s = Math.max(0, Date.now()/1000 - ts);
+  return s < 3600 ? Math.round(s/60)+' min ago' : s < 172800 ? Math.round(s/3600)+' h ago' : Math.round(s/86400)+' d ago';
+}
+
+async function loadBackupInfo() {
+  let d;
+  try { d = await (await fetch('/api/backup/')).json(); } catch(e) { document.getElementById('bk-status').textContent = 'could not load backup info'; return; }
+  const c = d.config;
+  document.getElementById('bk-max').value = c.max_backups;
+  document.getElementById('bk-hours').value = c.interval_hours;
+  document.getElementById('bk-path').value = c.path;
+  document.getElementById('bk-enabled').checked = !!c.enabled;
+  document.getElementById('bk-state').textContent = c.enabled ? '· on' : '· off';
+  const st = [];
+  st.push(d.last ? `last automatic backup: ${_bkWhen(d.last)} (${_bkAgo(d.last)})` : 'no automatic backup yet');
+  if (c.enabled && d.next) st.push(d.next <= Date.now()/1000 ? 'next: due now (checked every 10 min)' : `next: ${_bkWhen(d.next)}`);
+  st.push(`database ${_bkSize(d.db_size)}` + (d.free != null ? ` · ${_bkSize(d.free)} free in folder` : ''));
+  if (!d.dir_exists) st.push('folder does not exist yet — it is created on save');
+  document.getElementById('bk-status').textContent = st.join(' · ');
+
+  const list = document.getElementById('bk-list');
+  list.textContent = '';
+  if (!d.backups.length) {
+    const e = document.createElement('div'); e.className = 'set-note'; e.textContent = 'no backup files found in this folder'; list.appendChild(e);
+  }
+  d.backups.forEach(b => {
+    const row = document.createElement('div'); row.className = 'bk-row';
+    const left = document.createElement('div'); left.style.minWidth = '0';
+    const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = b.name; nm.title = b.name;
+    const meta = document.createElement('div'); meta.className = 'bk-meta'; meta.textContent = `${_bkWhen(b.mtime)} · ${_bkSize(b.size)}`;
+    left.append(nm, meta);
+    const btn = document.createElement('button'); btn.className = 'btn danger'; btn.textContent = 'restore';
+    btn.onclick = () => restoreBackup(b.name);
+    row.append(left, btn);
+    list.appendChild(row);
+  });
+}
+
+async function saveBackupConfig() {
+  const body = {
+    enabled: document.getElementById('bk-enabled').checked,
+    max_backups: document.getElementById('bk-max').value,
+    interval_hours: document.getElementById('bk-hours').value,
+    path: document.getElementById('bk-path').value,
+  };
+  try {
+    const r = await fetch('/api/backup/config/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || 'could not save', 'err'); return; }
+    toast('backup settings saved');
+    loadBackupInfo();
+  } catch(e) { toast('could not save', 'err'); }
+}
+
+async function runBackupNow() {
+  try {
+    const r = await fetch('/api/backup/run/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+    if (!r.ok) { toast('could not start backup', 'err'); return; }
+    toast('backing up…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+    setTimeout(loadBackupInfo, 4000);
+  } catch(e) { toast('could not start backup', 'err'); }
+}
+
+function _afterRestoreStarted() {
+  closeSettings();
+  toast('restoring database…');
+  if (typeof pollTasks !== 'undefined') pollTasks(true);
+  setTimeout(() => location.reload(), 6000);
+}
+
+async function restoreBackup(name) {
+  if (!confirm(`Restore the database from\n${name}\n\nThis REPLACES the current tags/ratings/folders/posts with the ones in that file (media files on disk are untouched). A safety copy of the current database is saved first as pre-restore.sqlite3.\n\nContinue?`)) return;
+  try {
+    const r = await fetch('/api/backup/restore/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({name})});
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || 'restore failed', 'err'); return; }
+    _afterRestoreStarted();
+  } catch(e) { toast('restore failed', 'err'); }
+}
+
+async function uploadRestore(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  if (!confirm(`Upload ${f.name} (${_bkSize(f.size)}) and RESTORE the database from it?\n\nThis replaces the current database; a safety copy is saved first as pre-restore.sqlite3.`)) return;
+  const fd = new FormData(); fd.append('file', f);
+  toast('uploading…');
+  try {
+    const r = await fetch('/api/backup/upload/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}, body: fd});
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || 'restore failed', 'err'); return; }
+    _afterRestoreStarted();
+  } catch(e) { toast('upload failed', 'err'); }
+}
+</script>
