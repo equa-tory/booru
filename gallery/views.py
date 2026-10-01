@@ -258,6 +258,78 @@ def _build_post_qs(request):
 
 # ── Pages ──────────────────────────────────────────────────────
 
+# ── Sidebar tag sampler ────────────────────────────────────────
+SIDEBAR_TAG_CAP = 150
+TAG_CATEGORY_ORDER = ['meta', 'character', 'artist', 'general', 'ai']
+
+
+def _fair_shares(sizes, cap):
+    """Split `cap` slots equally across categories ({category: available}).
+    A category with fewer tags than its share gives the unused slots to the
+    others; any rounding leftover is handed out one by one."""
+    shares = {}
+    remaining = cap
+    order = sorted(sizes, key=lambda c: sizes[c])          # smallest first
+    for i, c in enumerate(order):
+        take = min(sizes[c], remaining // (len(order) - i))
+        shares[c] = take
+        remaining -= take
+    for c in order[::-1]:                                  # rounding leftovers
+        while remaining > 0 and shares[c] < sizes[c]:
+            shares[c] += 1
+            remaining -= 1
+    return shares
+
+
+def _weighted_sample(rows, k, rng):
+    """k ids from [(id, weight)] without replacement; popular tags are more
+    likely (Efraimidis-Spirakis: key = random ** (1 / w) with w = sqrt(count)).
+    The square root keeps usage as a preference without letting the few
+    thousand-post tags appear on every reload (raw counts: ~half the list
+    repeated between two loads; sqrt: ~30%)."""
+    if k >= len(rows):
+        return [r[0] for r in rows]
+    keyed = sorted(rows, key=lambda r: rng.random() ** (1.0 / max(r[1], 1) ** 0.5), reverse=True)
+    return [r[0] for r in keyed[:k]]
+
+
+def _sidebar_tags(cand, cap, by_name=False, filtered=False, rng=random):
+    """cand = [(id, category, fav, weight)]. Returns Tag objects to show:
+    favorites first (pinned, never sampled away), then an equal random share
+    of every tag type, each group sorted by usage (or name). Each object gets
+    `.group` ('favorites' or its category) and, when filtering, `.filtered_count`."""
+    favs = [c for c in cand if c[2]]
+    rest = [c for c in cand if not c[2]]
+    by_cat = {}
+    for tid, cat, _fav, w in rest:
+        by_cat.setdefault(cat, []).append((tid, w))
+    shares = _fair_shares({c: len(v) for c, v in by_cat.items()}, max(0, cap - len(favs)))
+    picked = {}
+    for cat, rows in by_cat.items():
+        for tid in _weighted_sample(rows, shares.get(cat, 0), rng):
+            picked[tid] = cat
+    weight = {c[0]: c[3] for c in cand}
+    cat_of = {c[0]: c[1] for c in cand}
+    ids = [c[0] for c in favs] + list(picked)
+    tags = {t.id: t for t in Tag.objects.filter(pk__in=ids)}
+    rank = {c: i for i, c in enumerate(TAG_CATEGORY_ORDER)}
+    fav_ids = {c[0] for c in favs}
+    out = []
+    for tid in ids:
+        t = tags.get(tid)
+        if t is None:
+            continue
+        t.group = 'favorites' if tid in fav_ids else cat_of[tid]
+        if filtered:
+            t.filtered_count = weight[tid]
+        out.append(t)
+    def key(t):
+        g = 0 if t.group == 'favorites' else 1
+        return (g, rank.get(t.category, 9), t.name if by_name else -weight[t.id], t.name)
+    out.sort(key=key)
+    return out
+
+
 def index(request):
     # Random sort needs a stable seed in the URL so the gallery, infinite
     # scroll and prev/next all walk the SAME shuffle. Add one if missing.
@@ -282,45 +354,29 @@ def index(request):
 
     sort_tags = request.GET.get('sort_tags', 'count')  # 'count' or 'name'
 
-    # custom category order: meta, char, art, gen, ai
-    from django.db.models import Case, When, IntegerField, Value
-    cat_order = Case(
-        When(category='meta', then=Value(0)),
-        When(category='character', then=Value(1)),
-        When(category='artist', then=Value(2)),
-        When(category='general', then=Value(3)),
-        When(category='ai', then=Value(4)),
-        default=Value(9), output_field=IntegerField(),
-    )
-
+    # Sidebar tags: a fair, random sample instead of "top N by category rank"
+    # (which let ~850 character tags push every general/ai tag out of the list).
     if q_tags:
         from django.db.models import Count
-        post_ids     = posts.values_list('id', flat=True)
-        base_qs_tags = (Tag.objects
+        post_ids = posts.values_list('id', flat=True)
+        cand = (Tag.objects
             .filter(posts__id__in=post_ids)
             .annotate(filtered_count=Count('posts', distinct=True))
             .filter(filtered_count__gt=0)
-            .annotate(cat_rank=cat_order))
-        if sort_tags == 'name':
-            popular_tags = base_qs_tags.order_by('-fav', 'cat_rank', 'name')
-        else:
-            popular_tags = base_qs_tags.order_by('-fav', 'cat_rank', '-filtered_count')
+            .values_list('id', 'category', 'fav', 'filtered_count'))
     else:
-        base = Tag.objects.filter(count__gt=0).annotate(cat_rank=cat_order)
-        if sort_tags == 'name':
-            popular_tags = base.order_by('-fav', 'cat_rank', 'name')
-        else:
-            popular_tags = base.order_by('-fav', 'cat_rank', '-count')
+        cand = Tag.objects.filter(count__gt=0).values_list('id', 'category', 'fav', 'count')
+    cand = list(cand)
 
-    # Only render the top N tags in the sidebar. The full list lives behind the
+    # Only render a handful of tags in the sidebar. The full list lives behind the
     # search box / tag sheet / "edit tags" page. Rendering thousands of <a>
     # tags into every gallery page made paging back to the gallery slow on the
     # phone (the markup is parsed even though the sidebar is hidden on mobile).
-    tag_total    = popular_tags.count()
+    tag_total = len(cand)
     # fast mode (cookie set from the more menu) renders far fewer tags so the
     # gallery page is lighter to parse on a phone.
-    tag_cap = 40 if request.COOKIES.get('fastMode') == '1' else 300
-    popular_tags = list(popular_tags[:tag_cap])
+    tag_cap = 40 if request.COOKIES.get('fastMode') == '1' else SIDEBAR_TAG_CAP
+    popular_tags = _sidebar_tags(cand, tag_cap, by_name=(sort_tags == 'name'), filtered=bool(q_tags))
     is_htmx = request.headers.get('HX-Request')
     scroll_mode = request.GET.get('scroll', '0') == '1'
     if is_htmx:

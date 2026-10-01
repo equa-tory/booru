@@ -229,7 +229,7 @@ body.select-mode .scroll-fabs { display:none; }
 
   <div class="sidebar-section">
     <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;gap:.3rem;">
-      <span>tags ({{ tag_total }}{% if filtering_active %} related{% endif %}){% if tag_total > tag_cap %} · top {{ tag_cap }}{% endif %}</span>
+      <span>tags ({{ tag_total }}{% if filtering_active %} related{% endif %}){% if tag_total > tag_cap %} · {{ tag_cap }} random, equal per type{% endif %}</span>
       <div style="display:flex;gap:.3rem;align-items:center;">
         <button onclick="setSortTags('{% if sort_tags == "name" %}count{% else %}name{% endif %}')" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">{% if sort_tags == "name" %}#{% else %}az{% endif %}</button>
         <button onclick="toggleSelectMode()" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;" id="sel-toggle">sel</button>
@@ -237,6 +237,7 @@ body.select-mode .scroll-fabs { display:none; }
     </div>
     <div class="tag-list" id="tag-list">
       {% for tag in popular_tags %}
+      {% ifchanged tag.group %}<div class="tag-group-title">{% if tag.group == 'favorites' %}&#9829; pinned{% else %}{{ tag.group }}{% endif %}</div>{% endifchanged %}
       <div class="tag-item tag-entry" data-name="{{ tag.name }}" data-cat="{{ tag.category }}">
         <span class="tag-fav-btn {% if tag.fav %}active{% endif %}" onclick="toggleTagFav('{{ tag.name }}', this)">&#9829;</span>
         <a class="tag-link {{ tag.category }}" href="?tag={{ tag.name }}" title="{{ tag.name }}">{{ tag.name }}</a>

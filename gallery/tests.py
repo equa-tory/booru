@@ -670,3 +670,88 @@ class CharTaggerTests(TestCase):
         self.assertFalse(d['char_model']['ready'])
         self.assertIn('runtime', d)
         self.assertIn('pixai_todo', d)
+
+
+# ── Sidebar tag sampler ─────────────────────────────────────────
+import random as _random
+from collections import Counter
+
+
+class SidebarTagTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def _make_tags(self, sizes):
+        rows = []
+        for cat, n in sizes.items():
+            for i in range(n):
+                t = Tag.objects.create(name=f'{cat}_{i}', category=cat, count=1 + i % 50)
+                rows.append((t.id, cat, False, t.count))
+        return rows
+
+    def test_fair_shares_redistributes_unused_slots(self):
+        self.assertEqual(views._fair_shares({'a': 3, 'b': 5, 'c': 40, 'd': 60, 'e': 300}, 150),
+                         {'a': 3, 'b': 5, 'c': 40, 'd': 51, 'e': 51})
+        self.assertEqual(views._fair_shares({'a': 1000}, 150), {'a': 150})
+        self.assertEqual(views._fair_shares({'a': 10, 'b': 10}, 150), {'a': 10, 'b': 10})   # fewer tags than slots
+        sh = views._fair_shares({'a': 100, 'b': 100, 'c': 100}, 100)                          # rounding leftover handed out
+        self.assertEqual(sum(sh.values()), 100)
+        self.assertEqual(views._fair_shares({}, 150), {})
+
+    def test_every_type_gets_an_equal_share(self):
+        cand = self._make_tags({'meta': 3, 'character': 300, 'artist': 5, 'general': 60, 'ai': 40})
+        out = views._sidebar_tags(cand, 150, rng=_random.Random(1))
+        self.assertEqual(len(out), 150)
+        self.assertEqual(Counter(t.category for t in out),
+                         {'meta': 3, 'artist': 5, 'ai': 40, 'general': 51, 'character': 51})
+
+    def test_display_order_groups_by_type_then_usage(self):
+        cand = self._make_tags({'character': 80, 'general': 80, 'ai': 80})
+        out = views._sidebar_tags(cand, 90, rng=_random.Random(2))
+        order = [t.category for t in out]
+        self.assertEqual(order, sorted(order, key=['meta', 'character', 'artist', 'general', 'ai'].index))
+        for cat in ('character', 'general', 'ai'):
+            counts = [t.count for t in out if t.category == cat]
+            self.assertEqual(counts, sorted(counts, reverse=True))
+
+    def test_favorites_are_pinned_first_and_count_toward_the_cap(self):
+        cand = self._make_tags({'character': 200, 'general': 200})
+        fav_ids = [cand[0][0], cand[250][0]]
+        Tag.objects.filter(pk__in=fav_ids).update(fav=True)
+        cand = [(i, c, i in fav_ids, w) for i, c, _f, w in cand]
+        out = views._sidebar_tags(cand, 50, rng=_random.Random(3))
+        self.assertEqual(len(out), 50)
+        self.assertEqual({t.id for t in out[:2]}, set(fav_ids))
+        self.assertTrue(all(t.group == 'favorites' for t in out[:2]))
+
+    def test_different_seeds_give_different_lists_and_popular_tags_are_likelier(self):
+        cand = self._make_tags({'character': 300})
+        a = {t.id for t in views._sidebar_tags(cand, 60, rng=_random.Random(1))}
+        b = {t.id for t in views._sidebar_tags(cand, 60, rng=_random.Random(2))}
+        self.assertNotEqual(a, b)
+        hits = Counter()
+        for seed in range(200):
+            for t in views._sidebar_tags(cand, 60, rng=_random.Random(seed)):
+                hits[t.count >= 40] += 1                    # counts are 1..50: top fifth vs the rest
+        self.assertGreater(hits[True] / 200 / 60, 0.2)       # popular fifth shows up more than its 20% share
+
+    def test_page_shows_balanced_random_sidebar(self):
+        self._make_tags({'character': 400, 'general': 120, 'ai': 120, 'artist': 20, 'meta': 5})
+        h1 = self.client.get('/').content.decode()
+        h2 = self.client.get('/').content.decode()
+        self.assertEqual(h1.count('class="tag-item tag-entry"'), 150)
+        for cat in ('character', 'general', 'ai'):
+            self.assertGreater(h1.count(f'data-cat="{cat}"'), 25)
+        self.assertEqual(h1.count('tag-group-title">'), 5)           # one heading per type
+        self.assertNotEqual(h1.split('<div class="tag-list" id="tag-list">')[1][:6000],
+                            h2.split('<div class="tag-list" id="tag-list">')[1][:6000])   # random on every reload
+
+    def test_search_still_lists_related_tags_with_filtered_counts(self):
+        a = Post.objects.create(); b = Post.objects.create()
+        t1 = Tag.objects.create(name='alpha', category='general', count=2)
+        t2 = Tag.objects.create(name='beta', category='character', count=1)
+        a.tags.add(t1, t2); b.tags.add(t1)
+        out = views._sidebar_tags([(t1.id, 'general', False, 2), (t2.id, 'character', False, 1)], 10, filtered=True)
+        self.assertEqual({t.name: t.filtered_count for t in out}, {'alpha': 2, 'beta': 1})
+        html = self.client.get('/?tag=alpha').content.decode()
+        self.assertIn('data-name="beta"', html)

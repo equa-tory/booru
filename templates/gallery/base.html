@@ -163,6 +163,8 @@ aside {
 .sidebar-title { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: .6rem; }
 .tag-list { display: flex; flex-direction: column; gap: 1px; }
 .tag-item { display: flex; align-items: center; padding: 3px 0; gap: .25rem; }
+.tag-group-title { font-family: var(--mono); font-size: .6rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: .55rem 0 .15rem; padding-top: .35rem; border-top: 1px solid var(--border); }
+.tag-list > .tag-group-title:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .tag-link { font-size: .82rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .1s; }
 .tag-link.general { color: var(--tag-general); }
 .tag-link.character { color: var(--tag-character); }
