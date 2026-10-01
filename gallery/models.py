@@ -155,7 +155,7 @@ class Photo(models.Model):
 
 
 class Folder(models.Model):
-    """A named collection of posts shown in the sidebar.
+    """A named collection of posts shown in the sidebar, arranged in a tree.
 
     Manual folders (is_smart=False) hold an explicit set of posts (added via
     the select-mode "folder" bulk action). Smart folders (is_smart=True)
@@ -163,11 +163,22 @@ class Folder(models.Model):
     creation time; opening one just re-runs that query, so its contents
     update automatically as posts are added/edited — no separate filter
     engine needed, it reuses `_build_post_qs`.
+
+    `parent` nests folders into a tree (root folders have parent=None); it is
+    an organizational hierarchy for browsing/creating. By default opening a
+    folder (`?folder=<id>`) only shows that folder's own directly assigned
+    posts, not its descendants'. Set `include_subfolders=True` (the "⊞" toggle
+    on a folder row) to also fold in every descendant folder's posts when the
+    folder is opened (see `_build_post_qs`).
+    Deleting a folder cascades to its whole subtree (on_delete=CASCADE) —
+    the posts inside are never deleted, only the folder groupings.
     """
     name       = models.CharField(max_length=200)
     is_smart   = models.BooleanField(default=False)
     query      = models.CharField(max_length=500, blank=True)  # smart folders only
     posts      = models.ManyToManyField(Post, blank=True, related_name='folders')  # manual folders only
+    parent     = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='children')
+    include_subfolders = models.BooleanField(default=False)  # opening this folder also shows descendants' posts
     order      = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -176,6 +187,21 @@ class Folder(models.Model):
 
     def __str__(self):
         return self.name
+
+    def descendant_ids(self):
+        """All folder ids strictly below this one in the tree (BFS, cycle-guarded)."""
+        seen = set()
+        frontier = [self.id]
+        while frontier:
+            batch = list(
+                Folder.objects.filter(parent_id__in=frontier)
+                .exclude(id__in=seen)
+                .values_list('id', flat=True)
+            )
+            frontier = [i for i in batch if i not in seen]
+            seen.update(frontier)
+        seen.discard(self.id)
+        return list(seen)
 
 
 class Task(models.Model):

@@ -107,10 +107,22 @@
   body.is-single.tapped .nav-arrow { display:none !important; }
 }
 .view-scroll .scroll-container { flex:1; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; align-items:center; gap:8px; padding:20vh 8px 45vh; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; touch-action:pan-y; }
-.scroll-img { max-width:100%; display:block; border-radius:2px; }
-/* zoomed: the image is genuinely wider than the column, so let the browser pan
-   it horizontally and keep scrolling the post vertically — no JS drag needed. */
-.view-scroll .scroll-container.zoomed { overflow-x:auto; touch-action:pan-x pan-y; }
+.scroll-img { max-width:100%; display:block; border-radius:2px; margin-left:auto; margin-right:auto; }
+/* each item gets its own horizontal scrollport so zooming/panning one image can never drag the
+   ones above/below it sideways — #scroll-container itself never scrolls horizontally.
+   Deliberately NOT display:flex: as flex items the images lose their aspect-driven height
+   (align-items:stretch) and, worse, flex-shrink undoes the 2x width that zoom sets. */
+.scroll-item { width:100%; flex:0 0 auto; overflow-x:hidden; }
+.scroll-item.zoomed { overflow-x:auto; touch-action:pan-x pan-y; overscroll-behavior-x:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+/* fit-single: single-item post sized as tall as fits on screen, no vertical
+   scroll padding. Deliberately no justify-content:center — centering flex
+   content taller than the container can clip its top out of scroll reach;
+   default flex-start top-aligns correctly whether or not it ends up scrolling. */
+.view-scroll .scroll-container.fit-single { padding:0 8px; }
+/* fit-center: when the fitted item is SHORTER than the viewport (a wide image),
+   center it vertically. Only added in that case — centering an item taller than
+   the container would clip its top out of scroll reach (see note above). */
+.view-scroll .scroll-container.fit-single.fit-center { justify-content:center; }
 
 /* Topbar */
 .img-topbar { position:absolute; top:.6rem; left:.6rem; right:.6rem; display:flex; align-items:center; justify-content:space-between; z-index:10; pointer-events:none; gap:.4rem; flex-wrap:nowrap; }
@@ -272,6 +284,13 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
      gap between the two nav circles instead of floating high on its own. */
   body.minimal-ui #mode-toggle-fixed { bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .55rem); z-index:120; }
 }
+/* Minimal UI, info-panel part: hides title/image-count/added-date, the
+   current-image split/remove/delete row, and the merge block. Unlike the
+   header/bottom-nav hiding above this is NOT gated to mobile — it also
+   applies on desktop (reachable there via the sidebar's minimal-ui-btn). */
+body.minimal-ui .meta-block,
+body.minimal-ui #current-image-block,
+body.minimal-ui #merge-block { display:none !important; }
 @keyframes swipe-hint { 0%{opacity:0} 30%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
 .swipe-hint { position:absolute; bottom:1rem; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:.72rem; color:rgba(255,255,255,.4); pointer-events:none; animation:swipe-hint 2.5s ease forwards; white-space:nowrap; z-index:5; }
 
@@ -339,8 +358,8 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
 #quick-tag-suggestions { position:absolute; left:0; right:0; background:var(--bg3); border:1px solid var(--border); border-radius:6px; z-index:200; max-height:180px; overflow-y:auto; font-size:.85rem; font-family:var(--mono); box-shadow:0 4px 16px rgba(0,0,0,.5); }
 #quick-tag-suggestions div { padding:.45rem .7rem; cursor:pointer; -webkit-tap-highlight-color:transparent; display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
 #quick-tag-suggestions div:active { background:var(--accent-dim); color:var(--text-bright); }
-#quick-tag-chips .quick-chip { font-size:.82rem; padding:.35rem .65rem; }
-#quick-tag-chips .quick-chip.applied { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+#quick-tag-chips .quick-chip, #quick-folder-chips .quick-chip { font-size:.82rem; padding:.35rem .65rem; }
+#quick-tag-chips .quick-chip.applied, #quick-folder-chips .quick-chip.applied { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
 
 .delete-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.4rem; }
 
@@ -477,14 +496,17 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <!-- SCROLL: all stacked -->
     <div class="scroll-container" id="scroll-container">
       {% for img in images %}
+      <div class="scroll-item">
       {% if img.is_video %}
-      <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="none"
+      <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="{% if images|length == 1 %}metadata{% else %}none{% endif %}"
              {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
+             onloadedmetadata="if(typeof applyFitSingle!=='undefined')applyFitSingle()"
              style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
       {% else %}
       <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"
            style="min-height:38vh;background:var(--bg3);">
       {% endif %}
+      </div>
       {% endfor %}
     </div>
   </div>
@@ -511,9 +533,11 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 
     <div class="info-section">
       <div class="info-label">post</div>
+      <div class="meta-block">
       {% if post.title %}<div class="meta-row"><span class="meta-key">title</span><span class="meta-val" title="{{ post.title }}">{{ post.title }}</span></div>{% endif %}
       <div class="meta-row"><span class="meta-key">images</span><span class="meta-val">{{ images|length }}</span></div>
       <div class="meta-row"><span class="meta-key">added</span><span class="meta-val">{{ post.added_at|date:"Y-m-d" }}</span></div>
+      </div>
       <div style="display:flex;gap:.4rem;margin-top:.6rem;">
         <button class="btn" id="gallery-page-btn" onclick="goToGalleryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the gallery at this post's page, keeping the current search">&#8862; gallery</button>
         <button class="btn" id="library-page-btn" onclick="goToLibraryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the whole library (no search filters) at the page containing this post">&#9776; library</button>
@@ -549,6 +573,10 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <input type="range" class="size-slider" id="scroll-size-slider-mobile" min="0" max="100" value="50" step="2" oninput="setScrollImgSizeMobile(this.value)">
         <label style="font-size:.65rem;">+</label>
       </div>
+      <button class="mode-btn fit-single-btn" onclick="toggleFitSingle()" style="width:100%;margin-top:.5rem;"
+              title="single-image posts (scroll mode): size the image as tall as will fit on screen, ignoring the width slider above; if the image is too tall/narrow to fit both dimensions it uses full width and scrolls">
+        &#9971; fit item to screen
+      </button>
     </div>
 
     <!-- Actions -->
@@ -561,7 +589,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       </div>
 
       {% if images|length > 1 %}
-      <div style="margin-bottom:.5rem;">
+      <div style="margin-bottom:.5rem;" id="current-image-block">
         <div class="info-label" style="margin-bottom:.3rem;">current image</div>
         <div style="display:flex;gap:.4rem;">
           <button class="btn" style="flex:1;justify-content:center;font-size:.75rem;" onclick="splitCurrentImage()">&#9000; split to post</button>
@@ -578,11 +606,13 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       </div>
 
       <!-- Merge -->
+      <div id="merge-block">
       <div class="info-label" style="margin-bottom:.3rem;">merge</div>
       <div style="display:flex;gap:.4rem;margin-bottom:.5rem;">
         <input id="merge-target" type="number" placeholder="post ID to merge into..."
                style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:6px;font-size:.82rem;font-family:var(--mono);outline:none;">
         <button class="btn" onclick="mergeInto()">merge</button>
+      </div>
       </div>
 
       <!-- Not-dupe -->
@@ -708,6 +738,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       <div id="quick-tag-suggestions" style="display:none;"></div>
     </div>
     <div id="quick-tag-chips"></div>
+    <div id="quick-folder-chips"></div>
     <div class="modal-actions"><button class="btn primary" onclick="closeQuickTagSheet()">done</button></div>
   </div>
 </div>
@@ -746,9 +777,17 @@ const LOCAL_VIEW_PREF = localStorage.getItem('viewMode');
 // disabled entirely for multi-image posts when on.
 const FORCE_SCROLL = IS_MULTI && localStorage.getItem('forceScrollMode') === '1';
 document.body.classList.toggle('force-scroll', FORCE_SCROLL); // set now, don't wait for base.html's DOMContentLoaded handler
+// "fit item to screen" only works as a scroll-mode sizing pass, so a single-item
+// post (photo or video) with the toggle on opens in scroll mode regardless of
+// its remembered/default mode. Multi-image posts are unaffected.
+// (fitKey/isMobileDetail are hoisted function declarations — safe to call here.)
+const FIT_SINGLE_ON = !IS_MULTI && localStorage.getItem(fitKey('fitSingle')) === '1';
+function singleDefaultMode() {
+  return localStorage.getItem('viewModeSingle') || (IS_TALL ? 'scroll' : 'paged');
+}
 let viewMode = IS_MULTI
   ? (FORCE_SCROLL ? 'scroll' : (LOCAL_VIEW_PREF || 'scroll'))
-  : (localStorage.getItem('viewModeSingle') || (IS_TALL ? 'scroll' : 'paged'));
+  : (FIT_SINGLE_ON ? 'scroll' : singleDefaultMode());
 
 // check if browser zoom is allowed (disable JS zoom in that case)
 function isSafari() {
@@ -770,13 +809,18 @@ function renderPdfContainer(url) {
   }
 }
 
-function applyViewMode(mode) {
+// persist defaults true; fit-to-screen forces scroll mode without recording it
+// as the post's remembered choice (so turning fit off returns to paged).
+function applyViewMode(mode, persist) {
+  if (persist === undefined) persist = true;
   viewMode = mode;
-  if (IS_MULTI) {
-    localStorage.setItem('viewMode', mode);
-    localStorage.setItem('pref_viewMode', mode);
-  } else {
-    localStorage.setItem('viewModeSingle', mode);
+  if (persist) {
+    if (IS_MULTI) {
+      localStorage.setItem('viewMode', mode);
+      localStorage.setItem('pref_viewMode', mode);
+    } else {
+      localStorage.setItem('viewModeSingle', mode);
+    }
   }
   const panel     = document.getElementById('img-panel');
   const toggle    = document.getElementById('mode-toggle');
@@ -799,6 +843,7 @@ function applyViewMode(mode) {
     topbar.style.padding = '.5rem .6rem';
     const sc = document.getElementById('scroll-container');
     if (sc) {
+      if (!IS_MULTI) applyFitSingle();
       const pt = parseFloat(getComputedStyle(sc).paddingTop) || 0;
       const wantJump = IS_MULTI && currentImgIdx > 0 && localStorage.getItem('noScrollJump') !== '1';
       if (wantJump) {
@@ -822,7 +867,11 @@ function applyViewMode(mode) {
         setTimeout(initScrollZoom, 80);
         return;
       }
-      if (!IS_MULTI) {
+      if (!IS_MULTI && sc.classList.contains('fit-single')) {
+        // fit-to-screen: no scroll padding; a short item is centered by the
+        // .fit-center class, a tall one top-aligns and scrolls from 0.
+        sc.scrollTop = 0;
+      } else if (!IS_MULTI) {
         // Single-image post: center the image vertically in the viewport
         // instead of leaving it flush against the top padding — using the
         // known width/height from the server so this doesn't have to wait
@@ -920,7 +969,11 @@ function setScrollImgSizeMobile(val) {
   if (sl && sl.value != v) { sl.value = v; if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
 }
 
-function setScrollImgSize(val, platform) {
+// The width-slider sizing pass, on its own. setScrollImgSize() = this + a
+// re-run of applyFitSingle() (fit-to-screen wins when it's on); applyFitSingle()
+// calls _applyScrollSize() directly on its off-path to restore the slider size
+// without recursing back into itself.
+function _applyScrollSize(val, platform) {
   const cssVal = String(val).endsWith('px') || String(val).endsWith('%') ? val : val + 'px';
   // a zoomed image has inline width/maxWidth overriding this size setting —
   // unzoom first so the new size actually takes and dataset.prevW isn't stale.
@@ -947,6 +1000,99 @@ function setScrollImgSize(val, platform) {
     if (sl) { sl.value = parseInt(cssVal); if(typeof updateSliderFill!=='undefined') updateSliderFill(sl); }
   }
 }
+function setScrollImgSize(val, platform) {
+  _applyScrollSize(val, platform);
+  applyFitSingle();
+}
+
+/* ── "fit item to screen" (single-item posts) ───────────────────────
+   Sizes the single item (photo OR video) as tall as will fit on screen,
+   overriding the width slider above. fitW = min(availW, availH/ratio) already
+   does the right thing with no extra cases: when height is the binding
+   constraint the item fits both dimensions (no scroll); when width is the
+   binding constraint fitW reduces to exactly availW, so it's full-width and
+   the natural overflow just scrolls — same as the plain width-slider-at-100%
+   behaviour. The mechanism is a scroll-mode sizing pass, so turning this on
+   flips a single post into scroll mode (see FIT_SINGLE_ON at page top and
+   toggleFitSingle below); multi-image posts are never affected.
+   Per-platform (pc/phone), like the width slider. */
+function fitKey(base) { return base + (isMobileDetail() ? '_mobile' : '_desktop'); }
+
+function toggleFitSingle() {
+  const on = localStorage.getItem(fitKey('fitSingle')) === '1';
+  const willBeOn = !on;
+  localStorage.setItem(fitKey('fitSingle'), willBeOn ? '1' : '0'); // flip
+  applyFitSingleBtn();
+  if (!IS_MULTI) {
+    if (willBeOn && viewMode !== 'scroll') {
+      applyViewMode('scroll', false);       // fit-forced — don't record as the post's choice
+    } else if (!willBeOn && viewMode === 'scroll') {
+      applyViewMode(singleDefaultMode(), false); // back to the remembered/default mode
+    }
+  }
+  applyFitSingle();
+}
+function applyFitSingleBtn() {
+  const on = localStorage.getItem(fitKey('fitSingle')) === '1';
+  document.querySelectorAll('.fit-single-btn').forEach(b => b.classList.toggle('active', on));
+}
+
+function applyFitSingle() {
+  const sc = document.getElementById('scroll-container');
+  if (!sc) return;
+  const on = !IS_MULTI && viewMode === 'scroll' && localStorage.getItem(fitKey('fitSingle')) === '1';
+  const el = sc.querySelector('.scroll-img');
+  const isImg = el && el.tagName === 'IMG';
+  const isVid = el && el.tagName === 'VIDEO';
+  if (!on || (!isImg && !isVid)) {
+    if (sc.classList.contains('fit-single')) {
+      // was fitted — restore the width-slider sizing it overrode
+      sc.classList.remove('fit-single', 'fit-center');
+      const mob = isMobileDetail();
+      _applyScrollSize(localStorage.getItem('scrollImgSize_' + (mob ? 'mobile' : 'desktop')) || (mob ? '100%' : '900px'),
+                       mob ? 'mobile' : 'desktop');
+    }
+    return;
+  }
+
+  const ratio = (COVER_W > 0 && COVER_H > 0) ? COVER_H / COVER_W
+              : isImg && el.naturalWidth > 0 && el.naturalHeight > 0 ? el.naturalHeight / el.naturalWidth
+              : isVid && el.videoWidth > 0 && el.videoHeight > 0 ? el.videoHeight / el.videoWidth
+              : 0;
+  if (!ratio) {
+    // dimensions not known yet — wait for them and retry once. For a video the
+    // inline onloadedmetadata can fire before this script is even parsed (fast
+    // local files), so re-listen here rather than trust that it ran.
+    sc.classList.remove('fit-single', 'fit-center');
+    if (!el._fitWait) {
+      el._fitWait = true;
+      const retry = () => { el._fitWait = false; applyFitSingle(); };
+      if (isVid) { el.addEventListener('loadedmetadata', retry, {once:true}); el.addEventListener('loadeddata', retry, {once:true}); }
+      else       { el.addEventListener('load', retry, {once:true}); }
+    }
+    return;
+  }
+
+  const availW = Math.max(1, sc.clientWidth - 16); // 8px padding each side
+  const availH = Math.max(1, sc.clientHeight);
+  const fitW = Math.min(availW, availH / ratio);
+  const fitH = fitW * ratio;
+
+  sc.classList.add('fit-single');
+  sc.classList.toggle('fit-center', fitH <= availH); // shorter than viewport → center it
+  el.style.maxWidth = 'none';
+  el.style.width = fitW + 'px';
+}
+
+let _fitResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_fitResizeTimer);
+  _fitResizeTimer = setTimeout(applyFitSingle, 150);
+});
+window.addEventListener('orientationchange', () => {
+  clearTimeout(_fitResizeTimer);
+  _fitResizeTimer = setTimeout(applyFitSingle, 150);
+});
 
 /* ── Image carousel ─────────────────────────────────────── */
 function selectImage(idx, thumbEl) {
@@ -1089,32 +1235,17 @@ function initPinchZoom() {
    of pushing them apart, and hijacking touchmove for panning would break
    vertical scrolling of the post. So here "zoom" instead doubles the image's
    real layout width — the images above/below reflow around it — and panning
-   is just native horizontal scrolling (scroll-container gets overflow-x:auto
-   only while zoomed). Same double-tap 1×↔2× gesture as paged mode, no pinch. */
+   is just native horizontal scrolling. Each image sits in its own .scroll-item
+   wrapper (see markup) which is what gets overflow-x:auto and scrollLeft
+   while zoomed — not the shared #scroll-container — so panning one zoomed
+   image can never drag any other image sideways, and the zoom simply stays
+   put (no auto-unzoom needed) as you scroll the post past it. Same
+   double-tap 1×↔2× gesture as paged mode, no pinch. */
 let zoomedImg = null;   // only one scroll-mode image zoomed at a time
-let zoomObserver = null; // auto-unzoom once the zoomed image scrolls out of view
-
-// Arms/disarms an IntersectionObserver that unzooms the image the moment it's
-// fully scrolled out of #scroll-container's view. Without this, the shared
-// container's overflow-x:auto (see .zoomed CSS) — and its scrollLeft — would
-// outlive the image it belongs to, leaving every OTHER image below it
-// horizontally draggable/offsettable too, since scrollLeft is one value for
-// the whole vertically-stacked list, not per-image.
-function armZoomAutoClose(img) {
-  disarmZoomAutoClose();
-  const sc = document.getElementById('scroll-container');
-  zoomObserver = new IntersectionObserver(entries => {
-    if (!entries[0].isIntersecting && zoomedImg === img) setScrollZoom(img, false);
-  }, { root: sc, threshold: 0 });
-  zoomObserver.observe(img);
-}
-function disarmZoomAutoClose() {
-  if (zoomObserver) { zoomObserver.disconnect(); zoomObserver = null; }
-}
 
 function setScrollZoom(img, on, tapX, tapY) {
-  const sc = document.getElementById('scroll-container');
-  if (!sc) return;
+  const box = img.closest('.scroll-item');
+  if (!box) return;
   if (on) {
     if (zoomedImg && zoomedImg !== img) setScrollZoom(zoomedImg, false);
     const rect = img.getBoundingClientRect();
@@ -1122,31 +1253,27 @@ function setScrollZoom(img, on, tapX, tapY) {
     // centres on wherever was tapped — tapping dead centre reduces to just
     // centring the whole image, same as before.
     const fx = (tapX != null) ? Math.min(1, Math.max(0, (tapX - rect.left) / rect.width)) : 0.5;
-    // remember whatever setScrollImgSize() left inline so we can restore it exactly
+    // remember whatever setScrollImgSize()/applyFitSingle() left inline so we can restore it exactly
     img.dataset.prevW  = img.style.width;
     img.dataset.prevMw = img.style.maxWidth;
     const newWidth = rect.width * 2;
     img.style.maxWidth  = 'none';
     img.style.width     = newWidth + 'px';
-    img.style.alignSelf = 'flex-start'; // anchor left: overflow (and scrollLeft) only ever grows right
-    sc.classList.add('zoomed');
+    box.classList.add('zoomed');
     zoomedImg = img; zoomScale = 2;
     // a synchronous scrollWidth/clientWidth read right after this width
     // write is unreliable on mobile — wait a frame for the new layout to
     // actually settle before centring on the tap point.
     requestAnimationFrame(() => {
       if (zoomedImg !== img) return; // unzoomed again before this ran
-      const maxScroll = Math.max(0, sc.scrollWidth - sc.clientWidth);
-      sc.scrollLeft = Math.min(maxScroll, Math.max(0, fx * newWidth - sc.clientWidth / 2));
+      const maxScroll = Math.max(0, box.scrollWidth - box.clientWidth);
+      box.scrollLeft = Math.min(maxScroll, Math.max(0, fx * newWidth - box.clientWidth / 2));
     });
-    armZoomAutoClose(img);
   } else {
-    disarmZoomAutoClose();
     img.style.width = img.dataset.prevW || '';
     img.style.maxWidth = img.dataset.prevMw || '';
-    img.style.alignSelf = '';
-    sc.classList.remove('zoomed');
-    sc.scrollLeft = 0;
+    box.classList.remove('zoomed');
+    box.scrollLeft = 0;
     if (zoomedImg === img) { zoomedImg = null; zoomScale = 1; }
   }
 }
@@ -1498,7 +1625,14 @@ function navTo(dir, pos) {
   const id = dir==='prev' ? prevId : nextId;
   if (!id) return;
   const posSuffix = pos === 'last' ? '#last' : '';
-  window.location.href = `/post/${id}/${navSuffix}${posSuffix}`;
+  const url = `/post/${id}/${navSuffix}${posSuffix}`;
+  // Desktop: replace instead of push, so stepping through many posts in a row
+  // collapses to ONE history entry — pressing the browser Back button once
+  // goes straight back to wherever you entered this chain from (normally the
+  // gallery), instead of stepping back through every post visited. Mobile
+  // keeps normal push navigation (one Back press per post), unchanged.
+  if (isMobileDetail()) window.location.href = url;
+  else window.location.replace(url);
 }
 
 /* ── Tag search from the post page (PC) ──────────────────── */
@@ -2101,12 +2235,59 @@ async function renderQuickTagSheet() {
   if (recent.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>' + recent.map(t => chip(t, true)).join('') + '</div>';
   wrap.innerHTML = html || '<div style="font-size:.78rem;color:var(--text-dim);">no favorite or recent tags yet — favorite some tags, or add one above.</div>';
 }
-async function openQuickTagSheet() {
+/* Quick-folder row in the same sheet: one chip per manual folder, ✓ + .applied
+   when this post is already in it, a tap toggles membership and the sheet stays
+   open — same idiom as the tag chips. Folder names are untrusted, so chips are
+   built with textContent, never an innerHTML template. */
+async function renderQuickFolderSheet() {
+  const wrap = document.getElementById('quick-folder-chips');
+  if (!wrap) return;
+  const rowEl = document.createElement('div');
+  rowEl.className = 'quick-row';
+  const lbl = document.createElement('span');
+  lbl.className = 'quick-lbl'; lbl.textContent = '📁';
+  rowEl.appendChild(lbl);
+  let d = {};
+  try { d = await (await fetch('/api/folders/?ids=' + POST_ID)).json(); } catch (e) {}
+  if (d.error || !Array.isArray(d.folders)) {
+    const err = document.createElement('span');
+    err.style.cssText = 'font-size:.72rem;color:var(--text-dim);line-height:1.4;';
+    err.textContent = d.error || "couldn't load folders";
+    rowEl.appendChild(err);
+    wrap.innerHTML = ''; wrap.appendChild(rowEl);
+    return;
+  }
+  const folders = d.folders.filter(f => !f.is_smart);
+  if (!folders.length) {
+    const none = document.createElement('span');
+    none.style.cssText = 'font-size:.75rem;color:var(--text-dim);';
+    none.textContent = 'no folders yet';
+    rowEl.appendChild(none);
+  } else {
+    folders.forEach(f => {
+      const chip = document.createElement('span');
+      chip.className = 'quick-chip' + (f.contains ? ' applied' : '');
+      chip.textContent = (f.contains ? '✓ ' : '') + f.name;
+      chip.onclick = () => quickToggleFolder(f.id, f.contains);
+      rowEl.appendChild(chip);
+    });
+  }
+  wrap.innerHTML = '';
+  wrap.appendChild(rowEl);
+}
+async function quickToggleFolder(id, isIn) {
+  await apiFolderMembership([POST_ID], id, !isIn);
+  setTimeout(renderQuickFolderSheet, 150);
+}
+function openQuickTagSheet() {
   document.body.style.overflow = 'hidden';
-  await renderQuickTagSheet();
   document.getElementById('quick-tag-backdrop').classList.add('open');
   document.getElementById('quick-tag-input').value = '';
   hideQuickTagSuggestions();
+  // populate after opening — a slow/failed /api/folders/ or fav-tags fetch must
+  // never keep the sheet from showing
+  renderQuickTagSheet().catch(() => {});
+  renderQuickFolderSheet().catch(() => {});
 }
 function closeQuickTagSheet() {
   document.getElementById('quick-tag-backdrop').classList.remove('open');
@@ -2161,7 +2342,12 @@ document.addEventListener('click', e => {
    held down while scrolling (dragging a scrollbar, or just clicking then
    slowly wheeling) has no "wheel" event to cancel the timer on, so it kept
    firing false-positives during normal scrolling. Desktop instead uses the
-   'quick_tag' key binding ('t' by default, see the keydown handler above). */
+   'quick_tag' key binding ('t' by default, see the keydown handler above).
+   touchend/touchcancel listen in the CAPTURE phase: attachZoom()/attachScrollZoom()
+   call stopPropagation() on a double-tap's second touchend so the main gesture
+   handler doesn't read it as a tap, which would otherwise also swallow a
+   bubble-phase cancel() here — leaving this timer armed to pop the quick-tag
+   sheet ~450ms after every double-tap zoom. */
 (function() {
   let timer = null, sx = 0, sy = 0, moved = false;
   const HOLD_MS = 450, MOVE_TOL = 10;
@@ -2192,8 +2378,8 @@ document.addEventListener('click', e => {
   targets.forEach(el => {
     el.addEventListener('touchstart', onTouchStart, {passive:true});
     el.addEventListener('touchmove',  onTouchMove,  {passive:true});
-    el.addEventListener('touchend',   cancel,        {passive:true});
-    el.addEventListener('touchcancel', cancel,       {passive:true});
+    el.addEventListener('touchend',   cancel,        {passive:true, capture:true});
+    el.addEventListener('touchcancel', cancel,       {passive:true, capture:true});
   });
 })();
 async function aiTag() {
@@ -2331,7 +2517,10 @@ function scrollDetailTop() {
 }
 
 /* ── Init ────────────────────────────────────────────────── */
-applyViewMode(viewMode);
+// single posts: don't persist the initial mode — it was just derived from
+// storage, and when fit-to-screen forced scroll it must not overwrite the
+// post's remembered choice (so turning fit off can restore it).
+applyViewMode(viewMode, IS_MULTI);
 const scrollTopBtn = document.getElementById('mini-scrolltop-btn');
 if (scrollTopBtn && (IS_MULTI || IS_TALL)) scrollTopBtn.style.display = '';
 loadNeighbors();
@@ -2458,5 +2647,6 @@ if (isMobileDetail()) {
   const saved = localStorage.getItem('scrollImgSize_desktop') || '900px';
   setScrollImgSize(saved, 'desktop');
 }
+applyFitSingleBtn();
 </script>
 {% endblock %}

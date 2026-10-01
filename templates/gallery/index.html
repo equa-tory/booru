@@ -184,17 +184,7 @@ body.select-mode .scroll-fabs { display:none; }
         <button onclick="newSmartFolder()" title="save the current search/filters as a smart folder" style="font-family:var(--mono);font-size:.62rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:1px 5px;cursor:pointer;">+smart</button>
       </div>
     </div>
-    <div class="tag-list" id="folder-list">
-      {% for f in folders %}
-      <div class="tag-item tag-entry">
-        <a class="tag-link" href="{% if f.is_smart %}/?{{ f.query }}{% else %}?folder={{ f.id }}{% endif %}" title="{{ f.name }}">{% if f.is_smart %}&#9733; {% endif %}{{ f.name }}</a>
-        <span class="tag-add-btn" onclick="renameFolder({{ f.id }}, '{{ f.name|escapejs }}')" title="rename folder">&#9998;</span>
-        <span class="tag-add-btn" onclick="deleteFolder({{ f.id }}, '{{ f.name|escapejs }}')" title="delete folder">&times;</span>
-      </div>
-      {% empty %}
-      <div style="font-size:.7rem;color:var(--text-dim);padding:.2rem 0;">no folders yet</div>
-      {% endfor %}
-    </div>
+    <div class="tag-list" id="folder-list"></div>
   </div>
 
   <div class="sidebar-section">
@@ -202,6 +192,7 @@ body.select-mode .scroll-fabs { display:none; }
     <button class="mode-btn reduce-motion-btn" onclick="toggleReduceMotion()" style="width:100%;margin-top:.3rem;">&#9889; reduce animations</button>
     <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.3rem;">&#9889; fast mode</button>
     <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.3rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
+    <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.3rem;" title="post page: hide title/image-count/added-date, the current-image split/remove/delete row, and the merge block">&#9707; minimal post UI</button>
   </div>
 
   <div class="sidebar-section">
@@ -414,14 +405,25 @@ window.Q_TOKENS = [{% for t in q_tags %}'{{ t|escapejs }}'{% if not forloop.last
 // current filters (minus page) — read by newSmartFolder() in base.html
 window.CURRENT_QUERY = '{{ current_query|escapejs }}';
 
-// ── Remember sort across a full app restart (PWA cold start only) ─────────
-// sessionStorage.appSession distinguishes a cold start from in-app
-// navigation; only set once per launch, so this can only redirect the very
-// first bare "/" load. location.replace keeps it out of history and never
-// loops (the target URL always carries ?sort=, so it won't match again).
+// Desktop sidebar folder tree — fetched + rendered client-side (base.html's
+// renderFolderTree()) so it's the exact same tree-building code the mobile
+// "more" sheet and the add-to-folder picker use, instead of a 4th separate
+// flat-list implementation.
+document.addEventListener('DOMContentLoaded', async () => {
+  const el = document.getElementById('folder-list');
+  if (!el || typeof renderFolderTree === 'undefined') return;
+  let d = {};
+  try { d = await (await fetch('/api/folders/')).json(); } catch (e) {}
+  renderFolderTree(el, d.folders, {mode: 'nav', error: d.error});  // shows an error row if folders isn't an array
+});
+
+// ── Remember sort across every bare "/" landing (cold start AND clicking the
+// logo mid-session) ────────────────────────────────────────────────────
+// Runs on every load of the bare landing page, not just the first — the
+// user expects the logo to always return to the remembered sort, not just a
+// PWA cold start. location.replace keeps it out of history and never loops
+// (the target URL always carries ?sort=, so it won't match "bare" again).
 (function restoreSort() {
-  if (sessionStorage.getItem('appSession')) return;
-  sessionStorage.setItem('appSession', '1');
   if (localStorage.getItem('rememberSort') !== '1') return;
   if (location.search) return; // only take over the bare landing page
   const s = localStorage.getItem('lastSort');
@@ -1315,10 +1317,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('recent-searches');
-  if (el && typeof recentSearchChips !== 'undefined') {
-    const chips = recentSearchChips();
-    if (chips) el.innerHTML = '<span class="quick-lbl">searches</span>' + chips;
-  }
+  if (el && typeof recentSearchesRow !== 'undefined') el.innerHTML = recentSearchesRow();
 });
 
 // ── Keyboard shortcuts (gallery) ──────────────────────────────

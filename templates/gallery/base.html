@@ -156,6 +156,10 @@ aside {
 .tag-count { font-size: .72rem; color: var(--text-dim); font-family: var(--mono); }
 .tag-add-btn { color: var(--text-dim); font-size: 1rem; cursor: pointer; padding: 0 .2rem; flex-shrink: 0; font-family: var(--mono); transition: color .1s; -webkit-tap-highlight-color: transparent; }
 .tag-add-btn:hover { color: var(--accent); }
+/* folder tree expand/collapse caret — reserves width even when empty (leaf
+   folders) so sibling rows still line up */
+.folder-caret { display:inline-block; width:12px; flex-shrink:0; font-size:.7rem; color:var(--text-dim); cursor:pointer; text-align:center; -webkit-tap-highlight-color:transparent; }
+.folder-caret:empty { cursor:default; }
 .tag-fav-btn { color: var(--border); font-size: .85rem; cursor: pointer; flex-shrink: 0; -webkit-tap-highlight-color: transparent; transition: color .15s; line-height: 1; padding: 0 .1rem; }
 .tag-fav-btn:hover, .tag-fav-btn.active { color: #f87272; }
 
@@ -330,10 +334,13 @@ body.fast-mode .sheet-backdrop > div, body.fast-mode .swipe-preview, body.fast-m
 .quick-chip { display:inline-flex; align-items:center; gap:.3rem; font-family:var(--mono); font-size:.74rem; padding:.2rem .5rem; border-radius:4px; border:1px solid var(--border); background:var(--bg3); color:var(--text); cursor:pointer; -webkit-tap-highlight-color:transparent; }
 .quick-chip:active, .quick-chip:hover { border-color:var(--accent); color:var(--accent); }
 .quick-chip.character{color:var(--tag-character);} .quick-chip.artist{color:var(--tag-artist);} .quick-chip.meta{color:var(--tag-meta);} .quick-chip.ai{color:var(--tag-ai);}
-/* small '-' to drop one entry out of a recent-searches/recent-tags history
-   list (not shown on favorite-tag chips — those aren't history) */
+/* small '-' to drop one entry out of a recent-tags history list (not shown
+   on favorite-tag chips — those aren't history) */
 .quick-chip-x { color:var(--text-dim); line-height:1; -webkit-tap-highlight-color:transparent; }
 .quick-chip-x:hover, .quick-chip-x:active { color:var(--danger); }
+/* one button to forget the whole recent-searches list at once (no per-chip x) */
+.quick-chip-x-all { font-family:var(--mono); font-size:.68rem; padding:.15rem .4rem; border-radius:4px; border:1px solid var(--border); background:none; color:var(--text-dim); cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.quick-chip-x-all:hover, .quick-chip-x-all:active { border-color:var(--danger); color:var(--danger); }
 .cheat-code { font-family: var(--mono); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent); font-size: .78rem; white-space: nowrap; }
 
 /* ── Misc ─────────────────────────────────────────────── */
@@ -489,7 +496,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="mode-btn force-scroll-btn" onclick="toggleForceScroll()" style="width:100%;margin-top:.4rem;" title="multi-image posts always open as one continuous scroll — removes the paged/scroll toggle button since there's nothing left to switch to">&#8693; always scroll (no paged mode)</button>
       <button class="mode-btn fast-mode-btn" onclick="toggleFastMode()" style="width:100%;margin-top:.4rem;">&#9889; fast mode (less smooth, faster)</button>
       <button class="mode-btn live-scan-btn" onclick="toggleLiveScan()" style="width:100%;margin-top:.4rem;" title="show newly scanned posts appear at the top of the grid while a scan is running">&#9673; live items during scan</button>
-      <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.4rem;" title="in-post only: hides the header + bottom nav, replaces them with one slim thumb-reachable bar (rating, fav, info, more, prev/next arrows)">&#9707; minimal post UI</button>
+      <button class="mode-btn minimal-ui-btn" onclick="toggleMinimalUi()" style="width:100%;margin-top:.4rem;" title="in-post only: on phone, hides the header + bottom nav for one slim thumb-reachable bar (rating, fav, info, more, prev/next arrows); also hides title/image-count/added-date, the current-image split/remove/delete row, and the merge block everywhere">&#9707; minimal post UI</button>
       <button class="mode-btn swipe-gallery-btn" onclick="toggleSwipeGallery()" style="width:100%;margin-top:.4rem;" title="in-post only: swipe down closes the post straight to the gallery page it's on (with the current search), instead of just going back">&#8862; swipe down &rarr; gallery page</button>
       <button class="mode-btn tap-filmstrip-btn" onclick="toggleTapFilmstrip()" style="width:100%;margin-top:.4rem;" title="in-post scroll mode: tapping an image (or the frame while zoomed) shows the filmstrip overlay. Turn off to leave only scroll + double-tap zoom, no distractions">&#9646; tap opens filmstrip</button>
       <div style="margin-top:.55rem;">
@@ -594,22 +601,27 @@ input[type=range].size-slider::-moz-range-thumb {
 function getCsrf() { return document.querySelector('meta[name="csrf-token"]').content; }
 function openCheatSheet() { document.getElementById('cheat-modal').classList.add('open'); }
 
-// ── Folders (shared: gallery sidebar, mobile more sheet, post detail) ──
+// ── Folders (shared tree: gallery sidebar, mobile more sheet, post detail) ──
+// Folder.parent nests folders into a tree; folders_list()/api/folders/ returns
+// a flat array (each row carries its own parent_id) and renderFolderTree()
+// below builds the nested UI from it client-side — one renderer, three hosts
+// (desktop sidebar, mobile sheet, add-to-folder picker) instead of three
+// separate flat-list builders.
 let _folderPickerIds = [];
-async function newManualFolder() {
+async function newManualFolder(parentId) {
   const name = prompt('Folder name:');
   if (!name) return;
-  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:false})});
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:false, parent_id: parentId || null})});
   location.reload();
 }
-async function newSmartFolder() {
+async function newSmartFolder(parentId) {
   const name = prompt('Smart folder name (saves the current search/filters — its contents update automatically):');
   if (!name) return;
-  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:true, query: window.CURRENT_QUERY || ''})});
+  await fetch('/api/folder/create/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name, is_smart:true, query: window.CURRENT_QUERY || '', parent_id: parentId || null})});
   location.reload();
 }
 async function deleteFolder(id, name) {
-  if (!confirm(`Delete folder "${name}"? (the posts inside are not deleted)`)) return;
+  if (!confirm(`Delete folder "${name}" and ALL its subfolders? (the posts inside are not deleted)`)) return;
   await fetch(`/api/folder/${id}/delete/`, {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
   location.reload();
 }
@@ -619,30 +631,140 @@ async function renameFolder(id, oldName) {
   await fetch(`/api/folder/${id}/rename/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({name})});
   location.reload();
 }
+async function toggleFolderSubfolders(id, cur) {
+  await fetch(`/api/folder/${id}/subfolders/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({include_subfolders: !cur})});
+  location.reload();
+}
+
+// Expand/collapse state, shared by every tree host so it survives the
+// location.reload() the mutators above do (keyed by folder id, not by host).
+function getFolderTreeCollapsed() {
+  try { return new Set(JSON.parse(localStorage.getItem('folderTreeCollapsed') || '[]')); }
+  catch(e) { return new Set(); }
+}
+function toggleFolderTreeCollapsed(id) {
+  const s = getFolderTreeCollapsed();
+  if (s.has(id)) s.delete(id); else s.add(id);
+  localStorage.setItem('folderTreeCollapsed', JSON.stringify([...s]));
+}
+
+// Renders a flat folders[] array (each {id,name,is_smart,query,parent_id,
+// contains?,include_subfolders?}) as a nested tree into containerEl.
+//   mode 'nav'    (sidebar / mobile sheet): rows link to the folder and carry
+//                 +subfolder/rename/delete icons.
+//   mode 'picker' (add-to-folder modal): clicking a manual folder's row
+//                 adds/removes the post(s) passed to openFolderPicker(); smart
+//                 folders show (so nested manual folders stay reachable) but
+//                 are disabled, since they can't hold explicit members.
+function renderFolderTree(containerEl, folders, opts) {
+  opts = opts || {};
+  const mode = opts.mode || 'nav';
+  containerEl.innerHTML = '';
+  if (!Array.isArray(folders)) {
+    const err = document.createElement('div');
+    err.style.cssText = 'font-size:.72rem;color:var(--text-dim);padding:.2rem 0;line-height:1.4;';
+    err.textContent = opts.error || "couldn't load folders";
+    containerEl.appendChild(err);
+    return;
+  }
+  if (!folders.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:.75rem;color:var(--text-dim);padding:.2rem 0;';
+    empty.textContent = mode === 'picker' ? 'no folders yet — make one with "+folder" first' : 'no folders yet';
+    containerEl.appendChild(empty);
+    return;
+  }
+  const byParent = new Map();
+  folders.forEach(f => {
+    const key = f.parent_id || null;
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(f);
+  });
+  const collapsed = getFolderTreeCollapsed();
+
+  function renderLevel(parentId, depth) {
+    (byParent.get(parentId) || []).forEach(f => {
+      const hasChildren = byParent.has(f.id);
+      const row = document.createElement('div');
+      row.className = 'tag-item tag-entry';
+      row.style.paddingLeft = (depth * 14) + 'px';
+
+      const caret = document.createElement('span');
+      caret.className = 'folder-caret';
+      if (hasChildren) {
+        caret.textContent = collapsed.has(f.id) ? '▸' : '▾';
+        caret.title = collapsed.has(f.id) ? 'expand' : 'collapse';
+        caret.onclick = () => { toggleFolderTreeCollapsed(f.id); renderFolderTree(containerEl, folders, opts); };
+      }
+      row.appendChild(caret);
+
+      if (mode === 'picker') {
+        const btn = document.createElement('button');
+        btn.className = 'btn' + (f.contains ? ' primary' : '');
+        btn.style.cssText = 'flex:1;text-align:left;';
+        // textContent, not innerHTML — folder names are untrusted user input
+        if (f.is_smart) {
+          btn.disabled = true;
+          btn.title = "smart folders can't hold posts directly";
+          btn.textContent = '★ ' + f.name;
+        } else {
+          btn.title = f.contains ? 'already in this folder — click to remove' : '';
+          btn.textContent = (f.contains ? '✓ ' : '') + f.name;
+          btn.onclick = () => f.contains ? doRemoveFromFolder(f.id) : doAddToFolder(f.id);
+        }
+        row.appendChild(btn);
+      } else {
+        const a = document.createElement('a');
+        a.className = 'tag-link';
+        // absolute paths: this renderer is shared by the mobile "more" sheet,
+        // which can be opened from a post detail page (/post/<id>/) as well
+        // as the gallery (/) — a relative "?folder=" href would resolve
+        // against whatever path it's opened from instead of the gallery.
+        a.href = f.is_smart ? ('/?' + f.query) : ('/?folder=' + f.id);
+        a.title = f.name;
+        a.textContent = (f.is_smart ? '★ ' : '') + f.name;
+        row.appendChild(a);
+
+        // "include subfolders" toggle — a labelled pill (not a cryptic glyph)
+        // right after the name, on every manual folder that has children.
+        if (!f.is_smart && hasChildren) {
+          const sub = document.createElement('span');
+          sub.textContent = f.include_subfolders ? '✓ subfolders' : '+ subfolders';
+          sub.style.cssText = 'flex-shrink:0;font-family:var(--mono);font-size:.62rem;cursor:pointer;'
+            + 'padding:1px 5px;border-radius:4px;border:1px solid var(--border);-webkit-tap-highlight-color:transparent;'
+            + (f.include_subfolders ? 'color:var(--accent);border-color:var(--accent);' : 'color:var(--text-dim);');
+          sub.title = f.include_subfolders
+            ? 'opening this folder also lists its subfolders’ posts — tap for its own only'
+            : 'opening this folder lists only its own posts — tap to also include subfolders’ posts';
+          sub.onclick = (e) => { e.preventDefault(); e.stopPropagation(); toggleFolderSubfolders(f.id, f.include_subfolders); };
+          row.appendChild(sub);
+        }
+
+        const add = document.createElement('span');
+        add.className = 'tag-add-btn'; add.title = 'new subfolder'; add.textContent = '+';
+        add.onclick = () => newManualFolder(f.id);
+        const ren = document.createElement('span');
+        ren.className = 'tag-add-btn'; ren.title = 'rename folder'; ren.textContent = '✎';
+        ren.onclick = () => renameFolder(f.id, f.name);
+        const del = document.createElement('span');
+        del.className = 'tag-add-btn'; del.title = 'delete folder (and its subfolders)'; del.textContent = '×';
+        del.onclick = () => deleteFolder(f.id, f.name);
+        row.append(add, ren, del);
+      }
+      containerEl.appendChild(row);
+      if (hasChildren && !collapsed.has(f.id)) renderLevel(f.id, depth + 1);
+    });
+  }
+  renderLevel(null, 0);
+}
+
 async function openFolderPicker(ids) {
   if (!ids || !ids.length) { toast('select posts first','err'); return; }
   _folderPickerIds = ids;
   const list = document.getElementById('folder-picker-list');
-  list.innerHTML = '';
-  const d = await (await fetch('/api/folders/?ids=' + ids.join(','))).json();
-  const manual = d.folders.filter(f => !f.is_smart);
-  if (!manual.length) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'font-size:.8rem;color:var(--text-dim);';
-    empty.textContent = 'no folders yet — make one with "+folder" first';
-    list.appendChild(empty);
-  } else {
-    manual.forEach(f => {
-      const btn = document.createElement('button');
-      btn.className = 'btn' + (f.contains ? ' primary' : '');
-      btn.style.textAlign = 'left';
-      btn.title = f.contains ? 'already in this folder — click to remove' : '';
-      // textContent, not innerHTML — folder names are untrusted user input
-      btn.textContent = (f.contains ? '✓ ' : '') + f.name;
-      btn.onclick = () => f.contains ? doRemoveFromFolder(f.id) : doAddToFolder(f.id);
-      list.appendChild(btn);
-    });
-  }
+  let d = {};
+  try { d = await (await fetch('/api/folders/?ids=' + ids.join(','))).json(); } catch (e) {}
+  renderFolderTree(list, d.folders, {mode: 'picker', error: d.error});
   document.getElementById('folder-modal').classList.add('open');
 }
 function closeFolderPicker() { document.getElementById('folder-modal').classList.remove('open'); }
@@ -655,46 +777,35 @@ document.addEventListener('click', e => {
     e.target.classList.remove('open');
   }
 });
+// Add/remove posts to a manual folder. Shared by the picker modal (doAdd/
+// doRemoveFromFolder below) and the detail page's quick-folder row, which
+// toggles membership without closing anything.
+async function apiFolderMembership(ids, folderId, add) {
+  await fetch('/api/bulk/', {method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
+    body: JSON.stringify({ids, action: add ? 'add_to_folder' : 'remove_from_folder', folder_id: folderId})});
+}
 async function doAddToFolder(folderId) {
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'add_to_folder',folder_id:folderId})});
+  await apiFolderMembership(_folderPickerIds, folderId, true);
   closeFolderPicker();
   toast(`added ${_folderPickerIds.length} post(s) to folder`);
   if (typeof finishBulkAction !== 'undefined') finishBulkAction(false);
 }
 async function doRemoveFromFolder(folderId) {
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:_folderPickerIds,action:'remove_from_folder',folder_id:folderId})});
+  await apiFolderMembership(_folderPickerIds, folderId, false);
   closeFolderPicker();
   toast(`removed ${_folderPickerIds.length} post(s) from folder`);
   if (typeof finishBulkAction !== 'undefined') finishBulkAction(false);
 }
 // Populates the mobile "more" sheet folder list — called from openMobMenu().
+// Can be opened from the gallery OR a post detail page, hence renderFolderTree's
+// nav-mode absolute hrefs.
 async function renderMobFolders() {
   const list = document.getElementById('mob-folder-list');
   if (!list) return;
-  const d = await (await fetch('/api/folders/')).json();
-  list.innerHTML = '';
-  if (!d.folders.length) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'font-size:.75rem;color:var(--text-dim);';
-    empty.textContent = 'no folders yet';
-    list.appendChild(empty);
-  }
-  d.folders.forEach(f => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:.4rem;';
-    const a = document.createElement('a');
-    a.className = 'btn'; a.style.cssText = 'flex:1;text-align:left;';
-    a.href = f.is_smart ? ('/?' + f.query) : ('/?folder=' + f.id);
-    a.textContent = (f.is_smart ? '★ ' : '') + f.name;
-    const ren = document.createElement('button');
-    ren.className = 'btn'; ren.textContent = '✎';
-    ren.onclick = () => renameFolder(f.id, f.name);
-    const del = document.createElement('button');
-    del.className = 'btn'; del.textContent = '×';
-    del.onclick = () => deleteFolder(f.id, f.name);
-    row.append(a, ren, del);
-    list.appendChild(row);
-  });
+  let d = {};
+  try { d = await (await fetch('/api/folders/')).json(); } catch (e) {}
+  renderFolderTree(list, d.folders, {mode: 'nav', error: d.error});
 }
 
 /* ── Keyboard bindings ─────────────────────────────────────────
@@ -1203,14 +1314,15 @@ function pushRecentSearch(query) {
   localStorage.setItem('recentSearches', JSON.stringify(r.slice(0, 12)));
   pushRecentSync();
 }
-// Drop one entry from the recent-searches history. Re-renders every chip
-// host at once, since recentSearchChips() is shared by all of them.
-function removeRecentSearch(query) {
-  localStorage.setItem('recentSearches', JSON.stringify(getRecentSearches().filter(q => q !== query)));
+// Forget the whole recent-searches history (does NOT touch recentPosts, the
+// recently-*viewed* strip — a separate key/function). Re-renders every chip
+// host at once, since recentSearchesRow() is shared by all of them.
+function clearRecentSearches() {
+  localStorage.setItem('recentSearches', '[]');
   pushRecentSync();
   ['recent-searches', 'detail-recent-searches'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) { const c = recentSearchChips(); el.innerHTML = c ? '<span class="quick-lbl">searches</span>' + c : ''; }
+    if (el) el.innerHTML = recentSearchesRow();
   });
   if (typeof renderSheetQuick !== 'undefined') renderSheetQuick();
 }
@@ -1319,10 +1431,7 @@ async function initRecentSync() {
   if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
   ['recent-searches', 'detail-recent-searches'].forEach(id => {
     const el = document.getElementById(id);
-    if (el && typeof recentSearchChips !== 'undefined') {
-      const c = recentSearchChips();
-      el.innerHTML = c ? '<span class="quick-lbl">searches</span>' + c : '';
-    }
+    if (el && typeof recentSearchesRow !== 'undefined') el.innerHTML = recentSearchesRow();
   });
 }
 document.addEventListener('DOMContentLoaded', initRecentSync);
@@ -1337,9 +1446,17 @@ function recentSearchChips() {
     const esc = q.replace(/'/g,"\\'").replace(/"/g,'&quot;');
     return `<span class="quick-chip" style="max-width:220px;" title="${q.replace(/"/g,'&quot;')}" onclick="runSearchQuery('${esc}')">` +
       `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${q.replace(/</g,'&lt;')}</span>` +
-      `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentSearch('${esc}')" title="remove from history">&times;</span>` +
       `</span>`;
   }).join('');
+}
+// Full "searches" row (label + one "clear all" button + chips), or '' if
+// there's no history. Shared by every host that renders recent searches
+// (gallery sidebar, post detail page, mobile tag sheet) so they stay in sync.
+function recentSearchesRow() {
+  const c = recentSearchChips();
+  if (!c) return '';
+  return '<span class="quick-lbl">searches</span>' +
+    '<button class="quick-chip-x-all" onclick="clearRecentSearches()" title="forget all searches">clear all</button>' + c;
 }
 
 /* ── Mobile tag sheet ────────────────────────────────── */
@@ -1380,8 +1497,8 @@ async function renderSheetQuick() {
   const recent = getRecentTags().slice(0, 10);
   const favs   = await getFavTags();
   let html = '';
-  const searches = recentSearchChips();
-  if (searches) html += '<div class="quick-row"><span class="quick-lbl">searches</span>' + searches + '</div>';
+  const searches = recentSearchesRow();
+  if (searches) html += '<div class="quick-row">' + searches + '</div>';
   if (recent.length) html += '<div class="quick-row"><span class="quick-lbl">recent</span>'
     + recent.map(t => `<span class="quick-chip ${t.category||''}" onclick="sheetAppendTag('${t.name}')">${t.name}`
       + `<span class="quick-chip-x" onclick="event.stopPropagation();removeRecentTag('${t.name}')" title="remove from history">&times;</span></span>`).join('') + '</div>';

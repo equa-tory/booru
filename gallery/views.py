@@ -212,7 +212,15 @@ def _build_post_qs(request):
         posts = posts.filter(fav=True)
 
     if folder_id.isdigit():
-        posts = posts.filter(folders__id=int(folder_id)).distinct()
+        try:
+            _folder = Folder.objects.filter(id=int(folder_id)).first()
+            _recurse = bool(_folder and _folder.include_subfolders)
+        except Exception:
+            _folder, _recurse = None, False  # DB behind on a folder migration
+        if _recurse:
+            posts = posts.filter(folders__id__in=[_folder.id, *_folder.descendant_ids()]).distinct()
+        else:
+            posts = posts.filter(folders__id=int(folder_id)).distinct()
 
     if multi_only == '1':
         posts = posts.annotate(_img_count=Count('images')).filter(_img_count__gt=1)
@@ -1148,19 +1156,27 @@ def bulk_action(request):
 
 @require_POST
 def folder_create(request):
-    data     = json.loads(request.body)
-    name     = data.get('name', '').strip()
-    is_smart = bool(data.get('is_smart', False))
-    query    = data.get('query', '').strip() if is_smart else ''
+    data      = json.loads(request.body)
+    name      = data.get('name', '').strip()
+    is_smart  = bool(data.get('is_smart', False))
+    query     = data.get('query', '').strip() if is_smart else ''
+    parent_id = data.get('parent_id')
     if not name:
         return JsonResponse({'error': 'name required'}, status=400)
-    folder = Folder.objects.create(name=name, is_smart=is_smart, query=query)
-    return JsonResponse({'id': folder.id, 'name': folder.name,
-                          'is_smart': folder.is_smart, 'query': folder.query})
+    parent = None
+    if parent_id:
+        parent = Folder.objects.filter(pk=parent_id).first()
+        if not parent:
+            return JsonResponse({'error': 'parent folder not found'}, status=404)
+    folder = Folder.objects.create(name=name, is_smart=is_smart, query=query, parent=parent)
+    return JsonResponse({'id': folder.id, 'name': folder.name, 'is_smart': folder.is_smart,
+                          'query': folder.query, 'parent_id': folder.parent_id})
 
 
 @require_POST
 def folder_delete(request, pk):
+    # cascades to the whole subtree (Folder.parent is on_delete=CASCADE) —
+    # posts themselves are never touched, only the folder rows.
     Folder.objects.filter(pk=pk).delete()
     return JsonResponse({'ok': True})
 
@@ -1177,21 +1193,42 @@ def folder_rename(request, pk):
     return JsonResponse({'ok': True, 'name': folder.name})
 
 
+@require_POST
+def folder_set_subfolders(request, pk):
+    """Toggle whether opening this folder also shows its descendant folders' posts."""
+    data = json.loads(request.body)
+    folder = get_object_or_404(Folder, pk=pk)
+    folder.include_subfolders = bool(data.get('include_subfolders'))
+    folder.save(update_fields=['include_subfolders'])
+    return JsonResponse({'ok': True, 'include_subfolders': folder.include_subfolders})
+
+
 def folders_list(request):
-    """JSON list of all folders — used by the mobile "more" sheet and the
-    detail-page "add to folder" picker, neither of which has the gallery
-    index view's server-rendered context.
+    """JSON list of all folders — used by the gallery sidebar, the mobile
+    "more" sheet, and the detail-page "add to folder" picker. Flat (each row
+    carries its own parent_id); the shared renderFolderTree() JS builds the
+    tree client-side from that.
 
     Optional ?ids=1,2,3 — marks each folder 'contains': True if it already
     holds ALL of the given post ids, so the picker can highlight it (and
     switch its button to a remove action) instead of blindly re-adding."""
-    folders = Folder.objects.all()
+    from django.db.utils import OperationalError
     ids_param = request.GET.get('ids', '')
     ids = [int(i) for i in ids_param.split(',') if i.strip().isdigit()]
     result = []
-    for f in folders:
-        contains = bool(ids) and not f.is_smart and f.posts.filter(pk__in=ids).count() == len(ids)
-        result.append({'id': f.id, 'name': f.name, 'is_smart': f.is_smart, 'query': f.query, 'contains': contains})
+    try:
+        for f in Folder.objects.all():
+            contains = bool(ids) and not f.is_smart and f.posts.filter(pk__in=ids).count() == len(ids)
+            result.append({'id': f.id, 'name': f.name, 'is_smart': f.is_smart, 'query': f.query,
+                            'parent_id': f.parent_id, 'contains': contains,
+                            'include_subfolders': f.include_subfolders})
+    except OperationalError as e:
+        # almost always a missing column on a DB that predates a folder
+        # migration (e.g. an older db.sqlite3 swapped in) — surface the fix
+        # instead of a bare 500.
+        return JsonResponse(
+            {'folders': [], 'error': f'database is behind — run: python manage.py migrate  ({e})'},
+            status=503)
     return JsonResponse({'folders': result})
 
 

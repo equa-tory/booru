@@ -55,6 +55,7 @@ urlpatterns = [
     path('api/folder/create/', views.folder_create, name='folder_create'),
     path('api/folder/<int:pk>/delete/', views.folder_delete, name='folder_delete'),
     path('api/folder/<int:pk>/rename/', views.folder_rename, name='folder_rename'),
+    path('api/folder/<int:pk>/subfolders/', views.folder_set_subfolders, name='folder_set_subfolders'),
     path('api/folders/', views.folders_list, name='folders_list'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
