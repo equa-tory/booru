@@ -533,6 +533,30 @@ function saveInfiniteState() {
 // Reload but preserve infinite-scroll position (used by bulk actions).
 function reloadKeepingScroll() { saveInfiniteState(); location.reload(); }
 
+// Coming back from a post (back button / swipe down): put THAT post's card in view,
+// wherever it is — more reliable than a saved pixel offset, which belongs to the
+// post that was clicked and the exact URL. Infinite mode loads pages until it finds it.
+async function restoreFocusPost() {
+  let st = null;
+  try { st = JSON.parse(sessionStorage.getItem('focusPost') || 'null'); } catch(e) {}
+  sessionStorage.removeItem('focusPost');
+  if (!st || !st.id || Date.now() - (st.t || 0) > 600000) return false;
+  const find = () => document.querySelector(`#photo-grid [data-id="${st.id}"]`);
+  let card = find(), guard = 0;
+  while (!card && SCROLL_MODE && !infiniteExhausted && guard < 100) {
+    await loadNextPage(); guard++;
+    card = find();
+  }
+  if (!card) return false;
+  const go = () => card.scrollIntoView({block: 'center', behavior: 'instant'});
+  requestAnimationFrame(() => requestAnimationFrame(go));
+  setTimeout(go, 300);                       // images/grid sizing may still shift the layout
+  card.classList.add('focus-flash');
+  setTimeout(() => card.classList.remove('focus-flash'), 1400);
+  sessionStorage.removeItem('scrollY'); sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('infScroll');
+  return true;
+}
+
 async function restoreInfiniteScroll() {
   let st = null;
   try { st = JSON.parse(sessionStorage.getItem('infScroll') || 'null'); } catch(e) {}
@@ -1357,9 +1381,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // restore scroll position after navigation
   if (SCROLL_MODE) {
-    // infinite mode: re-load pages to the saved depth, then scroll
-    restoreInfiniteScroll().then(() => initInfiniteScroll());
+    // came back from a post → show its card; else (reload etc.) re-load pages to the saved depth, then scroll
+    restoreFocusPost().then(found => found ? null : restoreInfiniteScroll()).then(() => initInfiniteScroll());
   } else {
+    restoreFocusPost().then(found => { if (!found) restoreScrollY(); });
+  }
+});
+function restoreScrollY() {
+  {
     const savedURL = sessionStorage.getItem('scrollURL');
     const savedY   = sessionStorage.getItem('scrollY');
     if (savedURL && savedY && window.location.href === savedURL) {
@@ -1367,7 +1396,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
     }
   }
-});
+}
 
 // save grid size to prefs when changed
 const origSetGridSize = setGridSize;

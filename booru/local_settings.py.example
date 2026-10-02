@@ -4,3 +4,5 @@ MEDIA_ROOT = '/path/to/your/media'
 GALLERY_PASSWORD = 'change-me'
 # SECRET_KEY = 'something-long-and-random'
 # BACKUP_DIR = '/path/to/backups'   # default folder for DB backups (default: ./backups)
+# AI_MAX_IMAGES_PER_POST = 24       # items of a multi-image post that get AI-tagged (evenly spaced)
+# AI_MAX_GENERAL_MULTI = 80         # general tags kept for a multi-image post (single posts: 40)

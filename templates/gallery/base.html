@@ -178,6 +178,8 @@ aside {
 .tag-add-btn:hover { color: var(--accent); }
 .tag-sub-btn { color: var(--text-dim); font-size: 1rem; cursor: pointer; padding: 0 .2rem; flex-shrink: 0; font-family: var(--mono); transition: color .1s; -webkit-tap-highlight-color: transparent; }
 .tag-sub-btn:hover { color: #f87272; }
+@keyframes focusFlash { 0%,60% { outline-color: var(--accent); } 100% { outline-color: transparent; } }
+.photo-card.focus-flash { outline: 3px solid var(--accent); outline-offset: -3px; animation: focusFlash 1.4s ease-out forwards; }
 /* folder tree expand/collapse caret — reserves width even when empty (leaf
    folders) so sibling rows still line up */
 .folder-caret { display:inline-block; width:12px; flex-shrink:0; font-size:.7rem; color:var(--text-dim); cursor:pointer; text-align:center; -webkit-tap-highlight-color:transparent; }
@@ -1014,7 +1016,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;

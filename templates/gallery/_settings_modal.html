@@ -80,6 +80,12 @@
         <label class="set-note" style="margin:0;display:flex;align-items:center;gap:.3rem;">for <input type="number" id="ai-limit" min="0" value="100" style="width:4.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.25rem .35rem;"> posts <span>(0 = all remaining)</span></label>
       </div>
       <div class="set-note">Second-opinion character model (PixAI v0.9) — only ever <b>adds</b> character tags, newest posts first. Watch progress in the notifications; the stop button works, and the next run resumes where it stopped. The overlay shows <b style="color:#22d3ee">CH px ✓</b> for posts it has checked.</div>
+
+      <div class="set-actions" style="align-items:center;margin-top:.6rem;">
+        <button class="btn" id="ai-multi" onclick="startMultiRetag()" title="runs the main AI tagger over every item of the multi-image posts that were tagged from their cover only; adds tags only, resumable">&#10022; re-tag all multi-image posts</button>
+        <span class="set-note" id="ai-multi-info" style="margin:0;"></span>
+      </div>
+      <div class="set-note">Tags <b>every item</b> of a multi-image post (up to <span id="ai-multi-cap">24</span> per post, evenly spaced) and sums them: tags ranked by how many items carry them, only the strictest rating kept. Uses the main tagger chosen above; only <b>adds</b> tags. New posts and "ai auto-tag" already do this. Stoppable and resumable.</div>
     </div>
 
     <div class="set-sec">
@@ -200,6 +206,10 @@ async function loadAiInfo() {
     ? `character model: ${c.name} ready (${c.mb} MB, threshold ${c.threshold}) · ${Number(d.pixai_done).toLocaleString()} posts checked, ${Number(d.pixai_todo).toLocaleString()} not yet`
     : `character model: ${c.name} not downloaded yet (download it above — or just press re-tag, which downloads it first)`;
   document.getElementById('ai-auto').checked = !!d.auto;
+  document.getElementById('ai-multi-cap').textContent = d.multi_cap;
+  const mt = d.multi_todo || 0;
+  document.getElementById('ai-multi-info').textContent = `${Number(mt).toLocaleString()} to do · ${Number(d.multi_done || 0).toLocaleString()} done` + (mt ? ` · ${Number(d.multi_items || 0).toLocaleString()} images ≈ ${Math.max(0.1, Math.round((d.multi_items || 0) * 0.2 / 360) / 10)} h on the GPU (~0.2 s each)` : '');
+  document.getElementById('ai-multi').disabled = !mt;
 }
 async function setAiAuto(on) {
   try {
@@ -407,6 +417,16 @@ async function startCharRetag() {
     if (!r.ok) { toast('could not start', 'err'); return; }
     closeSettings();
     toast('re-tagging characters in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start', 'err'); }
+}
+async function startMultiRetag() {
+  if (!confirm('Run the main AI tagger over every item of all multi-image posts that were only tagged from their cover?\n\nIt only adds tags (nothing is removed). It can take hours — stop it any time; the next run continues where it stopped.')) return;
+  try {
+    const r = await fetch('/api/ai/multi-retag/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: '{}'});
+    if (!r.ok) { toast('could not start (another AI task running?)', 'err'); return; }
+    closeSettings();
+    toast('re-tagging multi-image posts in the background…');
     if (typeof pollTasks !== 'undefined') pollTasks(true);
   } catch(e) { toast('could not start', 'err'); }
 }

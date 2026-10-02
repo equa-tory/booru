@@ -4,7 +4,7 @@ import tempfile
 import json
 import random
 from django.shortcuts import render, get_object_or_404, redirect
-from django.http import JsonResponse
+from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
 from django.db.models import Q, Case, When, IntegerField, F, Count, Value, OuterRef, Subquery
@@ -1162,7 +1162,7 @@ def upload(request):
     if do_ai_tag:
         for post in posts_created:
             try:
-                apply_ai_tags(post, post.images.first())
+                apply_ai_tags(post)
             except Exception as e:
                 print(f"AI tag error: {e}")
 
@@ -1434,6 +1434,11 @@ AI_GENERAL_THRESHOLD   = getattr(settings, 'AI_GENERAL_THRESHOLD', 0.35)
 AI_CHARACTER_THRESHOLD = getattr(settings, 'AI_CHARACTER_THRESHOLD', 0.85)
 AI_MAX_GENERAL         = 40
 AI_MAX_CHARACTERS      = 12
+# multi-image posts: tag up to N items (evenly spaced when there are more) and sum the results
+AI_MAX_IMAGES_PER_POST = getattr(settings, 'AI_MAX_IMAGES_PER_POST', 24)
+AI_MAX_GENERAL_MULTI   = getattr(settings, 'AI_MAX_GENERAL_MULTI', 80)
+AI_MAX_CHARACTERS_MULTI = 20
+_RATING_ORDER = ['general', 'sensitive', 'questionable', 'explicit']      # least -> most severe
 
 
 def _main_model():
@@ -1492,15 +1497,72 @@ def _run_wd14(file_path, thumb_path='', custom=False):
     return res
 
 
+def _sample_images(images, n):
+    """At most n items, evenly spaced, always including the first and the last."""
+    if n <= 0 or len(images) <= n:
+        return list(images)
+    if n == 1:
+        return [images[0]]
+    idx = sorted({round(i * (len(images) - 1) / (n - 1)) for i in range(n)})
+    return [images[i] for i in idx]
+
+
+def _merge_ai_results(results):
+    """Sum the run_ai_tagger results of several images of one post. Tags are ranked
+    by how many images carry them; of the (contradicting) rating tags only the most
+    severe one survives. One result passes through unchanged."""
+    from collections import Counter
+    if len(results) == 1:
+        return results[0]
+
+    def ranked(key, cap):
+        cnt, first = Counter(), {}
+        for r in results:
+            for t in dict.fromkeys(r.get(key) or []):
+                cnt[t] += 1
+                first.setdefault(t, len(first))
+        return sorted(cnt, key=lambda t: (-cnt[t], first[t]))[:cap], cnt
+
+    general, _ = ranked('general', 10 ** 6)
+    ratings = [t for t in general if t in _RATING_ORDER]
+    general = [t for t in general if t not in _RATING_ORDER][:AI_MAX_GENERAL_MULTI]
+    if ratings:
+        general.insert(0, max(ratings, key=_RATING_ORDER.index))
+    characters, _ = ranked('character', AI_MAX_CHARACTERS_MULTI)
+    learned = {}
+    for r in results:
+        for name, p in r.get('learned') or []:
+            learned[name] = max(p, learned.get(name, 0.0))
+    out = {'general': general, 'character': characters, 'model': results[0].get('model', 'wd14')}
+    if learned or any('learned' in r for r in results):
+        out['learned'] = sorted(learned.items(), key=lambda kv: -kv[1])
+    return out
+
+
 def apply_ai_tags(post, cover=None):
-    """Tag one post from its cover with the WD14 tagger and record the result:
-    general tags in category 'ai', characters in category 'character', and both
-    ai_tagged / char_tagged flags set. Returns the run_ai_tagger dict, or None
-    when the post has no image."""
-    cover = cover or post.images.order_by('order', 'id').first()
-    if not cover:
+    """Tag one post with the main AI tagger and record the result: general tags in
+    category 'ai', characters in category 'character', and both ai_tagged /
+    char_tagged flags set. With no `cover` every item of a multi-image post is
+    tagged (up to AI_MAX_IMAGES_PER_POST) and the tags are summed; an explicit
+    `cover` tags just that image. Returns the merged dict, or None when the post
+    has no image."""
+    if cover is not None:
+        covers, n_images = [cover], 1
+    else:
+        imgs = list(post.images.order_by('order', 'id'))
+        covers, n_images = _sample_images(imgs, AI_MAX_IMAGES_PER_POST), len(imgs)
+    if not covers:
         return None
-    res = run_ai_tagger(cover.file_path, cover.thumb_path)
+    results, last_err = [], None
+    for c in covers:
+        try:
+            results.append(run_ai_tagger(c.file_path, c.thumb_path))
+        except Exception as e:           # one unreadable item must not sink the post
+            last_err = e
+    if not results:
+        raise last_err
+    res = _merge_ai_results(results)
+    cover = covers[0]
     add_tags_to_post(post, res['general'], category='ai')
     if res['character']:
         touched = add_tags_to_post(post, res['character'], category='character')
@@ -1515,7 +1577,11 @@ def apply_ai_tags(post, cover=None):
         post.char_model = char_tagger.MODEL_ID       # PixAI was the main tagger: it already did the characters
     elif post.char_model != char_tagger.MODEL_ID:    # never downgrade a PixAI result
         post.char_model = 'wd14'
-    post.save(update_fields=['ai_tagged', 'char_tagged', 'char_model'])
+    fields = ['ai_tagged', 'char_tagged', 'char_model']
+    if n_images > 1 and len(covers) > 1:
+        post.ai_multi = True
+        fields.append('ai_multi')
+    post.save(update_fields=fields)
     if res.get('model') != char_tagger.MODEL_ID and _pref('aiCharAuto') and char_tagger.model_ready():
         try:
             res['character'] = list(dict.fromkeys(res['character'] + apply_character_model(post, cover)))
@@ -2362,6 +2428,10 @@ def ai_info(request):
         'auto': bool(_pref('aiCharAuto')),
         'pixai_done': Post.objects.filter(char_model=char_tagger.MODEL_ID).count(),
         'pixai_todo': Post.objects.exclude(char_model=char_tagger.MODEL_ID).filter(images__isnull=False).distinct().count(),
+        'multi_done': _multi_posts().filter(ai_multi=True).count(),
+        'multi_todo': _multi_posts().filter(ai_multi=False).count(),
+        'multi_items': sum(min(n, AI_MAX_IMAGES_PER_POST) for n in _multi_posts().filter(ai_multi=False).values_list('_n', flat=True)),
+        'multi_cap': AI_MAX_IMAGES_PER_POST,
     })
 
 
@@ -2403,6 +2473,41 @@ def post_tag_characters(request, pk):
     if names is None:
         return JsonResponse({'ok': False, 'error': 'no images'}, status=400)
     return JsonResponse({'ok': True, 'characters': names})
+
+
+def _multi_posts():
+    return Post.objects.annotate(_n=Count('images')).filter(_n__gt=1)
+
+
+@require_POST
+def ai_multi_retag(request):
+    """Re-run the main AI tagger over EVERY item of the multi-image posts that have
+    not had that yet (newest first). Resumable: a processed post is marked
+    ai_multi=True. Adds tags only — nothing is removed."""
+    def work(task):
+        import time as _t
+        ids = list(_multi_posts().filter(ai_multi=False).order_by('-id').values_list('id', flat=True))
+        label = {'wd14': 'default', 'pixai': 'PixAI', 'custom': 'My model'}[_main_model()]
+        task.total = len(ids); task.done = 0
+        task.message = f'{label}: {len(ids)} multi-image post(s)…'
+        task.save(update_fields=['total', 'done', 'message'])
+        added = errors = 0
+        for i, pid in enumerate(ids):
+            check_cancel(task)
+            try:
+                post = Post.objects.get(pk=pid)
+                before = post.tags.count()
+                apply_ai_tags(post)
+                added += max(0, post.tags.count() - before)
+            except Exception as e:
+                errors += 1
+                print(f'multi re-tag error post {pid}: {e}')
+            _throttled_save(task, done=i + 1,
+                            message=f'{label}: {i + 1}/{len(ids)} posts · +{added} tag(s)' + (f' · {errors} error(s)' if errors else ''))
+            _t.sleep(0)
+        task.save(update_fields=['done', 'message'])
+
+    return JsonResponse({'task_id': _start_task('ai_multi', work, message='starting…', exclusive=True).id})
 
 
 @require_POST
@@ -2653,7 +2758,7 @@ def custom_concept_delete(request, pk):
 
 
 # ── AI models panel: status / download / delete / main selector / free VRAM ──
-AI_TASK_KINDS = ['ai_tag', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply']
+AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply']
 
 
 def ai_models_info(request):
@@ -2907,3 +3012,88 @@ def service_worker(request):
     from django.http import FileResponse
     path = os.path.join(settings.BASE_DIR, 'static', 'js', 'sw.js')
     return FileResponse(open(path, 'rb'), content_type='application/javascript')
+
+
+# ── /media/ with HTTP Range support ────────────────────────────
+# django.views.static.serve ignores Range, so Chromium could neither seek in a
+# video nor stream it progressively (it waits for the whole file). This view
+# answers Range requests with 206 and always advertises Accept-Ranges.
+_RANGE_RE = re.compile(r'^bytes=(\d*)-(\d*)$')
+MEDIA_CHUNK = 1024 * 1024
+
+
+def _parse_range(header, size):
+    """'bytes=a-b' | 'a-' | '-n' -> (start, end) inclusive, None if the header is
+    not a single usable range, False if it is syntactically fine but unsatisfiable.
+    (Multi-range requests are answered with their first range.)"""
+    m = _RANGE_RE.match((header or '').split(',')[0].strip())
+    if not m or (not m.group(1) and not m.group(2)):
+        return None
+    if not m.group(1):                                  # suffix: last n bytes
+        n = int(m.group(2))
+        if n == 0:
+            return False
+        return (max(0, size - n), size - 1)
+    start = int(m.group(1))
+    end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+    if start >= size or end < start:
+        return False
+    return (start, end)
+
+
+def _iter_file(path, start, end):
+    left = end - start + 1
+    with open(path, 'rb') as f:
+        f.seek(start)
+        while left > 0:
+            chunk = f.read(min(MEDIA_CHUNK, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+            yield chunk
+
+
+def media_serve(request, path):
+    import mimetypes
+    from django.utils._os import safe_join
+    from django.utils.http import http_date, parse_http_date_safe
+    from django.views.static import was_modified_since
+    try:
+        full = safe_join(str(settings.MEDIA_ROOT), path)
+    except Exception:                                   # traversal attempt
+        raise Http404
+    if not os.path.isfile(full):
+        raise Http404
+    st = os.stat(full)
+    size = st.st_size
+    ctype = mimetypes.guess_type(full)[0] or 'application/octet-stream'
+    if not was_modified_since(request.META.get('HTTP_IF_MODIFIED_SINCE'), st.st_mtime):
+        resp = HttpResponseNotModified()
+        resp['Last-Modified'] = http_date(st.st_mtime)
+        resp['Accept-Ranges'] = 'bytes'
+        return resp
+    rng = None
+    hdr = request.META.get('HTTP_RANGE')
+    if hdr:
+        # If-Range: only honour the range when the file is unchanged since that date
+        ifr = request.META.get('HTTP_IF_RANGE')
+        if ifr and (parse_http_date_safe(ifr) is None or int(st.st_mtime) > parse_http_date_safe(ifr)):
+            hdr = None
+        rng = _parse_range(hdr, size) if hdr else None
+    if rng is False:
+        resp = HttpResponse(status=416)
+        resp['Content-Range'] = f'bytes */{size}'
+        resp['Accept-Ranges'] = 'bytes'
+        return resp
+    if rng is None:
+        resp = FileResponse(open(full, 'rb'), content_type=ctype)
+        resp['Content-Length'] = str(size)
+    else:
+        start, end = rng
+        resp = StreamingHttpResponse(_iter_file(full, start, end), status=206, content_type=ctype)
+        resp['Content-Length'] = str(end - start + 1)
+        resp['Content-Range'] = f'bytes {start}-{end}/{size}'
+    resp['Accept-Ranges'] = 'bytes'
+    resp['Last-Modified'] = http_date(st.st_mtime)
+    resp['Content-Disposition'] = f'inline; filename="{os.path.basename(full)}"'.encode('ascii', 'replace').decode()
+    return resp

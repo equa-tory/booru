@@ -1624,8 +1624,28 @@ async function loadNeighbors() {
   preloadUrls(d.prev_preload);
   preloadUrls(d.next_preload);
 }
+// Which post we are leaving from: the gallery scrolls its card into view on load
+// (index.html restoreFocusPost), even after prev/next moved us to another post.
+function rememberPostForGallery() {
+  try { sessionStorage.setItem('focusPost', JSON.stringify({id: POST_ID, t: Date.now()})); } catch (e) {}
+}
+function galleryPageFor(index) { return Math.floor((index || 0) / GALLERY_PAGE_SIZE) + 1; }
+
 function goBack() {
-  if (BACK_URL) window.location.href = BACK_URL;
+  rememberPostForGallery();
+  if (BACK_URL) {
+    // pages mode: make sure the URL points at the page that holds THIS post (we may
+    // have navigated away from the one we came from); infinite mode loads until found
+    try {
+      const u = new URL(BACK_URL, window.location.origin);
+      if (u.searchParams.get('scroll') !== '1' && u.pathname === '/' && neighborIndex > 0) {
+        u.searchParams.set('page', galleryPageFor(neighborIndex));
+        window.location.href = u.pathname + '?' + u.searchParams.toString();
+        return;
+      }
+    } catch (e) {}
+    window.location.href = BACK_URL;
+  }
   else history.back();
 }
 
@@ -1639,7 +1659,8 @@ function swipeDownExit() {
 // Open the gallery index at the exact page that contains this post,
 // carrying over the current tags / sort / rating filters.
 function goToGalleryPage() {
-  const page = Math.floor(neighborIndex / GALLERY_PAGE_SIZE) + 1;
+  rememberPostForGallery();
+  const page = galleryPageFor(neighborIndex);
   const qs = SEARCH_QS ? '&' + SEARCH_QS : '';
   window.location.href = `/?page=${page}${qs}`;
 }
@@ -1647,6 +1668,7 @@ function goToGalleryPage() {
 // Open the gallery index at the page containing this post with ALL search
 // filters cleared — the whole library, not the current search.
 async function goToLibraryPage() {
+  rememberPostForGallery();
   const btn = document.getElementById('library-page-btn');
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   if (typeof startProgress !== 'undefined') startProgress();

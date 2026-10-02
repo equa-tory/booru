@@ -31,6 +31,7 @@ class Post(models.Model):
     char_tagged = models.BooleanField(default=False)
     # which model last tagged this post's characters: '' (old tagger / never), 'wd14', 'pixai'
     char_model  = models.CharField(max_length=16, blank=True, default='')
+    ai_multi    = models.BooleanField(default=False)   # every item of this multi-image post was AI-tagged, not just the cover
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
     rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)

@@ -48,6 +48,7 @@ urlpatterns = [
     path('api/ai/restart-workers/', views.ai_restart_workers, name='ai_restart_workers'),
     path('api/ai/char-model/download/', views.char_model_download, name='char_model_download'),
     path('api/ai/char-retag/', views.char_retag_start, name='char_retag_start'),
+    path('api/ai/multi-retag/', views.ai_multi_retag, name='ai_multi_retag'),
     path('api/post/<int:pk>/tag-characters/', views.post_tag_characters, name='post_tag_characters'),
     path('api/tags/recategorize-characters/', views.recategorize_characters, name='recategorize_characters'),
     path('api/post/<int:pk>/not-dupes/', views.post_not_dupes, name='post_not_dupes'),

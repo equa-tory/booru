@@ -1427,3 +1427,179 @@ class PrefsConcurrencyTests(TestCase):
         with open(views._prefs_path()) as f:
             data = json.load(f)
         self.assertEqual(sum(1 for k in data if k.startswith('k')), 90)
+
+
+# ── multi-image AI tagging ──────────────────────────────────────
+class MultiImageTaggingTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def _post(self, n):
+        post = Post.objects.create()
+        for i in range(n):
+            Photo.objects.create(post=post, order=i, rel_path=f'mt_{post.pk}_{i}.png')
+        return post
+
+    def _fake(self, per_image):
+        """run_ai_tagger replacement: result i for the i-th call."""
+        calls = iter(per_image)
+        return mock.patch.object(views, 'run_ai_tagger', side_effect=lambda *a, **k: next(calls))
+
+    def test_merge_ranks_by_image_count_and_keeps_strictest_rating(self):
+        res = views._merge_ai_results([
+            {'general': ['general', '1girl', 'smile'], 'character': ['a'], 'model': 'wd14'},
+            {'general': ['explicit', '1girl', 'hat'], 'character': ['a', 'b'], 'model': 'wd14'},
+            {'general': ['sensitive', '1girl', 'hat'], 'character': [], 'model': 'wd14'},
+        ])
+        self.assertEqual(res['general'], ['explicit', '1girl', 'hat', 'smile'])   # rating first; 3x, 2x, 1x
+        self.assertEqual(res['character'], ['a', 'b'])
+
+    def test_merge_of_one_result_is_unchanged(self):
+        r = {'general': ['x', 'general'], 'character': ['c'], 'model': 'wd14'}
+        self.assertIs(views._merge_ai_results([r]), r)
+
+    def test_merge_learned_keeps_best_probability(self):
+        res = views._merge_ai_results([
+            {'general': [], 'character': [], 'learned': [('s', 0.8)], 'model': 'custom'},
+            {'general': [], 'character': [], 'learned': [('s', 0.95), ('t', 0.9)], 'model': 'custom'}])
+        self.assertEqual(res['learned'], [('s', 0.95), ('t', 0.9)])
+
+    def test_sampling_keeps_first_and_last(self):
+        imgs = list(range(100))
+        got = views._sample_images(imgs, 24)
+        self.assertEqual((len(got), got[0], got[-1]), (24, 0, 99))
+        self.assertEqual(views._sample_images(imgs[:10], 24), imgs[:10])
+
+    def test_apply_tags_every_item_and_marks_post(self):
+        post = self._post(3)
+        with self._fake([{'general': ['a'], 'character': [], 'model': 'wd14'},
+                         {'general': ['b'], 'character': [], 'model': 'wd14'},
+                         {'general': ['b', 'c'], 'character': [], 'model': 'wd14'}]) as m:
+            views.apply_ai_tags(post)
+        self.assertEqual(m.call_count, 3)
+        self.assertEqual(set(post.tags.values_list('name', flat=True)), {'a', 'b', 'c'})
+        post.refresh_from_db()
+        self.assertTrue(post.ai_multi and post.ai_tagged)
+
+    def test_explicit_cover_tags_just_that_image(self):
+        post = self._post(3)
+        with self._fake([{'general': ['only'], 'character': [], 'model': 'wd14'}]) as m:
+            views.apply_ai_tags(post, post.images.first())
+        self.assertEqual(m.call_count, 1)
+        post.refresh_from_db()
+        self.assertFalse(post.ai_multi)
+
+    def test_unreadable_item_is_skipped_but_all_failing_raises(self):
+        post = self._post(2)
+        seq = iter([RuntimeError('bad'), {'general': ['ok'], 'character': [], 'model': 'wd14'}])
+
+        def run(*a, **k):
+            r = next(seq)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with mock.patch.object(views, 'run_ai_tagger', side_effect=run):
+            views.apply_ai_tags(post)
+        self.assertEqual(list(post.tags.values_list('name', flat=True)), ['ok'])
+        with mock.patch.object(views, 'run_ai_tagger', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                views.apply_ai_tags(self._post(2))
+
+    def test_single_image_post_behaves_as_before(self):
+        post = self._post(1)
+        with self._fake([{'general': ['a'], 'character': ['c'], 'model': 'wd14'}]):
+            res = views.apply_ai_tags(post)
+        self.assertEqual((res['general'], res['character']), (['a'], ['c']))
+        post.refresh_from_db()
+        self.assertFalse(post.ai_multi)
+
+    def test_retag_task_skips_done_posts_and_info_counts(self):
+        todo, done, single = self._post(2), self._post(2), self._post(1)
+        Post.objects.filter(pk=done.pk).update(ai_multi=True)
+        info = self.client.get('/api/ai/info/').json()
+        self.assertEqual((info['multi_todo'], info['multi_done']), (1, 1))
+        with self._fake([{'general': ['t1'], 'character': [], 'model': 'wd14'},
+                         {'general': ['t2'], 'character': [], 'model': 'wd14'}]) as m, \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **kw: _run_now(kind, fn)):
+            self.client.post('/api/ai/multi-retag/')
+        self.assertEqual(m.call_count, 2)                      # only `todo` (2 items), not `done` / `single`
+        self.assertEqual(set(todo.tags.values_list('name', flat=True)), {'t1', 't2'})
+        self.assertEqual(done.tags.count() + single.tags.count(), 0)
+        self.assertEqual(self.client.get('/api/ai/info/').json()['multi_todo'], 0)
+
+
+def _run_now(kind, fn):
+    task = Task.objects.create(kind=kind, status='running')
+    fn(task)
+    return task
+
+
+# ── /media/ Range support ──────────────────────────────────────
+class MediaRangeTests(TestCase):
+    DATA = bytes(range(256)) * 40            # 10,240 bytes
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        with open(os.path.join(self.tmp, 'v.mp4'), 'wb') as f:
+            f.write(self.DATA)
+        os.makedirs(os.path.join(self.tmp, 'dir'))
+        ov = override_settings(MEDIA_ROOT=self.tmp)
+        ov.enable(); self.addCleanup(ov.disable)
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def _get(self, **hdr):
+        return self.client.get('/media/v.mp4', **hdr)
+
+    def _body(self, r):
+        return b''.join(r.streaming_content)
+
+    def test_plain_get_advertises_ranges(self):
+        r = self._get()
+        self.assertEqual((r.status_code, r['Accept-Ranges'], r['Content-Length'], r['Content-Type']), (200, 'bytes', '10240', 'video/mp4'))
+        self.assertEqual(self._body(r), self.DATA)
+
+    def test_partial_ranges(self):
+        r = self._get(HTTP_RANGE='bytes=0-99')
+        self.assertEqual((r.status_code, r['Content-Range'], r['Content-Length']), (206, 'bytes 0-99/10240', '100'))
+        self.assertEqual(self._body(r), self.DATA[:100])
+        r = self._get(HTTP_RANGE='bytes=10000-')
+        self.assertEqual((r.status_code, r['Content-Range']), (206, 'bytes 10000-10239/10240'))
+        self.assertEqual(self._body(r), self.DATA[10000:])
+        r = self._get(HTTP_RANGE='bytes=-16')
+        self.assertEqual(self._body(r), self.DATA[-16:])
+        r = self._get(HTTP_RANGE='bytes=100-99999')                # end past EOF is clamped
+        self.assertEqual(r['Content-Range'], 'bytes 100-10239/10240')
+
+    def test_unsatisfiable_and_garbage_ranges(self):
+        r = self._get(HTTP_RANGE='bytes=20000-')
+        self.assertEqual((r.status_code, r['Content-Range']), (416, 'bytes */10240'))
+        self.assertEqual(self._get(HTTP_RANGE='lines=1-2').status_code, 200)    # not a byte range: ignore
+
+    def test_if_range_mismatch_serves_everything(self):
+        r = self._get(HTTP_RANGE='bytes=0-9', HTTP_IF_RANGE='Mon, 01 Jan 2001 00:00:00 GMT')
+        self.assertEqual(r.status_code, 200)
+        lm = self._get()['Last-Modified']
+        self.assertEqual(self._get(HTTP_RANGE='bytes=0-9', HTTP_IF_RANGE=lm).status_code, 206)
+
+    def test_not_modified(self):
+        lm = self._get()['Last-Modified']
+        self.assertEqual(self._get(HTTP_IF_MODIFIED_SINCE=lm).status_code, 304)
+
+    def test_traversal_and_directories_are_404(self):
+        for u in ('/media/../db.sqlite3', '/media/%2e%2e/db.sqlite3', '/media/dir', '/media/nope.mp4', '/media/dir/../../x'):
+            self.assertEqual(self.client.get(u).status_code, 404, u)
+
+    def test_login_still_required(self):
+        self.client.get('/logout/')
+        self.assertEqual(self._get().status_code, 302)
+
+
+@unittest.skipUnless(shutil.which('node'), 'node not installed')
+class GalleryPageForJsTests(TestCase):
+    def test_page_math_matches_server_page_size(self):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/detail.html'), encoding='utf-8').read()
+        fn = re.search(r'function galleryPageFor\(.*?\n', src).group(0)
+        js = 'const GALLERY_PAGE_SIZE = 40;\n' + fn + 'console.log(JSON.stringify([0,39,40,81].map(galleryPageFor)))'
+        r = subprocess.run(['node', '-e', js], capture_output=True, text=True)
+        self.assertEqual(json.loads(r.stdout), [1, 1, 2, 3])
