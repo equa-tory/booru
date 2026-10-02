@@ -576,7 +576,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <label style="font-size:.65rem;">+</label>
       </div>
       <button class="mode-btn fit-single-btn" onclick="toggleFitSingle()" style="width:100%;margin-top:.5rem;"
-              title="single-image posts (scroll mode): size the image as tall as will fit on screen, ignoring the width slider above; if the image is too tall/narrow to fit both dimensions it uses full width and scrolls">
+              title="scroll mode: size every post to the biggest size that fits the screen (same look for any resolution), then the size slider above scales it down — slider at max (1200px / 100%) = full fit">
         &#9971; fit item to screen
       </button>
     </div>
@@ -1045,6 +1045,16 @@ function applyFitSingleBtn() {
    every item alike (never per item, never on scroll/load) — only while the post
    is in scroll mode and the fit toggle is on. Off/other mode restores the slider size. */
 let _multiFitted = false;
+/* The width slider works ON TOP of auto-fit: fit gives the biggest size that fits the
+   screen (100%), the slider scales it down — desktop 1200px = full fit, 900px = 75%;
+   phone 100% = full fit, 50% = half. Never above the fit, so differently sized
+   posts all look alike and the slider only decides how much margin they get. */
+function fitFactor() {
+  const mob = isMobileDetail();
+  const v = parseFloat(localStorage.getItem('scrollImgSize_' + (mob ? 'mobile' : 'desktop')));
+  if (!v) return 1;
+  return Math.max(0.2, Math.min(1, v / (mob ? 100 : 1200)));
+}
 function applyFitMulti(sc) {
   const on = viewMode === 'scroll' && localStorage.getItem(fitKey('fitSingle')) === '1';
   if (!on) {
@@ -1058,7 +1068,7 @@ function applyFitMulti(sc) {
   const ratio = (COVER_W > 0 && COVER_H > 0) ? COVER_H / COVER_W : 0;
   if (!ratio) return;
   if (typeof zoomedImg !== 'undefined' && zoomedImg) setScrollZoom(zoomedImg, false);
-  const fitW = Math.min(Math.max(1, sc.clientWidth - 16), Math.max(1, sc.clientHeight) / ratio);
+  const fitW = Math.min(Math.max(1, sc.clientWidth - 16), Math.max(1, sc.clientHeight) / ratio) * fitFactor();
   document.querySelectorAll('.scroll-img').forEach(el => { el.style.maxWidth = 'none'; el.style.width = fitW + 'px'; });
   _multiFitted = true;
 }
@@ -1102,7 +1112,7 @@ function applyFitSingle() {
 
   const availW = Math.max(1, sc.clientWidth - 16); // 8px padding each side
   const availH = Math.max(1, sc.clientHeight);
-  const fitW = Math.min(availW, availH / ratio);
+  const fitW = Math.min(availW, availH / ratio) * fitFactor();   // slider scales the fit down
   const fitH = fitW * ratio;
 
   sc.classList.add('fit-single');
