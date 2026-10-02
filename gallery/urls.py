@@ -55,6 +55,7 @@ urlpatterns = [
     path('api/ai-tag-all/', views.ai_tag_all, name='ai_tag_all'),
     path('api/tag-search/', views.tag_search, name='tag_search'),
     path('api/tags/', views.tags_all, name='tags_all'),
+    path('api/quick-links/', views.quick_links_api, name='quick_links'),
     path('api/not-dupe/', views.mark_not_dupe, name='mark_not_dupe'),
     path('random/', views.random_post, name='random_post'),
     path('api/tag/<str:name>/fav/', views.toggle_tag_fav, name='toggle_tag_fav'),

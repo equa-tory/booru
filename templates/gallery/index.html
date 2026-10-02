@@ -150,6 +150,7 @@ body.select-mode .scroll-fabs { display:none; }
         value="{% for t in q_tags %}{{ t }} {% endfor %}"
         onkeydown="onSearchKey(event)"
         oninput="onSearchInput(this.value)"
+        onfocus="onSearchInput(this.value)"
         autocomplete="off"
         style="padding-right:1.8rem;">
       <button class="search-go-btn" onclick="doSearch()" title="search">&#128269;</button>
@@ -165,6 +166,7 @@ body.select-mode .scroll-fabs { display:none; }
       <button onclick="setSort('{{ val }}')" class="mode-btn {% if sort_by == val %}active{% endif %}" style="flex:none;font-size:.7rem;">{{ label }}</button>
       {% endfor %}
     </div>
+    <button class="mode-btn remember-sort-btn" onclick="toggleRememberSort()" style="width:100%;margin-top:.4rem;font-size:.7rem;" title="reopen the gallery on the sort you last used">&#8645; remember sort</button>
   </div>
 
   <div class="sidebar-section">
@@ -242,6 +244,7 @@ body.select-mode .scroll-fabs { display:none; }
         <span class="tag-fav-btn {% if tag.fav %}active{% endif %}" onclick="toggleTagFav('{{ tag.name }}', this)">&#9829;</span>
         <a class="tag-link {{ tag.category }}" href="?tag={{ tag.name }}" title="{{ tag.name }}">{{ tag.name }}</a>
         <span class="tag-count">{% if filtering_active %}{{ tag.filtered_count }}{% else %}{{ tag.count }}{% endif %}</span>
+        <span class="tag-sub-btn" onclick="addTagToSearch('{{ tag.name }}', true)" title="exclude from search">&minus;</span>
         <span class="tag-add-btn" onclick="addTagToSearch('{{ tag.name }}')" title="add">+</span>
       </div>
       {% endfor %}
@@ -700,10 +703,17 @@ function toggleMultiOnly(btn) {
   p.delete('page');
   window.location.href = '/?' + p.toString();
 }
-function addTagToSearch(name) {
-  const tags = new URLSearchParams(window.location.search).getAll('tag');
-  if (!tags.includes(name)) tags.push(name);
-  window.location.href = '/?' + tags.map(t => 'tag=' + encodeURIComponent(t)).join('&');
+// + adds `name`, - adds `-name` (exclude); either one replaces the opposite if it is
+// already in the search, so the two buttons swap cleanly.
+function addTagToSearch(name, neg) {
+  const want = neg ? '-' + name : name, opp = neg ? name : '-' + name;
+  const p = new URLSearchParams(window.location.search);
+  const tags = p.getAll('tag').filter(t => t !== opp);
+  if (!tags.includes(want)) tags.push(want);
+  p.delete('tag'); p.delete('page');
+  tags.forEach(t => p.append('tag', t));
+  if (typeof startProgress !== 'undefined') startProgress();
+  window.location.href = '/?' + p.toString();
 }
 
 // Remove a single active filter (fav / min_rating / rating / multi_only /
@@ -798,21 +808,24 @@ function doSearch() {
   window.location.href = '/?' + p.toString();
 }
 
+let suggestTok = null;
 function onSearchInput(val) {
-  const parts = val.trim().toLowerCase().split(/\s+/);
-  const last  = parts[parts.length - 1];
+  const inp = document.getElementById('tag-search');
+  const tok = searchTokenAt(val, inp ? inp.selectionStart : null);
+  const last = tok ? tok.query.toLowerCase() : '';
   document.querySelectorAll('.tag-entry').forEach(el => {
     el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
   });
   clearTimeout(suggestTimer);
-  if (!last || last.length < 1) { hideSuggestions(); return; }
-  suggestTimer = setTimeout(() => fetchSuggestions(last, parts.slice(0,-1)), 150);
+  if (!tok) { cancelTagSug('main'); hideSuggestions(); return; }
+  suggestTimer = setTimeout(() => fetchSuggestions(tok), 120);
 }
 
-async function fetchSuggestions(q, already) {
-  const r = await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`);
-  const d = await r.json();
-  suggestItems = d.tags.filter(t => !already.includes(t.name));
+async function fetchSuggestions(tok) {
+  const tags = await fetchTagSug('main', tok.query);
+  if (tags === null) return;                    // a newer keystroke superseded this one
+  suggestTok = tok;
+  suggestItems = tags.filter(t => !tok.others.includes(t.name));
   suggestIdx = -1; renderSuggestions();
 }
 
@@ -841,10 +854,11 @@ function setSuggestActive(idx) {
 function pickSuggestion(idx) {
   const tag = suggestItems[idx]; if (!tag) return;
   const input = document.getElementById('tag-search');
-  const parts = input.value.trimEnd().split(/\s+/);
-  parts[parts.length - 1] = tag.name;
-  input.value = parts.join(' ') + ' ';
-  hideSuggestions(); input.focus(); onSearchInput(input.value);
+  const tok = searchTokenAt(input.value, input.selectionStart) || suggestTok;
+  if (!tok) return;
+  const r = applySuggestion(input.value, tok, tag.name);
+  input.value = r.value;
+  hideSuggestions(); input.focus(); input.setSelectionRange(r.caret, r.caret); onSearchInput(input.value);
 }
 function hideSuggestions() {
   document.getElementById('search-suggestions').style.display = 'none';

@@ -50,7 +50,7 @@
       <h3>ai models</h3>
       <div class="set-note" id="aim-runtime">&nbsp;</div>
       <div class="bk-list" id="aim-list" style="max-height:none;"></div>
-      <div class="set-note" style="margin-top:.6rem;"><b>Main AI tagger</b> — used by "ai auto-tag", "ai tag all" and upload tagging:</div>
+      <div class="set-note" style="margin-top:.6rem;"><b>Main AI tagger</b> — used by "ai auto-tag", "ai tag all" and upload tagging. <b>Now: <span id="aim-now">…</span></b></div>
       <div id="aim-main" style="display:flex;flex-direction:column;gap:.25rem;margin:.3rem 0;"></div>
       <div class="set-note" id="aim-warn" style="color:#e3b341;"></div>
       <div class="set-actions" style="align-items:center;margin-top:.4rem;">
@@ -98,6 +98,14 @@
     </div>
 
     <div class="set-sec">
+      <h3>quick links <span style="text-transform:none;letter-spacing:0;font-weight:400;">· shortcut buttons in the top menu</span></h3>
+      <div class="bk-list" id="ql-list" style="max-height:none;"></div>
+      <textarea id="ql-add" rows="3" spellcheck="false" placeholder="paste links, one per line (optionally with a name: my site https://example.org)" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.45rem .55rem;margin-top:.4rem;resize:vertical;"></textarea>
+      <div class="set-actions"><button class="btn primary" onclick="addQuickLinks()">add</button></div>
+      <div class="set-note">Buttons open in a new tab. Up to 20.</div>
+    </div>
+
+    <div class="set-sec">
       <h3>backups <span id="bk-state" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></h3>
       <div class="set-grid">
         <div class="set-field"><label for="bk-max">max backups kept</label><input type="number" id="bk-max" min="1" max="100"></div>
@@ -133,6 +141,39 @@ function openSettings() {
   loadAiInfo();
   loadAiModels();
   loadCustom();
+  loadQuickLinks();
+}
+async function _qlPost(body) {
+  const r = await fetch('/api/quick-links/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  let d = {}; try { d = await r.json(); } catch(e) {}
+  return {ok: r.ok, d};
+}
+function renderQuickLinks(links) {
+  const list = document.getElementById('ql-list'); list.textContent = '';
+  if (!links.length) { list.innerHTML = '<div class="set-note">none yet</div>'; return; }
+  links.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'bk-row';
+    const left = document.createElement('div'); left.style.minWidth = '0';
+    const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = l.label;
+    const meta = document.createElement('div'); meta.className = 'bk-meta'; meta.textContent = l.url;
+    left.append(nm, meta);
+    const b = document.createElement('button'); b.className = 'btn danger'; b.textContent = 'remove'; b.onclick = () => removeQuickLink(i);
+    row.append(left, b); list.appendChild(row);
+  });
+}
+async function loadQuickLinks() {
+  try { renderQuickLinks((await (await fetch('/api/quick-links/')).json()).links); } catch(e) {}
+}
+async function addQuickLinks() {
+  const ta = document.getElementById('ql-add');
+  if (!ta.value.trim()) return;
+  const {ok, d} = await _qlPost({add: ta.value});
+  if (!ok) { toast(d.error || 'could not add', 'err'); return; }
+  ta.value = ''; renderQuickLinks(d.links); toast('added — reload the page to see them in the top menu');
+}
+async function removeQuickLink(i) {
+  const {ok, d} = await _qlPost({remove: i});
+  if (ok) renderQuickLinks(d.links); else toast(d.error || 'failed', 'err');
 }
 async function loadDbgStats() {
   ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });
@@ -216,8 +257,15 @@ async function loadAiModels() {
     const sp = document.createElement('span'); sp.textContent = labels[m.key] + (m.ready ? '' : ' (not on disk)');
     lab.append(inp, sp); main.appendChild(lab);
   });
+  document.getElementById('aim-now').textContent = labels[d.main] + (d.main_pref !== d.main ? ` (you chose ${labels[d.main_pref]}, but it is not on disk)` : '');
+  const taught = d.taught || [];
   document.getElementById('aim-warn').textContent = d.main === 'pixai'
-    ? 'PixAI as the main tagger: no rating tags (explicit/questionable…), a different tag vocabulary than the rest of your library, and ~2.4× slower than the default.' : '';
+    ? 'PixAI as the main tagger: no rating tags (explicit/questionable…), a different tag vocabulary than the rest of your library, and ~2.4× slower than the default.'
+    : d.main === 'custom'
+      ? (taught.length ? `My model gives exactly the default tags, plus only what you taught it: ${taught.join(', ')}. Posts without those look the same as with the default tagger.`
+                       : 'My model has no taught tags yet, so its results equal the default tagger until you teach it something.')
+      : '';
+  document.getElementById('aim-warn').style.color = d.main === 'custom' ? 'var(--text-dim)' : '#e3b341';
 }
 async function downloadModel(key) {
   const {ok} = await _aimPost(`/api/ai/models/${key}/download/`);

@@ -1,5 +1,6 @@
 import os
 import re
+import tempfile
 import json
 import random
 from django.shortcuts import render, get_object_or_404, redirect
@@ -926,14 +927,17 @@ def ai_tag_all_bg(request):
         import time as _t
         posts = list(Post.objects.filter(ai_tagged=False))
         task.total = len(posts); task.save(update_fields=['total'])
+        label = {'wd14': 'default', 'pixai': 'PixAI', 'custom': 'My model'}[_main_model()]
+        learned = 0
         for i, post in enumerate(posts):
             check_cancel(task)
             try:
-                apply_ai_tags(post)
+                res = apply_ai_tags(post)
+                learned += len((res or {}).get('learned') or [])
             except Exception as e:
                 print(f'ai-tag error post {post.id}: {e}')
             task.done = i + 1
-            task.message = f'tagged {i + 1}/{len(posts)} post(s)'
+            task.message = f'{label}: tagged {i + 1}/{len(posts)} post(s)' + (f' · {learned} taught tag(s)' if label == 'My model' else '')
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
     return JsonResponse({'task_id': _start_task('ai_tag', work, message='ai tagging…', exclusive=True).id})
@@ -1259,7 +1263,8 @@ def ai_tag_post(request, pk):
         if res is None:
             return JsonResponse({'error': 'no images', 'ok': False}, status=400)
         return JsonResponse({'tags': res['general'] + res['character'] + [n for n, _p in res.get('learned', [])],
-                             'characters': res['character'], 'learned': [n for n, _p in res.get('learned', [])], 'ok': True})
+                             'characters': res['character'], 'learned': [n for n, _p in res.get('learned', [])],
+                             'model': res.get('model', 'wd14'), 'ok': True})
     except Exception as e:
         return JsonResponse({'error': str(e), 'ok': False}, status=500)
 
@@ -1480,7 +1485,7 @@ def _run_wd14(file_path, thumb_path='', custom=False):
     res = {
         'general':   [tags_list[i].replace(' ', '_') for i in gen_idx],
         'character': [tags_list[i].replace(' ', '_') for i in char_idx],
-        'model': 'wd14',
+        'model': 'custom' if custom else 'wd14',
     }
     if custom:
         res['learned'] = custom_model.learned_tags(feat)   # [(tag, probability)] from the taught heads
@@ -1579,8 +1584,17 @@ def _get_wd14_model():
 # ── Tag helpers ────────────────────────────────────────────────
 
 def tag_search(request):
-    q    = request.GET.get('q', '').lower()
-    tags = Tag.objects.filter(name__icontains=q).order_by('-count')[:20]
+    q    = request.GET.get('q', '').lower().lstrip('-')
+    try:
+        limit = max(1, min(int(request.GET.get('limit', 20)), 50))
+    except ValueError:
+        limit = 20
+    if not q:
+        return JsonResponse({'tags': []})
+    # prefix matches first, then everything containing it; unused tags are noise
+    tags = (Tag.objects.filter(name__icontains=q, count__gt=0)
+            .annotate(_pre=Case(When(name__istartswith=q, then=Value(0)), default=Value(1), output_field=IntegerField()))
+            .order_by('_pre', '-count', 'name')[:limit])
     return JsonResponse({'tags': [{'name': t.name, 'count': t.count,
                                     'category': t.category} for t in tags]})
 
@@ -2238,17 +2252,29 @@ def get_prefs(request):
         return JsonResponse({'prefs': {}})
 
 def _set_pref(key, value):
-    """Read-modify-write one key of prefs.json (atomic replace)."""
-    try:
-        with open(_prefs_path()) as f:
-            prefs = json.load(f)
-    except Exception:
-        prefs = {}
-    prefs[key] = value
-    tmp = _prefs_path() + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(prefs, f)
-    os.replace(tmp, _prefs_path())
+    """Read-modify-write one key of prefs.json. The 4 gunicorn workers can write at
+    the same moment, so: an flock around the whole read-modify-write (no lost
+    updates) and a private temp file per write (a shared ".tmp" made one of two
+    concurrent writers fail on os.replace -> HTTP 500)."""
+    import fcntl
+    path = _prefs_path()
+    with open(path + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(path) as f:
+                prefs = json.load(f)
+        except Exception:
+            prefs = {}
+        prefs[key] = value
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.prefs-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(prefs, f)
+            os.replace(tmp, path)
+        except BaseException:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
 
 
 @require_POST
@@ -2262,6 +2288,63 @@ def set_pref(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'ok': True})
+
+
+# ── Quick links: shortcut buttons in the top menu (prefs.json `quickLinks`) ──
+QUICK_LINKS_MAX = 20
+_URL_TOKEN = re.compile(r'^(https?://\S+|/\S*)$', re.I)
+
+
+def _quick_links():
+    links = _pref('quickLinks', [])
+    return [l for l in links if isinstance(l, dict) and l.get('url')] if isinstance(links, list) else []
+
+
+def _link_label(url):
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc or url
+    return (host[4:] if host.startswith('www.') else host)[:30] or url[:30]
+
+
+def parse_quick_links(text):
+    """Pasted text -> [{'label','url'}]. One link per line; a line with a single URL
+    may carry a label around it ("my site https://x.org"); a line with several
+    URLs (or a bare URL) labels each one with its host name. Only http(s) and
+    site-relative ("/path") URLs are accepted."""
+    out = []
+    for line in str(text or '').splitlines():
+        toks = line.replace(',', ' ').split()
+        urls = [t for t in toks if _URL_TOKEN.match(t)]
+        if not urls:
+            continue
+        words = [t for t in toks if t not in urls]
+        for u in urls:
+            label = ' '.join(words).strip() if len(urls) == 1 and words else _link_label(u)
+            out.append({'label': label[:30], 'url': u[:500]})
+    return out
+
+
+def quick_links_api(request):
+    """GET -> the list. POST {add: "pasted links"} appends, {remove: index} deletes."""
+    links = _quick_links()
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body or '{}')
+        except ValueError:
+            return JsonResponse({'error': 'bad json'}, status=400)
+        if 'remove' in data:
+            try:
+                links.pop(int(data['remove']))
+            except (ValueError, IndexError, TypeError):
+                return JsonResponse({'error': 'no such link'}, status=400)
+        added = parse_quick_links(data.get('add', ''))
+        if data.get('add') and not added:
+            return JsonResponse({'error': 'no http(s) links found in that text'}, status=400)
+        have = {l['url'] for l in links}
+        links += [l for l in added if l['url'] not in have and not have.add(l['url'])]
+        links = links[:QUICK_LINKS_MAX]
+        _set_pref('quickLinks', links)
+    return JsonResponse({'links': links})
 
 
 # ── Character model (PixAI) + AI runtime ────────────────────────
@@ -2580,6 +2663,7 @@ def ai_models_info(request):
         'models': [ai_models.status(k) for k in ai_models.KEYS],
         'main': _main_model(),
         'main_pref': _pref('aiMainModel', 'wd14'),
+        'taught': list(CustomConcept.objects.filter(enabled=True).order_by('name').values_list('name', flat=True)),
         'gpu': ai_runtime.gpu_info(),
         'runtime': ai_runtime.runtime_info(),
         'busy': Task.objects.filter(status='running', kind__in=AI_TASK_KINDS).exists(),

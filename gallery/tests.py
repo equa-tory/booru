@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 import shutil
@@ -1273,3 +1274,156 @@ class CustomLibraryTests(TestCase):
         self.assertEqual((info['features_cached'], info['posts']), (40, 40))
         r = self.client.post(f'/api/custom/concept/{self.c.pk}/undo/').json()
         self.assertEqual(r['untagged'], 0)
+
+
+# ── search suggestions, exclude buttons, quick links, tagger label ──
+class TagSearchApiTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        for name, count in [('blue_hair', 50), ('hair_ribbon', 90), ('long_hair', 500), ('hairy', 3), ('hair_unused', 0)]:
+            Tag.objects.create(name=name, count=count)
+
+    def test_prefix_first_then_count_and_no_zero_count(self):
+        names = [t['name'] for t in self.client.get('/api/tag-search/?q=hair').json()['tags']]
+        self.assertEqual(names, ['hair_ribbon', 'hairy', 'long_hair', 'blue_hair'])   # prefix by count, then contains by count
+
+    def test_leading_minus_and_empty_query(self):
+        names = [t['name'] for t in self.client.get('/api/tag-search/?q=-hair_r').json()['tags']]
+        self.assertEqual(names, ['hair_ribbon'])
+        self.assertEqual(self.client.get('/api/tag-search/?q=').json()['tags'], [])
+
+    def test_limit(self):
+        self.assertEqual(len(self.client.get('/api/tag-search/?q=hair&limit=2').json()['tags']), 2)
+
+
+@unittest.skipUnless(shutil.which('node'), 'node not installed')
+class SearchTokenJsTests(TestCase):
+    """searchTokenAt/applySuggestion live inline in base.html between markers;
+    run the real source in Node."""
+    def _run(self, expr):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/base.html'), encoding='utf-8').read()
+        js = src[src.index('// <searchtok>'):src.index('// </searchtok>')]
+        r = subprocess.run(['node', '-e', js + f'\nconsole.log(JSON.stringify({expr}))'], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:300])
+        return json.loads(r.stdout)
+
+    def test_negated_last_token(self):
+        t = self._run("searchTokenAt('tag1 -typ', 8)")
+        self.assertEqual((t['prefix'], t['query'], t['others']), ('-', 'typ', ['tag1']))
+
+    def test_trailing_space_has_no_active_token(self):
+        self.assertIsNone(self._run("searchTokenAt('tag1 ', 5)"))
+
+    def test_structural_and_operator_tokens(self):
+        for v in ("( ", "a ~", "file:abc", "folder:x", "wild*", "fuzzy~", ">3"):
+            self.assertIsNone(self._run(f"searchTokenAt({json.dumps(v)}, {len(v)})"), v)
+
+    def test_caret_in_the_middle_picks_that_token(self):
+        t = self._run("searchTokenAt('aa bb cc', 4)")
+        self.assertEqual((t['query'], t['start'], t['end']), ('bb', 3, 5))
+
+    def test_apply_keeps_minus_and_other_tokens(self):
+        r = self._run("applySuggestion('a -typ c', searchTokenAt('a -typ c', 6), 'typhoon')")
+        self.assertEqual(r['value'], 'a -typhoon c')
+        self.assertEqual(r['caret'], len('a -typhoon '))
+
+
+class ExcludeAndSortButtonsTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def test_sidebar_has_exclude_and_remember_sort(self):
+        t = Tag.objects.create(name='cat', count=1)
+        post = Post.objects.create(); post.tags.add(t)
+        html = self.client.get('/').content.decode()
+        self.assertIn("addTagToSearch('cat', true)", html)
+        self.assertIn('remember-sort-btn', html.split('<aside>')[1].split('</aside>')[0])      # desktop sidebar, not just the phone sheet
+
+    def test_detail_chip_has_exclude(self):
+        t = Tag.objects.create(name='cat', count=1)
+        post = Post.objects.create(); post.tags.add(t)
+        html = self.client.get(f'/post/{post.pk}/').content.decode()
+        self.assertIn("addTagToSearch('cat', true)", html)
+
+    def test_negative_tag_filter_still_works(self):
+        a, b = Post.objects.create(), Post.objects.create()
+        for i, p in enumerate((a, b)):
+            Photo.objects.create(post=p, order=0, rel_path=f'neg{i}.png')
+        t = Tag.objects.create(name='cat', count=1); a.tags.add(t)
+        ids = [p['id'] for p in self.client.get('/api/posts/?tag=-cat').json()['posts']]
+        self.assertEqual(ids, [b.id])
+
+
+class QuickLinksTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        views._set_pref('quickLinks', [])
+
+    def _add(self, text):
+        return self.client.post('/api/quick-links/', json.dumps({'add': text}), content_type='application/json')
+
+    def test_parse(self):
+        got = views.parse_quick_links('my site https://www.example.org/a\nhttps://b.io/x http://c.net\njunk line\n/duplicates/')
+        self.assertEqual([(l['label'], l['url']) for l in got], [
+            ('my site', 'https://www.example.org/a'), ('b.io', 'https://b.io/x'), ('c.net', 'http://c.net'), ('/duplicates/', '/duplicates/')])
+
+    def test_rejects_non_http_schemes(self):
+        self.assertEqual(self._add('javascript:alert(1)').status_code, 400)
+        self.assertEqual(self.client.get('/api/quick-links/').json()['links'], [])
+
+    def test_add_dedupe_remove_and_header(self):
+        self.assertEqual(len(self._add('home https://example.org\nhttps://example.org').json()['links']), 1)
+        html = self.client.get('/').content.decode()
+        self.assertIn('class="btn header-desktop quick-link" href="https://example.org"', html)
+        d = self.client.post('/api/quick-links/', json.dumps({'remove': 0}), content_type='application/json').json()
+        self.assertEqual(d['links'], [])
+        self.assertNotIn('quick-link" href', self.client.get('/').content.decode())
+
+    def test_cap(self):
+        self._add('\n'.join(f'https://e{i}.org' for i in range(30)))
+        self.assertEqual(len(self.client.get('/api/quick-links/').json()['links']), views.QUICK_LINKS_MAX)
+
+
+class TaggerLabelTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_custom_run_is_labelled_and_learned_tags_reach_the_endpoint(self):
+        img = os.path.join(self.tmp, 'a.png'); Image.new('RGB', (20, 20)).save(img)
+        post = Post.objects.create(); Photo.objects.create(post=post, rel_path=img, rel_thumb_path='', width=20, height=20)
+        fake = {'general': ['a'], 'character': [], 'model': 'custom', 'learned': [('my_style', 0.9)]}
+        with mock.patch.object(views, 'run_ai_tagger', return_value=fake), \
+             mock.patch.object(views.custom_model, 'apply_learned') as al:
+            d = self.client.post(f'/api/post/{post.pk}/ai-tag/').json()
+        self.assertEqual((d['model'], d['learned']), ('custom', ['my_style']))
+        al.assert_called_once()
+
+    def test_wd14_run_with_custom_main_reports_custom(self):
+        img = os.path.join(self.tmp, 'a.png'); Image.new('RGB', (20, 20)).save(img)
+        probs = {'rating_a': 0.9}
+        with mock.patch.object(views.custom_model, 'run_clone', return_value=(_fake_wd14(probs)[0].probs, None)), \
+             mock.patch.object(views, '_wd14_tags', return_value=_fake_wd14(probs)[1:]), \
+             mock.patch.object(views.custom_model, 'learned_tags', return_value=[]):
+            res = views.run_ai_tagger(img, model='custom')
+        self.assertEqual(res['model'], 'custom')
+
+
+class PrefsConcurrencyTests(TestCase):
+    def test_parallel_writers_neither_fail_nor_lose_keys(self):
+        import threading
+        errs = []
+
+        def w(i):
+            try:
+                for j in range(15):
+                    views._set_pref(f'k{i}_{j}', j)
+            except Exception as e:      # noqa: BLE001
+                errs.append(e)
+        ts = [threading.Thread(target=w, args=(i,)) for i in range(6)]
+        [t.start() for t in ts]; [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        with open(views._prefs_path()) as f:
+            data = json.load(f)
+        self.assertEqual(sum(1 for k in data if k.startswith('k')), 90)

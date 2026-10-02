@@ -76,6 +76,7 @@ header {
 .logo { font-family: var(--mono); font-size: 1.1rem; color: var(--accent); letter-spacing: -.5px; flex-shrink: 0; }
 .logo span { color: var(--text-dim); }
 .header-actions { display: flex; gap: .6rem; align-items: center; margin-left: auto; }
+.quick-link { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* hide desktop actions on mobile */
 @media (max-width: 640px) { .header-desktop { display: none !important; } }
 
@@ -175,6 +176,8 @@ aside {
 .tag-count { font-size: .72rem; color: var(--text-dim); font-family: var(--mono); }
 .tag-add-btn { color: var(--text-dim); font-size: 1rem; cursor: pointer; padding: 0 .2rem; flex-shrink: 0; font-family: var(--mono); transition: color .1s; -webkit-tap-highlight-color: transparent; }
 .tag-add-btn:hover { color: var(--accent); }
+.tag-sub-btn { color: var(--text-dim); font-size: 1rem; cursor: pointer; padding: 0 .2rem; flex-shrink: 0; font-family: var(--mono); transition: color .1s; -webkit-tap-highlight-color: transparent; }
+.tag-sub-btn:hover { color: #f87272; }
 /* folder tree expand/collapse caret — reserves width even when empty (leaf
    folders) so sibling rows still line up */
 .folder-caret { display:inline-block; width:12px; flex-shrink:0; font-size:.7rem; color:var(--text-dim); cursor:pointer; text-align:center; -webkit-tap-highlight-color:transparent; }
@@ -422,6 +425,7 @@ input[type=range].size-slider::-moz-range-thumb {
          console or re-enable here if needed). Hidden on phone too (no mobile
          menu entry exists for it). -->
     <button class="btn header-desktop" id="organize-btn" onclick="organizeMerged()" style="display:none;">&#128193; fix folders</button>
+    {% for l in quick_links %}<a class="btn header-desktop quick-link" href="{{ l.url }}" target="_blank" rel="noopener noreferrer" title="{{ l.url }}">{{ l.label }}</a>{% endfor %}
     <button class="btn header-desktop" onclick="openSettings()" title="maintenance + database backups">&#9881; settings</button>
     <a class="btn header-desktop" href="/logout/" style="color:var(--text-dim);">logout</a>
   </div>
@@ -453,6 +457,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select</button>
       <a class="btn" href="/tags/edit/">&#9998; edit tags</a>
       <button class="btn" onclick="organizeSingles();closeMobMenu()">&#128193; tidy files</button>
+      {% for l in quick_links %}<a class="btn quick-link" href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.label }}</a>{% endfor %}
       <button class="btn" onclick="openSettings()">&#9881; settings</button>
       <a class="btn" href="/logout/" style="color:var(--text-dim);">logout</a>
     </div>
@@ -1524,6 +1529,7 @@ function renderSheetTags(tags) {
             onclick="sheetToggleFav('${t.name}', this)">&#9829;</span>
       <span class="sheet-tag-name ${t.category}" onclick="sheetAppendTag('${t.name}')" style="cursor:pointer;">${t.name}</span>
       <span class="sheet-tag-count">${t.count}</span>
+      <span class="sheet-tag-add" onclick="sheetAppendTag('-${t.name}')" title="exclude from search">&minus;</span>
       <span class="sheet-tag-add" onclick="sheetAppendTag('${t.name}')" title="add to search">+</span>
     </div>`).join('');
 }
@@ -1549,7 +1555,10 @@ async function renderSheetQuick() {
 function sheetAppendTag(name) {
   const inp = document.getElementById('sheet-search');
   const parts = inp.value.trim().length ? inp.value.trim().split(/\s+/) : [];
-  if (!parts.includes(name)) parts.push(name);
+  const bare = name.replace(/^-/, '');
+  const kept = parts.filter(t => t.replace(/^-/, '') !== bare);   // + and - swap instead of stacking
+  kept.push(name);
+  parts.length = 0; parts.push(...kept);
   inp.value = parts.join(' ') + ' ';
   hideSheetSug();
   inp.focus();
@@ -1560,9 +1569,9 @@ function sheetAppendTag(name) {
 // ("vi" + tap "video"  →  "video ", not "vi video")
 function sheetPickSuggestion(name) {
   const inp = document.getElementById('sheet-search');
-  let parts = inp.value.trim().length ? inp.value.trim().split(/\s+/) : [];
-  if (parts.length) parts[parts.length - 1] = name; else parts.push(name);
-  inp.value = parts.join(' ') + ' ';
+  const tok = searchTokenAt(inp.value, inp.selectionStart) || searchTokenAt(inp.value.trimEnd(), null);
+  if (tok) { const r = applySuggestion(inp.value, tok, name); inp.value = r.value; }
+  else inp.value = (inp.value.trim() + ' ' + name).trim() + ' ';
   hideSheetSug();
   inp.focus();
   onSheetInput(inp.value);
@@ -1580,25 +1589,64 @@ function sheetSearch() {
   window.location.href = '/?' + p.toString();
 }
 
+// <searchtok>
+/* Search-box token helpers shared by the sidebar, post-page and phone-sheet search
+   inputs. The "active token" is the whitespace-separated word under the caret
+   ("a -typ|" -> typ with prefix "-"). Structural/operator words ( ) ~ file: folder:
+   wildcards and fuzzy terms never get suggestions; a caret after a space has no
+   active token (so a finished tag is not suggested again). */
+function searchTokenAt(value, caret) {
+  if (caret == null || caret < 0 || caret > value.length) caret = value.length;
+  let start = caret; while (start > 0 && !/\s/.test(value[start - 1])) start--;
+  let end = caret;   while (end < value.length && !/\s/.test(value[end])) end++;
+  const raw = value.slice(start, end);
+  if (!raw || raw === '(' || raw === ')' || raw === '~') return null;
+  const prefix = raw[0] === '-' ? '-' : '';
+  const query = raw.slice(prefix.length);
+  if (!query || /^(file|folder):/i.test(query) || /[*~]/.test(query) || /^[<>=]/.test(query)) return null;
+  const others = (value.slice(0, start) + ' ' + value.slice(end)).split(/\s+/)
+    .filter(t => t && t !== '(' && t !== ')' && t !== '~').map(t => t.replace(/^-/, '').toLowerCase());
+  return {start, end, prefix, query, others};
+}
+function applySuggestion(value, tok, name) {
+  const before = value.slice(0, tok.start) + tok.prefix + name + ' ';
+  return {value: before + value.slice(tok.end).replace(/^\s+/, ''), caret: before.length};
+}
+let _sugSeq = {};
+/* tag-search with a per-key sequence guard: resolves to null when a newer request
+   for the same key started meanwhile (stale answers must not overwrite fresh ones) */
+async function fetchTagSug(key, q) {
+  const n = _sugSeq[key] = (_sugSeq[key] || 0) + 1;
+  try {
+    const d = await (await fetch(`/api/tag-search/?q=${encodeURIComponent(q)}`)).json();
+    return n === _sugSeq[key] ? d.tags : null;
+  } catch (e) { return null; }
+}
+function cancelTagSug(key) { _sugSeq[key] = (_sugSeq[key] || 0) + 1; }
+// </searchtok>
+
 // filter the list + fetch autocomplete for the LAST token typed
 function onSheetInput(val) {
-  const parts = val.trim().toLowerCase().split(/\s+/);
-  const last  = parts[parts.length - 1] || '';
+  const inp = document.getElementById('sheet-search');
+  const tok = searchTokenAt(val, inp ? inp.selectionStart : null);
+  const last = tok ? tok.query.toLowerCase() : '';
   document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
     el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
   });
   clearTimeout(_sheetSugTimer);
-  if (!last || last.length < 1) { hideSheetSug(); return; }
+  if (!tok) { cancelTagSug('sheet'); hideSheetSug(); return; }
   _sheetSugTimer = setTimeout(async () => {
-    const d = await (await fetch(`/api/tag-search/?q=${encodeURIComponent(last)}`)).json();
-    _sheetSugItems = d.tags;
+    const tags = await fetchTagSug('sheet', tok.query);
+    if (tags === null) return;
+    const items = tags.filter(t => !tok.others.includes(t.name));
+    _sheetSugItems = items;
     const el = document.getElementById('sheet-suggestions');
-    if (!d.tags.length) { hideSheetSug(); return; }
-    el.innerHTML = d.tags.map(t =>
+    if (!items.length) { hideSheetSug(); return; }
+    el.innerHTML = items.map(t =>
       `<div class="sheet-sug ${t.category}" onclick="sheetPickSuggestion('${t.name.replace(/'/g,"\\'")}')">${t.name}<span style="color:var(--text-dim);font-size:.72rem;">${t.count}</span></div>`
     ).join('');
     el.style.display = 'block';
-  }, 150);
+  }, 120);
 }
 function hideSheetSug() { const el = document.getElementById('sheet-suggestions'); if (el) el.style.display = 'none'; }
 function onSheetKey(e) { if (e.key === 'Enter') { e.preventDefault(); sheetSearch(); } }

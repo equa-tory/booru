@@ -208,3 +208,5 @@ Thumbs.db
 
 # local AI models ("my model" clone, unload signal)
 ai_models/
+prefs.json.lock
+.prefs-*.tmp
