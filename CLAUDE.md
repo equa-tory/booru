@@ -73,6 +73,10 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 - `/media/` is served by `views.media_serve` (not Django's `static()`): HTTP Range (206/416, `Accept-Ranges`, `If-Range`) — Chromium cannot seek or stream videos without it. Plain GETs use `FileResponse`.
 - Leaving a post for the gallery (`goBack`, `swipeDownExit`, `goToGalleryPage`, `goToLibraryPage` in `detail.html`) stores `sessionStorage.focusPost`; `index.html::restoreFocusPost` scrolls that card to the centre (loading infinite-scroll pages until found) and flashes it; the old pixel-based `scrollY`/`infScroll` restore is only the fallback.
 
+- `Photo.media_url`/`thumb_url` are percent-encoded via `Photo._url_for` (a `#`/`?`/`%` in a file name used to cut the URL → 404 → empty post) and are `''` for paths outside `MEDIA_ROOT`. A thumbnail whose file is gone (stored path from before the media folder moved) is rebuilt by the "rebase paths" task (`_repair_missing_thumbs`). Detail pages retry a failed `/media/` image once, then show "failed to load: <name>".
+- Sidebar tag filter: only `#tag-list .tag-entry` rows have `data-name`; the folder tree rows reuse the class `tag-entry` — never query `.tag-entry` globally (it threw before the suggestion request, so suggestions never appeared).
+- Settings live in the UNTRACKED `booru/local_settings.py` (MEDIA_ROOT, GALLERY_PASSWORD, BACKUP_DIR, SECRET_KEY), imported by the last lines of `booru/settings.py` — that is why they are not visible in `settings.py`.
+
 ## Settings panel debug overlays
 "⚙ settings" → debug overlays toggles badges on every grid card (AI ✓/✗, characters-checked `wd ✓`/`px ✓`/✗, folder name/none, post id). They are CSS-only: each card always carries a `.dbg` block (server template `_photo_grid.html` AND the JS `makeCard` in `index.html` — keep both in sync) and body classes `dbg-ai/ch/folder/id` (localStorage `dbgOverlay`, applied by `applyDbg()` in `base.html`) reveal them. `posts_json` supplies `ai`, `chars`, `char_model`, `folders`; the grid query prefetches `folders` for this — keep it.
 
@@ -88,5 +92,5 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 - `booru-main/` in the repo root is an untracked stray copy of the project; ignore it and don't edit files there.
 - SQLite is tuned for concurrency in `settings.py` (WAL, `busy_timeout`, `transaction_mode=IMMEDIATE`) because gunicorn gevent workers otherwise serialize on the write lock.
 - Gallery grid relies on `prefetch_related('tags','images')`; `Post.cover`/`image_count`/`has_video` read the prefetched cache to avoid N+1 queries — preserve the prefetch when touching those code paths.
-- The hardcoded UNC path prefix in `duplicates`/`post_detail` (`\\192.168.1.50\@\Media_SRV\Photo\`) is the owner's file-server path for "open in explorer" links.
+- The network path shown on a post (copy / open in explorer) is `_net_prefix()`: the `netPathPrefix` pref (settings → network path) or an automatic guess `\\<host from the address bar, else LAN IP>\<share>\...` from `MEDIA_ROOT` (`/mnt/<share>/…`). The duplicates page uses the same builder (no request → LAN IP).
 - `views.py` contains commented-out dead blocks and a legacy WD14-swap note; ignore them.

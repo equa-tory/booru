@@ -493,15 +493,70 @@ def post_detail(request, pk):
     return render(request, 'gallery/detail.html', {
         'post': post, 'images': images, 'q_tags': q_tags,
         'back_url': back_url,
+        'net_prefix': _net_prefix(request),
         'search_qs': search_qs,
     })
 
 
-def _net_path(file_path):
-    r"""Build the same \\server\share path the detail page shows."""
+def _lan_ip():
+    """This machine's LAN address (the interface that routes outward; nothing is sent)."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('10.255.255.255', 1))
+            return s.getsockname()[0]
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return '127.0.0.1'
+
+
+def _auto_net_prefix(request=None):
+    r"""\\<host>\<share>\<folders>\ guessed from MEDIA_ROOT: /mnt/mass/Media_MASS/Photo ->
+    \\192.168.1.50\mass\Media_MASS\Photo\ (first folder under /mnt = the share name).
+    <host> is the name/IP the browser used to reach this server, else the LAN IP."""
+    host = ''
+    if request is not None:
+        h = request.get_host()
+        host = '' if h.startswith('[') else h.rsplit(':', 1)[0]
+    if not host or host in ('localhost', '0.0.0.0') or host.startswith('127.'):
+        host = _lan_ip()
+    parts = [p for p in str(settings.MEDIA_ROOT).replace('\\', '/').split('/') if p]
+    if parts[:1] in (['mnt'], ['srv']):
+        parts = parts[1:]
+    elif parts[:1] == ['media'] and len(parts) > 2:        # /media/<user>/<share>/...
+        parts = parts[2:]
+    return '\\\\' + host + '\\' + '\\'.join(parts) + '\\'
+
+
+def _net_prefix(request=None):
+    """Windows network path of MEDIA_ROOT shown on the post page: the one saved in
+    settings (prefs `netPathPrefix`) or the automatic guess."""
+    pref = str(_pref('netPathPrefix', '') or '').strip()
+    if pref:
+        pref = pref.replace('/', '\\')
+        if not pref.startswith('\\\\'):
+            pref = '\\\\' + pref.lstrip('\\')
+        return pref if pref.endswith('\\') else pref + '\\'
+    return _auto_net_prefix(request)
+
+
+def _net_path(file_path, request=None):
+    r"""The \\server\share\... path of a file (for "open in explorer" / copy)."""
     rel = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
-    prefix = '\\\\192.168.1.50\\@\\Media_SRV\\Photo\\'
-    return prefix + rel.replace('/', '\\')
+    return _net_prefix(request) + rel.replace('/', '\\')
+
+
+def net_path_api(request):
+    """GET -> {saved, auto, effective}; POST {prefix} saves it ('' = automatic)."""
+    if request.method == 'POST':
+        try:
+            _set_pref('netPathPrefix', str(json.loads(request.body or '{}').get('prefix', '')).strip())
+        except ValueError:
+            return JsonResponse({'error': 'bad json'}, status=400)
+    return JsonResponse({'saved': str(_pref('netPathPrefix', '') or ''), 'auto': _auto_net_prefix(request),
+                         'effective': _net_prefix(request), 'example': _net_path(os.path.join(str(settings.MEDIA_ROOT), 'inbox', 'a', 'b.jpg'), request)})
 
 
 def _dupe_keeper_id(group):
@@ -553,13 +608,12 @@ def _compute_dupe_groups(progress=None):
         except ValueError:
             continue
         src = cover.thumb_path or cover.file_path
-        rel = os.path.relpath(src, settings.MEDIA_ROOT)
         post_data.append({
             'post_id':   post.pk,
             'phash_int': ph_int,
             'is_gif':    cover.is_gif,
             'is_video':  cover.is_video,
-            'thumb_url': '/media/' + rel.replace(os.sep, '/'),
+            'thumb_url': Photo._url_for(src),
             'title':     post.title,
             'img_count': post.image_count,
             'file_size': cover.file_size,
@@ -1000,6 +1054,35 @@ def post_to_gif_bg(request, pk):
     return JsonResponse({'task_id': _start_task('gif', work, message='building gif…').id})
 
 
+def _repair_missing_thumbs(task=None):
+    """Rebuild thumbnails whose file is gone (e.g. a stored path from before the media
+    folder moved: the post shows no preview and its URL 404s). Photos whose source file
+    is missing too are left alone. Returns (rebuilt, failed)."""
+    from .models import Photo
+    todo = [p for p in Photo.objects.exclude(rel_thumb_path='').iterator(chunk_size=5000)
+            if not os.path.exists(p.thumb_path)]
+    if task:
+        task.total = len(todo); task.done = 0
+        task.message = f'rebuilding {len(todo)} missing thumbnail(s)…'
+        task.save(update_fields=['total', 'done', 'message'])
+    fixed = failed = 0
+    os.makedirs(os.path.join(str(settings.MEDIA_ROOT), 'thumbs'), exist_ok=True)
+    for i, photo in enumerate(todo):
+        check_cancel(task)
+        try:
+            ok, _err = _regen_photo_thumb(photo)
+            if ok:
+                photo.save(); fixed += 1
+            else:
+                failed += 1
+        except Exception as e:
+            failed += 1
+            print(f'thumb repair error photo {photo.id}: {e}')
+        if task:
+            _throttled_save(task, done=i + 1)
+    return fixed, failed
+
+
 @require_POST
 def rebase_paths_bg(request):
     """Convert any Photo rows still storing an absolute file/thumb path into
@@ -1010,8 +1093,10 @@ def rebase_paths_bg(request):
     from .utils import rebase_photo_paths
     def work(task):
         converted, already_relative, left_absolute = rebase_photo_paths(task)
+        fixed, failed = _repair_missing_thumbs(task)
         task.message = (f'{converted} converted, {already_relative} already relative, '
-                         f'{left_absolute} left absolute (outside MEDIA_ROOT)')
+                         f'{left_absolute} left absolute (outside MEDIA_ROOT); '
+                         f'thumbnails: {fixed} rebuilt' + (f', {failed} failed' if failed else ''))
         task.save(update_fields=['message'])
     return JsonResponse({'task_id': _start_task('rebase_paths', work, message='rebasing paths…', exclusive=True).id})
 

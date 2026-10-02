@@ -837,8 +837,10 @@ function onSearchInput(val) {
   const inp = document.getElementById('tag-search');
   const tok = searchTokenAt(val, inp ? inp.selectionStart : null);
   const last = tok ? tok.query.toLowerCase() : '';
-  document.querySelectorAll('.tag-entry').forEach(el => {
-    el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
+  // only the tag list: the folder tree rows also carry .tag-entry but no data-name,
+  // and reading it threw here — BEFORE the suggestion request, so nothing ever showed
+  document.querySelectorAll('#tag-list .tag-entry').forEach(el => {
+    el.style.display = (!last || (el.dataset.name || '').includes(last)) ? '' : 'none';
   });
   clearTimeout(suggestTimer);
   if (!tok) { cancelTagSug('main'); hideSuggestions(); return; }

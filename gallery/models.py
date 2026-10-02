@@ -142,16 +142,26 @@ class Photo(models.Model):
     def filename(self):
         return os.path.basename(self.file_path)
 
+    @staticmethod
+    def _url_for(path):
+        """/media/ URL of a file under MEDIA_ROOT, percent-encoded (a '#', '?' or '%' in a
+        file name used to cut the URL short -> 404). '' when the file is outside MEDIA_ROOT."""
+        from urllib.parse import quote
+        rel = os.path.relpath(path, settings.MEDIA_ROOT)
+        if rel.startswith('..'):
+            return ''
+        return '/media/' + quote(rel.replace(os.sep, '/'), safe='/')
+
     @property
     def media_url(self):
-        rel = os.path.relpath(self.file_path, settings.MEDIA_ROOT)
-        return '/media/' + rel.replace(os.sep, '/')
+        return self._url_for(self.file_path)
 
     @property
     def thumb_url(self):
         if self.thumb_path:
-            rel = os.path.relpath(self.thumb_path, settings.MEDIA_ROOT)
-            url = '/media/' + rel.replace(os.sep, '/')
+            url = self._url_for(self.thumb_path)
+            if not url:
+                return ''
             # version by mtime: unchanged thumbs keep the same URL (cache hit),
             # a regenerated thumb gets a new URL (cache bust) automatically.
             try:

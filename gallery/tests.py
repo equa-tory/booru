@@ -1603,3 +1603,81 @@ class GalleryPageForJsTests(TestCase):
         js = 'const GALLERY_PAGE_SIZE = 40;\n' + fn + 'console.log(JSON.stringify([0,39,40,81].map(galleryPageFor)))'
         r = subprocess.run(['node', '-e', js], capture_output=True, text=True)
         self.assertEqual(json.loads(r.stdout), [1, 1, 2, 3])
+
+
+# ── URLs of odd file names, thumbnail repair, network path, search selector ──
+class MediaUrlTests(TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        ov = override_settings(MEDIA_ROOT=self.tmp)
+        ov.enable(); self.addCleanup(ov.disable)
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def test_special_characters_are_percent_encoded_and_served(self):
+        rel = 'inbox/_/Fond #2 100% ?x/a #1.png'
+        os.makedirs(os.path.dirname(os.path.join(self.tmp, rel)))
+        Image.new('RGB', (4, 4)).save(os.path.join(self.tmp, rel))
+        post = Post.objects.create(); ph = Photo.objects.create(post=post, rel_path=rel)
+        self.assertEqual(ph.media_url, '/media/inbox/_/Fond%20%232%20100%25%20%3Fx/a%20%231.png')
+        self.assertEqual(self.client.get(ph.media_url).status_code, 200)
+
+    def test_outside_media_root_gives_no_url_instead_of_a_broken_one(self):
+        ph = Photo(rel_path='/elsewhere/x.png', rel_thumb_path='/ssd/old/thumbs/t.jpg')
+        self.assertEqual(ph.media_url, '')
+        self.assertEqual(ph.thumb_url, '')
+
+    def test_missing_thumbnail_is_rebuilt(self):
+        rel = 'inbox/a.png'
+        os.makedirs(os.path.join(self.tmp, 'inbox'))
+        Image.new('RGB', (40, 30), (200, 0, 0)).save(os.path.join(self.tmp, rel))
+        post = Post.objects.create()
+        ph = Photo.objects.create(post=post, rel_path=rel, rel_thumb_path='/mnt/ssd/old_root/thumbs/gone.jpg')
+        self.assertEqual(views._repair_missing_thumbs(), (1, 0))
+        ph.refresh_from_db()
+        self.assertFalse(os.path.isabs(ph.rel_thumb_path))
+        self.assertTrue(os.path.exists(ph.thumb_path))
+        self.assertTrue(ph.thumb_url.startswith('/media/thumbs/'))
+
+
+class NetPathTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        views._set_pref('netPathPrefix', '')
+
+    def test_auto_prefix_from_mnt_media_root_and_request_host(self):
+        class Req:
+            def get_host(self): return '192.168.1.50:3002'
+        with override_settings(MEDIA_ROOT='/mnt/mass/Media_MASS/Photo'):
+            self.assertEqual(views._auto_net_prefix(Req()), '\\\\192.168.1.50\\mass\\Media_MASS\\Photo\\')
+            self.assertEqual(views._net_path('/mnt/mass/Media_MASS/Photo/inbox/x y.jpg', Req()),
+                             '\\\\192.168.1.50\\mass\\Media_MASS\\Photo\\inbox\\x y.jpg')
+
+    def test_localhost_falls_back_to_the_lan_ip(self):
+        class Req:
+            def get_host(self): return 'localhost:3002'
+        with override_settings(MEDIA_ROOT='/mnt/mass/Photo'), mock.patch.object(views, '_lan_ip', return_value='10.0.0.7'):
+            self.assertEqual(views._auto_net_prefix(Req()), '\\\\10.0.0.7\\mass\\Photo\\')
+
+    def test_saved_prefix_wins_and_is_normalised(self):
+        d = self.client.post('/api/net-path/', json.dumps({'prefix': '//nas/share/Photo'}), content_type='application/json').json()
+        self.assertEqual(d['effective'], '\\\\nas\\share\\Photo\\')
+        self.assertEqual(d['saved'], '//nas/share/Photo')
+        d = self.client.post('/api/net-path/', json.dumps({'prefix': ''}), content_type='application/json').json()
+        self.assertTrue(d['effective'].startswith('\\\\') and d['effective'] == d['auto'])
+
+    def test_detail_page_gets_the_prefix(self):
+        views._set_pref('netPathPrefix', r'\\nas\share\\')
+        post = Post.objects.create()
+        html = self.client.get(f'/post/{post.pk}/').content.decode()
+        self.assertIn("const NET_PREFIX = '", html)
+        self.assertNotIn('192.168.1.50\\\\@', html)
+
+
+class SearchSelectorRegressionTests(TestCase):
+    def test_tag_filter_ignores_rows_without_data_name(self):
+        """Folder tree rows carry .tag-entry but no data-name; reading it threw before the
+        suggestion request, so the search box never suggested anything."""
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/index.html'), encoding='utf-8').read()
+        self.assertIn("querySelectorAll('#tag-list .tag-entry')", src)
+        self.assertNotIn("querySelectorAll('.tag-entry')", src)

@@ -757,6 +757,8 @@ const tagSuffix = Q_TAGS.length ? '?' + Q_TAGS.map(t=>'tag='+encodeURIComponent(
 
 // BACK_URL: where back button goes — the index page with all filters/page
 const BACK_URL = '{{ back_url|escapejs }}';
+// Windows network path of MEDIA_ROOT (settings -> network path, else guessed from MEDIA_ROOT + the host in the address bar)
+const NET_PREFIX = '{{ net_prefix|escapejs }}';
 // Full search context (tags + filters + sort) for neighbor navigation
 const SEARCH_QS = '{{ search_qs|escapejs }}';
 const navSuffix = SEARCH_QS ? '?' + SEARCH_QS : '';
@@ -2157,7 +2159,7 @@ function updateFilePath() {
   const img = IMAGES[currentImgIdx];
   if (!img) return;
   const mediaPath = decodeURIComponent(img.url.replace('/media/', ''));
-  const winPath = '\\\\192.168.1.50\\@\\Media_SRV\\Photo\\' + mediaPath.replace(/\//g, '\\');
+  const winPath = NET_PREFIX + mediaPath.replace(/\//g, '\\');
   box.textContent = winPath; box.dataset.path = winPath;
 }
 async function copyPath(el) {
@@ -2735,6 +2737,22 @@ if (isMobileDetail()) {
 }
 applyFitSingleBtn();
 applyFitSingle();   // multi-image posts: one-time fit on open (single posts are fitted by applyViewMode)
+
+/* An item that fails to load is retried once; if it still fails it says so (a blank
+   grey box gave no clue) and points at the file name. */
+document.addEventListener('error', e => {
+  const el = e.target;
+  if (!(el instanceof HTMLImageElement) || !/\/media\//.test(el.currentSrc || el.src || '')) return;
+  if (!el.dataset.retried) {
+    el.dataset.retried = '1';
+    setTimeout(() => { el.src = el.src + (el.src.includes('?') ? '&' : '?') + 'r=' + Date.now(); }, 800);
+    return;
+  }
+  let name = el.src.split('?')[0].split('/').pop();
+  try { name = decodeURIComponent(name); } catch (x) {}
+  el.alt = 'failed to load: ' + name;
+  el.style.cssText += ';min-height:6rem;color:var(--text-dim);font-family:var(--mono);font-size:.75rem;padding:1rem;';
+}, true);
 
 /* Focus the first content element so the browser's own keys work right away
    (Space/PageDown/arrows scroll it, a video plays/seeks) without clicking first. */

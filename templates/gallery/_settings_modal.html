@@ -104,6 +104,13 @@
     </div>
 
     <div class="set-sec">
+      <h3>network path <span style="text-transform:none;letter-spacing:0;font-weight:400;">· the file path shown on a post (copy / open in explorer)</span></h3>
+      <div class="set-field wide"><label for="np-prefix">path of the media folder on the network</label><input type="text" id="np-prefix" spellcheck="false" autocomplete="off" placeholder="automatic"></div>
+      <div class="set-actions"><button class="btn primary" onclick="saveNetPath()">save</button><button class="btn" onclick="document.getElementById('np-prefix').value='';saveNetPath()">use automatic</button></div>
+      <div class="set-note" id="np-note"></div>
+    </div>
+
+    <div class="set-sec">
       <h3>quick links <span style="text-transform:none;letter-spacing:0;font-weight:400;">· shortcut buttons in the top menu</span></h3>
       <div class="bk-list" id="ql-list" style="max-height:none;"></div>
       <textarea id="ql-add" rows="3" spellcheck="false" placeholder="paste links, one per line (optionally with a name: my site https://example.org)" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.45rem .55rem;margin-top:.4rem;resize:vertical;"></textarea>
@@ -148,6 +155,21 @@ function openSettings() {
   loadAiModels();
   loadCustom();
   loadQuickLinks();
+  loadNetPath();
+}
+async function loadNetPath() {
+  try {
+    const d = await (await fetch('/api/net-path/')).json();
+    document.getElementById('np-prefix').value = d.saved || '';
+    document.getElementById('np-prefix').placeholder = d.auto;
+    document.getElementById('np-note').innerHTML = (d.saved ? 'Using your path.' : 'Automatic: the address you opened the gallery with + the share guessed from MEDIA_ROOT (<code>/mnt/&lt;share&gt;/…</code>).') + ' A file shows as <code></code>';
+    document.getElementById('np-note').lastElementChild.textContent = d.example;
+  } catch(e) {}
+}
+async function saveNetPath() {
+  const prefix = document.getElementById('np-prefix').value.trim();
+  const r = await fetch('/api/net-path/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({prefix})});
+  toast(r.ok ? 'saved' : 'could not save', r.ok ? '' : 'err'); loadNetPath();
 }
 async function _qlPost(body) {
   const r = await fetch('/api/quick-links/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
