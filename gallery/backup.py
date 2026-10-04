@@ -3,7 +3,7 @@
 Only the SQLite DB is backed up — media files on disk are the source of truth
 and are never touched. Snapshots use sqlite3's online-backup API in a single
 step, so they are consistent while gunicorn workers keep reading/writing (WAL).
-Settings live under the 'backup' key of prefs.json; the default folder comes
+Settings live under the 'backup' key of the server-side prefs (database); the default folder comes
 from settings.BACKUP_DIR (set it in booru/local_settings.py).
 """
 import contextlib
@@ -16,6 +16,8 @@ import time
 from urllib.parse import quote
 
 from django.conf import settings
+
+from . import prefs
 
 try:
     import fcntl          # cross-process lock between gunicorn workers (Linux/macOS)
@@ -38,25 +40,13 @@ def db_path():
     return str(settings.DATABASES['default']['NAME'])
 
 
-def _prefs_path():
-    return os.path.join(settings.BASE_DIR, 'prefs.json')
-
-
-def _read_prefs():
-    try:
-        with open(_prefs_path()) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
 def default_dir():
     return str(getattr(settings, 'BACKUP_DIR', os.path.join(settings.BASE_DIR, 'backups')))
 
 
 # ── config ──────────────────────────────────────────────────────
 def get_config():
-    saved = _read_prefs().get('backup')
+    saved = prefs.get('backup')
     cfg = dict(DEFAULTS, path=default_dir())
     if isinstance(saved, dict):
         cfg.update({k: saved[k] for k in ('enabled', 'max_backups', 'interval_hours', 'path') if k in saved})
@@ -88,12 +78,7 @@ def save_config(data):
     cfg = {'enabled': bool(data.get('enabled')), 'max_backups': max_backups,
            'interval_hours': int(interval) if interval == int(interval) else interval,
            'path': os.path.normpath(path)}
-    prefs = _read_prefs()
-    prefs['backup'] = cfg
-    tmp = _prefs_path() + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(prefs, f)
-    os.replace(tmp, _prefs_path())
+    prefs.set('backup', cfg)
     return cfg
 
 
@@ -255,7 +240,8 @@ def restore_from(path, task=None):
     from gallery.models import Task
 
     validate_backup(path)
-    d = get_config()['path']
+    cfg_now = get_config()          # the snapshot carries OLD settings (incl. this very config): re-apply it afterwards
+    d = cfg_now['path']
     os.makedirs(d, exist_ok=True)
     keep = None
     if task is not None:
@@ -292,6 +278,10 @@ def restore_from(path, task=None):
         call_command('migrate', interactive=False, verbosity=0)
     except Exception as e:
         print(f'restore: migrate failed: {e}')
+    try:
+        prefs.set('backup', {k: cfg_now[k] for k in ('enabled', 'max_backups', 'interval_hours', 'path')})
+    except Exception as e:
+        print(f'restore: could not re-apply backup settings: {e}')
     if keep:
         started = keep.pop('started_at')
         Task.objects.update_or_create(pk=keep.pop('pk'), defaults=dict(keep, status='running'))

@@ -210,3 +210,4 @@ Thumbs.db
 ai_models/
 prefs.json.lock
 .prefs-*.tmp
+test_db.sqlite3*

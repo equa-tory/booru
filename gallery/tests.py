@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from PIL import Image
 
-from . import views
+from . import prefs, views
 from .models import Photo, Post, Tag, Task
 from .utils import (TaskCancelled, add_tags_to_post, check_cancel,
                     recount_tags)
@@ -166,7 +166,6 @@ class BackupTests(TestCase):
         self.cfg = {'enabled': True, 'max_backups': 2, 'interval_hours': 48, 'path': self.dir}
         p = mock.patch.object(backup, 'db_path', return_value=self.db); p.start(); self.addCleanup(p.stop)
         p = mock.patch.object(backup, 'get_config', side_effect=lambda: dict(self.cfg)); p.start(); self.addCleanup(p.stop)
-        p = mock.patch.object(backup, '_prefs_path', return_value=os.path.join(self.tmp, 'prefs.json')); p.start(); self.addCleanup(p.stop)
 
     def _rows(self, path):
         con = sqlite3.connect(path)
@@ -768,7 +767,7 @@ def setUpModule():
     aiMainModel / aiCharAuto / backup settings)."""
     global _prefs_dir, _prefs_patch
     _prefs_dir = tempfile.mkdtemp()
-    _prefs_patch = mock.patch.object(views, '_prefs_path', return_value=os.path.join(_prefs_dir, 'prefs.json'))
+    _prefs_patch = mock.patch.object(prefs, 'legacy_path', return_value=os.path.join(_prefs_dir, 'prefs.json'))
     _prefs_patch.start()
 
 
@@ -786,7 +785,6 @@ class AiModelsPanelTests(TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
-        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))   # no pref leaks into other tests
         views._set_pref('aiMainModel', 'wd14')
         ai_runtime._models.clear()
         self.addCleanup(ai_runtime._models.clear)
@@ -1004,7 +1002,6 @@ class CustomHeadsAndTeachingTests(TestCase):
         o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
         custom_model._heads_cache.update(mtime=None, heads=None)
         self.addCleanup(custom_model._heads_cache.update, mtime=None, heads=None)
-        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))
 
     def _posts(self, n):
         out = []
@@ -1188,7 +1185,6 @@ class CustomLibraryTests(TestCase):
         o = override_settings(AI_MODELS_DIR=self.tmp); o.enable(); self.addCleanup(o.disable)
         custom_model._heads_cache.update(mtime=None, heads=None)
         self.addCleanup(custom_model._heads_cache.update, mtime=None, heads=None)
-        self.addCleanup(lambda: os.path.exists(views._prefs_path()) and os.remove(views._prefs_path()))
         p1 = mock.patch.object(custom_model, 'model_hash', return_value='h1'); p1.start(); self.addCleanup(p1.stop)
         p2 = mock.patch.object(custom_model, 'is_ready', return_value=True); p2.start(); self.addCleanup(p2.stop)
         self.posts = [Post.objects.create(ai_tagged=True) for _ in range(40)]
@@ -1410,23 +1406,111 @@ class TaggerLabelTests(TestCase):
         self.assertEqual(res['model'], 'custom')
 
 
-class PrefsConcurrencyTests(TestCase):
+class PrefsStoreTests(TestCase):
+    def test_set_get_all_update(self):
+        prefs.set('a', {'x': 1}); prefs.set('b', [1, 2])
+        self.assertEqual(prefs.get('a'), {'x': 1})
+        self.assertEqual(prefs.get('missing', 'dflt'), 'dflt')
+        self.assertEqual(prefs.all(), {'a': {'x': 1}, 'b': [1, 2]})
+        self.assertEqual(prefs.update('b', lambda v: v + [3]), [1, 2, 3])
+        self.assertEqual(prefs.update('new', lambda v: v + 1, default=0), 1)
+
+    def test_legacy_prefs_json_is_imported_once_without_overwriting(self):
+        legacy = os.path.join(tempfile.mkdtemp(), 'prefs.json')
+        self.addCleanup(shutil.rmtree, os.path.dirname(legacy), ignore_errors=True)
+        with open(legacy, 'w') as f:
+            json.dump({'quickLinks': [{'label': 'a', 'url': 'https://a.io'}], 'aiMainModel': 'custom'}, f)
+        with mock.patch.object(prefs, 'legacy_path', return_value=legacy), mock.patch.object(prefs, '_legacy_checked', False):
+            self.assertEqual(prefs.get('aiMainModel'), 'custom')
+            self.assertEqual(prefs.get('quickLinks')[0]['url'], 'https://a.io')
+        self.assertFalse(os.path.exists(legacy))
+        self.assertTrue(os.path.exists(legacy + '.imported'))
+
+    def test_recent_posts_push_does_not_wipe_other_settings(self):
+        """The bug: every post view rewrote the whole prefs file from a stale copy."""
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        prefs.set('quickLinks', [{'label': 'x', 'url': 'https://x.io'}])
+        prefs.set('aiCharAuto', True)
+        prefs.set('aiMainModel', 'pixai')
+        for i in range(1, 4):
+            r = self.client.post('/api/recent/add/', json.dumps({'id': i, 'thumb': 't', 'url': f'/post/{i}/'}), content_type='application/json')
+            self.assertEqual(r.status_code, 200)
+        self.assertEqual((prefs.get('aiCharAuto'), prefs.get('aiMainModel')), (True, 'pixai'))
+        self.assertEqual(len(prefs.get('quickLinks')), 1)
+        self.assertEqual([r['id'] for r in prefs.get('recentPosts')], [3, 2, 1])
+
+    def test_char_model_toggle_roundtrip_through_the_api(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.client.post('/api/pref/set/', json.dumps({'key': 'aiCharAuto', 'value': True}), content_type='application/json')
+        self.assertTrue(self.client.get('/api/ai/info/').json()['auto'])
+        self.client.post('/api/pref/set/', json.dumps({'key': 'aiCharAuto', 'value': False}), content_type='application/json')
+        self.assertFalse(self.client.get('/api/ai/info/').json()['auto'])
+
+
+class UnprocessedFilterTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        mk = lambda **kw: Post.objects.create(**kw)
+        self.none = mk(); self.ai_only = mk(ai_tagged=True, char_model='wd14')
+        self.px_only = mk(char_model='pixai'); self.both = mk(ai_tagged=True, char_model='pixai')
+        for i, p in enumerate((self.none, self.ai_only, self.px_only, self.both)):
+            Photo.objects.create(post=p, order=0, rel_path=f'u{i}.png')
+
+    def _ids(self, proc):
+        return {p['id'] for p in self.client.get(f'/api/posts/?proc={proc}').json()['posts']}
+
+    def test_filters(self):
+        self.assertEqual(self._ids('none'), {self.none.id, self.ai_only.id} - {self.ai_only.id})   # neither AI nor PixAI
+        self.assertEqual(self._ids('noai'), {self.none.id, self.px_only.id})
+        self.assertEqual(self._ids('nopixai'), {self.none.id, self.ai_only.id})
+
+    def test_stats_and_pill(self):
+        d = self.client.get('/api/debug/stats/').json()
+        self.assertEqual((d['unprocessed'], d['no_ai'], d['no_pixai']), (1, 2, 2))
+        self.assertIn('not AI-tagged &amp; not PixAI-checked', self.client.get('/?proc=none').content.decode())
+
+    def test_filter_survives_into_post_navigation(self):
+        html = self.client.get(f'/post/{self.none.id}/?proc=none').content.decode()
+        self.assertIn('proc=none', html)
+
+
+class SettingsPanelLayoutTests(TestCase):
+    def test_retag_buttons_live_in_maintenance_with_tooltips(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        html = self.client.get('/').content.decode()
+        sec = html.split('<h3>maintenance</h3>')[1].split('<h3>ai models</h3>')[0]
+        for needle in ('startCharRetag()', 'startMultiRetag()', 'rebasePaths()', 'soundTagAll()', 'organizeSinglesDeep()'):
+            self.assertIn(needle, sec)
+        self.assertEqual(len(re.findall(r'<button class="btn"[^>]*title="', sec)) + len(re.findall(r'<a class="btn"[^>]*title="', sec)), 6)
+        tagging = html.split('<h3>ai tagging</h3>')[1].split('<h3>debug overlays')[0]
+        self.assertNotIn('startCharRetag', tagging)
+        self.assertIn('id="ai-auto"', tagging)
+
+
+from django.test import TransactionTestCase
+
+
+class PrefsConcurrencyTests(TransactionTestCase):
     def test_parallel_writers_neither_fail_nor_lose_keys(self):
         import threading
+        from django.db import connection
         errs = []
 
         def w(i):
             try:
-                for j in range(15):
-                    views._set_pref(f'k{i}_{j}', j)
+                for j in range(10):
+                    prefs.set(f'k{i}_{j}', j)
+                    prefs.update('shared', lambda v: v + 1, default=0)
             except Exception as e:      # noqa: BLE001
                 errs.append(e)
-        ts = [threading.Thread(target=w, args=(i,)) for i in range(6)]
+            finally:
+                connection.close()
+        ts = [threading.Thread(target=w, args=(i,)) for i in range(5)]
         [t.start() for t in ts]; [t.join() for t in ts]
         self.assertEqual(errs, [])
-        with open(views._prefs_path()) as f:
-            data = json.load(f)
-        self.assertEqual(sum(1 for k in data if k.startswith('k')), 90)
+        data = prefs.all()
+        self.assertEqual(sum(1 for k in data if k.startswith('k')), 50)
+        self.assertEqual(data['shared'], 50)          # every atomic increment counted
 
 
 # ── multi-image AI tagging ──────────────────────────────────────

@@ -34,6 +34,8 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # file-backed test DB (not the default in-memory one) so concurrency tests across threads behave like production
+        'TEST': {'NAME': BASE_DIR / 'test_db.sqlite3'},
         # WAL lets reads and writes happen concurrently (the gunicorn gevent
         # workers otherwise serialize on a single write lock, which is the main
         # reason adds feel slower as the library grows). busy_timeout makes a

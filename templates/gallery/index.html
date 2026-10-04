@@ -255,11 +255,12 @@ body.select-mode .scroll-fabs { display:none; }
 
 {% block content %}
 <div id="recent-strip" class="recent-strip" style="display:none;"></div>
-{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only %}
+{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only or proc %}
 <div class="active-tags">
   {% if fav_only == '1' %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.15);">&#9829; favs <span class="remove" onclick="removeFilter('fav')">x</span></span>{% endif %}
   {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <span class="remove" onclick="removeFilter('multi_only')">x</span></span>{% endif %}
   {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <span class="remove" onclick="removeFilter('single_only')">x</span></span>{% endif %}
+  {% if proc %}<span class="active-tag" style="border-color:#22d3ee;">{% if proc == 'none' %}not AI-tagged &amp; not PixAI-checked{% elif proc == 'noai' %}not AI-tagged{% else %}not PixAI-checked{% endif %} <span class="remove" onclick="removeFilter('proc')">x</span></span>{% endif %}
   {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <span class="remove" onclick="removeFilter('min_rating')">x</span></span>{% endif %}
   {% if exact_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{% if exact_rating == '0' %}&#9734; unrated{% else %}{{ exact_rating }}&#9733;{% endif %} <span class="remove" onclick="removeFilter('rating')">x</span></span>{% endif %}
   <span id="tag-pills"></span>

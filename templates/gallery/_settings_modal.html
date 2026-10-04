@@ -39,11 +39,20 @@
     <div class="set-sec">
       <h3>maintenance</h3>
       <div class="set-actions">
-        <button class="btn" onclick="closeSettings();soundTagAll()" title="re-check every video for an audio track and sync the sound tag">&#9834; tag sound</button>
-        <a class="btn" href="/shortcuts/" title="keyboard shortcuts">&#9000; keys</a>
-        <button class="btn" onclick="closeSettings();organizeSinglesDeep()" title="re-tidy ALL files (including already in subfolders) into YYYY-MM/DD — run once">&#128194; re-tidy all</button>
-        <button class="btn" onclick="closeSettings();rebasePaths()" title="convert absolute file paths still in the DB to paths relative to MEDIA_ROOT — run BEFORE moving the media folder">&#128506; rebase paths</button>
+        <button class="btn" onclick="closeSettings();soundTagAll()" title="Re-check every video for an audio track and add/remove the 'sound' tag. Safe to re-run.">&#9834; tag sound</button>
+        <a class="btn" href="/shortcuts/" title="Open the keyboard shortcuts page (view and rebind keys).">&#9000; keys</a>
+        <button class="btn" onclick="closeSettings();organizeSinglesDeep()" title="Re-tidy ALL files (including ones already in subfolders) into inbox/YYYY-MM/DD. Moves files on disk; run it once.">&#128194; re-tidy all</button>
+        <button class="btn" onclick="closeSettings();rebasePaths()" title="Convert absolute file paths still in the database to paths relative to MEDIA_ROOT (run BEFORE moving the media folder) and rebuild thumbnails whose file is missing. Idempotent.">&#128506; rebase paths</button>
       </div>
+      <div class="set-actions" style="align-items:center;margin-top:.5rem;">
+        <button class="btn" id="ai-retag" onclick="startCharRetag()" title="Run the PixAI character model over posts it has not checked yet (newest first) and ADD character tags — nothing is removed. Stoppable; the next run resumes where it stopped. Downloads the model first if needed.">&#9786; re-tag characters</button>
+        <label class="set-note" style="margin:0;display:flex;align-items:center;gap:.3rem;" title="How many posts to check in this run (0 = all remaining)">for <input type="number" id="ai-limit" min="0" value="100" style="width:4.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.25rem .35rem;"> posts <span>(0 = all remaining)</span></label>
+      </div>
+      <div class="set-actions" style="align-items:center;margin-top:.5rem;">
+        <button class="btn" id="ai-multi" onclick="startMultiRetag()" title="Run the main AI tagger over EVERY item (up to the per-post cap, evenly spaced) of multi-image posts that were only tagged from their cover, and sum the tags. Only adds tags; stoppable and resumable. Takes hours for the whole library.">&#10022; re-tag all multi-image posts</button>
+        <span class="set-note" id="ai-multi-info" style="margin:0;"></span>
+      </div>
+      <div class="set-note">Character re-tag adds <b>only</b> character tags (PixAI v0.9; the overlay shows <b style="color:#22d3ee">CH px ✓</b> for checked posts). The multi-image re-tag uses the main tagger chosen below, up to <span id="ai-multi-cap">24</span> items per post; new posts and "ai auto-tag" already do this. Progress shows in the notifications.</div>
     </div>
 
     <div class="set-sec">
@@ -74,18 +83,7 @@
     <div class="set-sec">
       <h3>ai tagging</h3>
       <div class="set-note" id="ai-charmodel">&nbsp;</div>
-      <label class="set-check" style="margin:.4rem 0;"><input type="checkbox" id="ai-auto" onchange="setAiAuto(this.checked)"> also run the character model whenever a post is AI-tagged</label>
-      <div class="set-actions" style="align-items:center;">
-        <button class="btn" id="ai-retag" onclick="startCharRetag()" title="adds character tags only; resumable — posts already checked by the character model are skipped">&#9786; re-tag characters</button>
-        <label class="set-note" style="margin:0;display:flex;align-items:center;gap:.3rem;">for <input type="number" id="ai-limit" min="0" value="100" style="width:4.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:.78rem;padding:.25rem .35rem;"> posts <span>(0 = all remaining)</span></label>
-      </div>
-      <div class="set-note">Second-opinion character model (PixAI v0.9) — only ever <b>adds</b> character tags, newest posts first. Watch progress in the notifications; the stop button works, and the next run resumes where it stopped. The overlay shows <b style="color:#22d3ee">CH px ✓</b> for posts it has checked.</div>
-
-      <div class="set-actions" style="align-items:center;margin-top:.6rem;">
-        <button class="btn" id="ai-multi" onclick="startMultiRetag()" title="runs the main AI tagger over every item of the multi-image posts that were tagged from their cover only; adds tags only, resumable">&#10022; re-tag all multi-image posts</button>
-        <span class="set-note" id="ai-multi-info" style="margin:0;"></span>
-      </div>
-      <div class="set-note">Tags <b>every item</b> of a multi-image post (up to <span id="ai-multi-cap">24</span> per post, evenly spaced) and sums them: tags ranked by how many items carry them, only the strictest rating kept. Uses the main tagger chosen above; only <b>adds</b> tags. New posts and "ai auto-tag" already do this. Stoppable and resumable.</div>
+      <label class="set-check" style="margin:.4rem 0;" title="After every AI tagging also run the PixAI character model on the post (adds character tags). Saved on the server."><input type="checkbox" id="ai-auto" onchange="setAiAuto(this.checked)"> also run the character model whenever a post is AI-tagged</label>
     </div>
 
     <div class="set-sec">
@@ -98,6 +96,11 @@
       </div>
       <div class="set-note" id="dbg-stats">&nbsp;</div>
       <div class="set-note"><b>CH ✗</b> on an <b>AI ✓</b> post = tagged by the old tagger (characters may be missing). Posts tagged from now on get <b>CH ✓</b>.</div>
+      <div class="set-actions" style="margin-top:.4rem;">
+        <a class="btn" id="dbg-un-none" href="/?proc=none" title="Open the gallery with only the posts that neither the main AI tagger nor the PixAI character model has processed.">&#128269; show unprocessed posts <span id="dbg-n-none"></span></a>
+        <a class="btn" id="dbg-un-ai" href="/?proc=noai" title="Open the gallery with only the posts that were never AI-tagged.">not AI-tagged <span id="dbg-n-ai"></span></a>
+        <a class="btn" id="dbg-un-px" href="/?proc=nopixai" title="Open the gallery with only the posts the PixAI character model has not checked.">not PixAI-checked <span id="dbg-n-px"></span></a>
+      </div>
       <div class="set-actions" style="margin-top:.4rem;">
         <button class="btn" onclick="recategorizeCharacters()" title="move existing character tags from category ai to character (category change only, no re-tagging)">&#9998; fix character tag categories</button>
       </div>
@@ -208,6 +211,9 @@ async function loadDbgStats() {
   try {
     const d = await (await fetch('/api/debug/stats/')).json();
     const n = x => Number(x).toLocaleString();
+    document.getElementById('dbg-n-none').textContent = `(${n(d.unprocessed)})`;
+    document.getElementById('dbg-n-ai').textContent = `(${n(d.no_ai)})`;
+    document.getElementById('dbg-n-px').textContent = `(${n(d.no_pixai)})`;
     document.getElementById('dbg-stats').textContent =
       `${n(d.posts)} posts · ${n(d.ai_tagged)} AI-tagged · ${n(d.char_tagged)} characters checked (${n(d.pixai)} by PixAI) · ${n(d.ai_not_char)} tagged by the old tagger · ${n(d.in_folder)} in a folder · ${n(d.character_tags)} character-category tags`;
   } catch(e) { document.getElementById('dbg-stats').textContent = ''; }
@@ -234,10 +240,13 @@ async function loadAiInfo() {
   document.getElementById('ai-multi').disabled = !mt;
 }
 async function setAiAuto(on) {
+  // saved on the server; the box always shows what the server actually stored
   try {
-    await fetch('/api/pref/set/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({key:'aiCharAuto', value: !!on})});
+    const r = await fetch('/api/pref/set/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({key:'aiCharAuto', value: !!on})});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     toast(on ? 'character model will run with AI tagging' : 'character model only runs on demand');
-  } catch(e) { toast('could not save', 'err'); }
+  } catch(e) { toast('could not save the setting', 'err'); }
+  loadAiInfo();
 }
 /* ── AI models: status / download / delete / main selector / free VRAM ── */
 const AIM_DESC = {

@@ -17,7 +17,7 @@ from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
                     make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
-from . import char_tagger, ai_models, custom_model
+from . import char_tagger, ai_models, custom_model, prefs
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -225,6 +225,15 @@ def _build_post_qs(request):
         else:
             posts = posts.filter(folders__id=int(folder_id)).distinct()
 
+    # AI-processing filter (settings -> debug): posts the AI has not looked at yet
+    proc = request.GET.get('proc', '')
+    if proc == 'none':          # neither the main tagger nor the PixAI character model
+        posts = posts.filter(ai_tagged=False).exclude(char_model='pixai')
+    elif proc == 'noai':
+        posts = posts.filter(ai_tagged=False)
+    elif proc == 'nopixai':
+        posts = posts.exclude(char_model='pixai')
+
     if multi_only == '1':
         posts = posts.annotate(_img_count=Count('images')).filter(_img_count__gt=1)
 
@@ -409,6 +418,7 @@ def index(request):
         'sort_tags': sort_tags,
         'sort_by': sort_by,
         'multi_only': request.GET.get('multi_only',''),
+        'proc': request.GET.get('proc', ''),
         'single_only': request.GET.get('single_only',''),
         'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
         'folders': Folder.objects.all(),
@@ -485,7 +495,7 @@ def post_detail(request, pk):
     # Full search query string (tags + filters + sort) for neighbor navigation
     search_params = []
     for key in ('tag', 'sort', 'min_rating', 'rating', 'fav',
-                'multi_only', 'single_only', 'folder', 'seed', 'ids'):
+                'multi_only', 'single_only', 'folder', 'seed', 'ids', 'proc'):
         for val in request.GET.getlist(key):
             search_params.append(f'{key}={val}')
     search_qs = '&'.join(search_params)
@@ -1676,9 +1686,9 @@ def apply_ai_tags(post, cover=None):
 
 
 def _pref(key, default=None):
+    """A server-side preference (database; see gallery/prefs.py)."""
     try:
-        with open(_prefs_path()) as f:
-            return json.load(f).get(key, default)
+        return prefs.get(key, default)
     except Exception:
         return default
 
@@ -2378,13 +2388,8 @@ def posts_exist(request):
 
 # ── Admin pages ─────────────────────────────────────────────────
 def shortcuts_page(request):
-    try:
-        with open(_prefs_path()) as f:
-            prefs = json.load(f)
-    except Exception:
-        prefs = {}
     return render(request, 'gallery/shortcuts.html',
-                  {'bindings_json': json.dumps(prefs.get('keyBindings', {}))})
+                  {'bindings_json': json.dumps(prefs.get('keyBindings', {}) or {})})
 
 
 def tags_edit_page(request):
@@ -2393,39 +2398,19 @@ def tags_edit_page(request):
 
 # ── Cross-device preferences (shared, single-user app) ──────────
 def _prefs_path():
+    """The LEGACY prefs.json (imported into the database on first use, see prefs.py)."""
     return os.path.join(settings.BASE_DIR, 'prefs.json')
+
 
 def get_prefs(request):
     try:
-        with open(_prefs_path()) as f:
-            return JsonResponse({'prefs': json.load(f)})
+        return JsonResponse({'prefs': prefs.all()})
     except Exception:
         return JsonResponse({'prefs': {}})
 
+
 def _set_pref(key, value):
-    """Read-modify-write one key of prefs.json. The 4 gunicorn workers can write at
-    the same moment, so: an flock around the whole read-modify-write (no lost
-    updates) and a private temp file per write (a shared ".tmp" made one of two
-    concurrent writers fail on os.replace -> HTTP 500)."""
-    import fcntl
-    path = _prefs_path()
-    with open(path + '.lock', 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            with open(path) as f:
-                prefs = json.load(f)
-        except Exception:
-            prefs = {}
-        prefs[key] = value
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.prefs-', suffix='.tmp')
-        try:
-            with os.fdopen(fd, 'w') as f:
-                json.dump(prefs, f)
-            os.replace(tmp, path)
-        except BaseException:
-            try: os.unlink(tmp)
-            except OSError: pass
-            raise
+    prefs.set(key, value)
 
 
 @require_POST
@@ -2950,6 +2935,9 @@ def debug_stats(request):
         'char_tagged': Post.objects.filter(char_tagged=True).count(),
         'pixai': Post.objects.filter(char_model='pixai').count(),
         'ai_not_char': Post.objects.filter(ai_tagged=True, char_tagged=False).count(),
+        'unprocessed': Post.objects.filter(ai_tagged=False).exclude(char_model='pixai').filter(images__isnull=False).distinct().count(),
+        'no_ai': Post.objects.filter(ai_tagged=False, images__isnull=False).distinct().count(),
+        'no_pixai': Post.objects.exclude(char_model='pixai').filter(images__isnull=False).distinct().count(),
         'in_folder': Post.objects.filter(folders__isnull=False).distinct().count(),
         'character_tags': Tag.objects.filter(category='character').count(),
     })
@@ -3053,24 +3041,18 @@ def recent_add(request):
     if not entry.get('id'):
         return JsonResponse({'error': 'no id'}, status=400)
     entry['t'] = entry.get('t') or int(__import__('time').time() * 1000)
+    def push(recents):
+        recents = recents if isinstance(recents, list) else []
+        # remove any existing entry for this post (so it moves to front)
+        recents = [r for r in recents if r.get('id') != entry['id']]
+        recents.insert(0, entry)
+        return recents[:50]
+
     try:
-        with open(_prefs_path()) as f:
-            prefs = json.load(f)
-    except Exception:
-        prefs = {}
-    recents = prefs.get('recentPosts', [])
-    if not isinstance(recents, list):
-        recents = []
-    # remove any existing entry for this post (so it moves to front)
-    recents = [r for r in recents if r.get('id') != entry['id']]
-    recents.insert(0, entry)
-    prefs['recentPosts'] = recents[:50]
-    try:
-        with open(_prefs_path(), 'w') as f:
-            json.dump(prefs, f)
+        recents = prefs.update('recentPosts', push, default=[])
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-    return JsonResponse({'ok': True, 'recents': prefs['recentPosts']})
+    return JsonResponse({'ok': True, 'recents': recents})
 
 
 def login_view(request):

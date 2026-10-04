@@ -309,3 +309,16 @@ class CustomApplied(models.Model):
 
     class Meta:
         unique_together = [('concept', 'post')]
+
+
+class Setting(models.Model):
+    """One server-side preference (value = JSON). Replaces the old prefs.json: a
+    shared file that four gunicorn workers rewrote whole (non-atomically, on every
+    post view) lost keys written in between — quick links, the main AI model, the
+    character-model toggle... In the DB the settings are transactional and are part
+    of every database backup. Access them through gallery/prefs.py."""
+    key = models.CharField(max_length=100, primary_key=True)
+    value = models.TextField(default='null')
+
+    def __str__(self):
+        return self.key
