@@ -115,8 +115,10 @@
 .scroll-item { width:100%; flex:0 0 auto; overflow-x:hidden; position:relative; }
 /* AI edit button: hover on desktop; on a phone one tap on the picture reveals it (.show-edit) */
 .ai-edit-btn { position:absolute; top:8px; right:8px; z-index:6; opacity:0; pointer-events:none; transition:opacity .15s;
-  font-family:var(--mono); font-size:.78rem; background:rgba(0,0,0,.72); color:#fff; border:1px solid rgba(255,255,255,.35);
-  border-radius:8px; padding:.45rem .8rem; min-height:38px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  width:34px; height:34px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center;
+  font-size:1rem; line-height:1; background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.35);
+  cursor:pointer; -webkit-tap-highlight-color:transparent; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+.ai-edit-btn:hover { background:var(--accent); border-color:var(--accent); }
 .scroll-item.show-edit .ai-edit-btn, .ai-edit-btn:focus-visible { opacity:1; pointer-events:auto; }
 @media (hover:hover) { .scroll-item:hover .ai-edit-btn { opacity:1; pointer-events:auto; } }
 #aiedit-backdrop .modal { max-width:520px; width:100%; max-height:92vh; overflow-y:auto; }
@@ -447,6 +449,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="img-topbar" id="img-topbar">
       <a href="javascript:goBack()" class="btn" style="font-size:.75rem;">&#8592; back</a>
       <button class="mode-toggle" id="mode-toggle" onclick="toggleViewMode()">&#9783; scroll</button>
+      {% if edit_source %}<a class="btn" href="/post/{{ edit_source.id }}/" style="font-size:.75rem;" title="open the post this AI edit was made from">&#10548; original #{{ edit_source.id }}</a>{% endif %}
       <span class="nav-counter" id="nav-counter">...</span>
     </div>
 
@@ -513,7 +516,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="scroll-container" id="scroll-container">
       {% for img in images %}
       <div class="scroll-item" data-photo-id="{{ img.pk }}">
-      {% if comfy_enabled and not img.is_video and not img.is_pdf and not img.is_gif %}<button type="button" class="ai-edit-btn" onclick="event.stopPropagation();openAiEdit(this)" ontouchend="event.stopPropagation()" title="AI edit: re-draw this image with your changes (new post)">&#9998; AI edit</button>{% endif %}
+      {% if comfy_enabled and not img.is_video and not img.is_pdf and not img.is_gif %}<button type="button" class="ai-edit-btn" onclick="event.stopPropagation();openAiEdit(this)" ontouchend="event.stopPropagation()" title="AI edit: re-draw this image with your changes (new post)" aria-label="AI edit">&#9998;</button>{% endif %}
       {% if img.is_video %}
       <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="{% if images|length == 1 %}metadata{% else %}none{% endif %}"
              {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
@@ -749,6 +752,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   </div>
   <div class="mini-row mini-row-bottom">
     <button class="mini-icon" id="mini-scrolltop-btn" onclick="scrollDetailTop()" title="scroll to top" style="display:none;">&#10514;</button>
+    {% if edit_source %}<button class="mini-icon" onclick="location.href='/post/{{ edit_source.id }}/'" title="open the original post" aria-label="original">&#10548;</button>{% endif %}
     <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
     <button class="mini-icon" onclick="openTagSheet()">&#8864;</button>
     <button class="mini-icon" onclick="goRandom()">&#9684;</button>
@@ -797,7 +801,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <input type="text" id="aiedit-seed" inputmode="numeric" placeholder="random"></div>
     </div>
     <label class="ae-l" for="aiedit-den">how much may change: <b id="aiedit-den-val">0.60</b> <span style="opacity:.7;">(low = keeps the picture, high = re-draws more)</span></label>
-    <input type="range" id="aiedit-den" min="0.2" max="0.85" step="0.05" value="0.6" style="width:100%;" oninput="document.getElementById('aiedit-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
+    <input type="range" id="aiedit-den" min="0.2" max="0.9" step="0.05" value="0.65" style="width:100%;" oninput="document.getElementById('aiedit-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
     <div id="aiedit-prompt" style="display:none;">
       <label class="ae-l" for="aiedit-pos">prompt (editable)</label>
       <textarea id="aiedit-pos" rows="4"></textarea>
@@ -2932,7 +2936,8 @@ async function aiEditPreview() {
     const {d} = await aiEditPost('/api/comfy/prompt/', b);
     if (!d.ok) { st.textContent = '⚠ ' + (d.error || 'error'); return; }
     aeEl('aiedit-pos').value = d.positive; aeEl('aiedit-neg').value = d.negative;
-    aeEl('aiedit-note').textContent = (d.source === 'llm' ? d.model + ': ' : '') + d.note;
+    aeEl('aiedit-note').textContent = (d.source === 'llm' ? d.model + ': ' : '') + d.note
+      + ((d.add || []).length ? ' · + ' + d.add.join(', ') : '') + ((d.remove || []).length ? ' · − ' + d.remove.join(', ') : '');
     aeEl('aiedit-prompt').style.display = '';
     const den = aeEl('aiedit-den'); den.value = d.denoise; delete den.dataset.touched;
     aeEl('aiedit-den-val').textContent = (+d.denoise).toFixed(2);

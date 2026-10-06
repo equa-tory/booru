@@ -30,7 +30,7 @@ DEFAULTS = {
     'cfg': 5.5,
     'sampler': 'euler_ancestral',
     'scheduler': 'normal',
-    'denoise': 0.6,
+    'denoise': 0.65,
     'megapixels': 0.8,
     'max_temp': 72,          # wait for the GPU to cool below this (°C) before sampling; 0 = off
     'free_after': True,      # ask ComfyUI to unload its models once the picture is done
@@ -38,7 +38,7 @@ DEFAULTS = {
     'negative': ('bad quality, worst quality, worst detail, sketch, censor, lowres, bad anatomy, '
                  'bad hands, jpeg artifacts, watermark, text, signature'),
 }
-DENOISE_MIN, DENOISE_MAX = 0.2, 0.85
+DENOISE_MIN, DENOISE_MAX = 0.2, 0.9
 MAX_UPLOAD_MP = 4.0          # bigger sources are shrunk before upload; ComfyUI rescales to `megapixels` anyway
 MAX_TAGS = 100
 
@@ -141,25 +141,39 @@ def join_prompt(*parts):
     return ', '.join(bits)
 
 
-SYSTEM_PROMPT = """You convert a picture-editing request into prompt tags for an anime image model (Illustrious / Danbooru tags).
-You get the tags that describe the CURRENT picture and the user's request (any language). The picture will be re-drawn from itself, so the new tag list must describe the WHOLE picture after the edit.
-Rules:
-- Return the complete new tag list: keep every current tag that still applies, remove tags the request contradicts, add Danbooru tags for the change.
-- Tags are lowercase Danbooru tags with spaces (e.g. "long hair", "blue eyes", "white dress"). No sentences, no quality tags (masterpiece, best quality...), no rating tags.
-- "negative" lists only things to avoid that relate to the request (e.g. the old hair colour). It may be empty.
-- "denoise" is how much of the picture may change: 0.40-0.50 small details and accessories (glasses, a ribbon), 0.55-0.65 colours of hair, eyes or clothes, clothes, expression, objects, 0.65-0.75 pose, framing or big changes. Never above 0.8.
-- "note" is one short sentence saying what you changed.
-Answer with JSON only: {"positive": [tags], "negative": [tags], "denoise": number, "note": string}"""
+ADD_WEIGHT = 1.3        # the new tags are put first and weighted, or the ~40 tags describing the old picture drown them
+MAX_NEGATIVE = 20
+
+# The model only has to return a DIFF (tags to add / tags to remove); the code builds the
+# final prompt. Small models asked to rewrite the whole list just echoed the old picture
+# (kept "school uniform" next to "astronaut suit", put removals only in the negative).
+# No tool calling is needed: Ollama enforces the JSON schema (`format`) for ANY model.
+SYSTEM_PROMPT = """You edit pictures for an anime image model that understands Danbooru tags.
+You get the tags of the CURRENT picture and the user's request (any language). Answer with what changes:
+- "add": Danbooru tags for what the request wants to see (lowercase, spaces instead of underscores). Be concrete: an outfit gets its main tag plus its typical parts.
+- "remove": tags copied EXACTLY from the current list that contradict the request or that the user wants gone. Replacing an outfit removes ALL tags of the old clothes (shirt, skirt, uniform, sweater, cardigan, socks, shoes...). Changing a colour removes the old colour tag.
+- "denoise": how much the picture must change: 0.45 small item or accessory, 0.6 colours (hair, eyes, clothes), 0.7 removing something, 0.75 outfit / costume, 0.8 pose, background or composition. Use 0.55 to 0.85.
+- "note": one short sentence describing the edit.
+Examples:
+Current: 1girl, long hair, brown hair, school uniform, skirt, smile | Request: make her hair blue
+{"add": ["blue hair"], "remove": ["brown hair"], "denoise": 0.6, "note": "brown hair -> blue hair"}
+Current: 1girl, school uniform, white shirt, pleated skirt, black socks, loafers, cardigan, standing | Request: put her in a bikini
+{"add": ["bikini", "swimsuit", "navel", "barefoot"], "remove": ["school uniform", "white shirt", "pleated skirt", "black socks", "loafers", "cardigan"], "denoise": 0.75, "note": "school uniform -> bikini"}
+Current: 1girl, glasses, red eyes, hat, smile | Request: remove the glasses
+{"add": [], "remove": ["glasses"], "denoise": 0.7, "note": "glasses removed"}
+Current: 1girl, sitting, indoors, window | Request: add a cat on her lap
+{"add": ["cat", "cat on lap", "animal on lap"], "remove": [], "denoise": 0.6, "note": "added a cat on her lap"}
+Answer with JSON only."""
 
 PROMPT_SCHEMA = {
     'type': 'object',
     'properties': {
-        'positive': {'type': 'array', 'items': {'type': 'string'}},
-        'negative': {'type': 'array', 'items': {'type': 'string'}},
+        'add': {'type': 'array', 'items': {'type': 'string'}},
+        'remove': {'type': 'array', 'items': {'type': 'string'}},
         'denoise': {'type': 'number'},
         'note': {'type': 'string'},
     },
-    'required': ['positive', 'negative', 'denoise', 'note'],
+    'required': ['add', 'remove', 'denoise', 'note'],
 }
 
 
@@ -167,9 +181,13 @@ def _client(timeout=10.0):
     return httpx.Client(timeout=timeout, trust_env=False)
 
 
+def _norm(t):
+    return re.sub(r'[\s_]+', ' ', str(t).strip().lower().replace('\\(', '(').replace('\\)', ')')).strip(' ,.;')
+
+
 def parse_llm_prompt(text, default_denoise):
-    """The LLM's JSON answer -> {'positive','negative','denoise','note'}; raises ValueError
-    when nothing usable is in it."""
+    """The LLM's JSON answer -> {'add','remove','denoise','note'}; raises ValueError when
+    nothing usable is in it (no JSON, or neither additions nor removals)."""
     text = (text or '').strip()
     try:
         data = json.loads(text)
@@ -185,31 +203,48 @@ def parse_llm_prompt(text, default_denoise):
         if isinstance(v, str):
             v = v.split(',')
         return clean_tags(v if isinstance(v, list) else [])
-    pos = as_tags(data.get('positive'))
-    if not pos:
-        raise ValueError('the model returned no tags')
+    add, remove = as_tags(data.get('add')), as_tags(data.get('remove'))
+    if not add and not remove:
+        raise ValueError('the model returned no change')
     try:
         den = float(data.get('denoise'))
     except (TypeError, ValueError):
         den = default_denoise
-    return {
-        'positive': pos,
-        'negative': as_tags(data.get('negative')),
-        'denoise': min(DENOISE_MAX, max(DENOISE_MIN, den)),
-        'note': str(data.get('note') or '')[:300],
-    }
+    return {'add': add, 'remove': remove,
+            'denoise': min(DENOISE_MAX, max(DENOISE_MIN, den)),
+            'note': str(data.get('note') or '')[:300]}
+
+
+def apply_diff(current, add, remove):
+    """Build the final tag lists: new tags first (weighted when shown via `prompt_texts`),
+    then every current tag that was not removed; removed tags go to the negative.
+    A tag both added and removed counts as added. Matching ignores case/underscores."""
+    cur = clean_tags(current)
+    add = [t for t in clean_tags(add)]
+    add_n = {_norm(t) for t in add}
+    rem_n = {_norm(t) for t in clean_tags(remove)} - add_n
+    keep = [t for t in cur if _norm(t) not in rem_n and _norm(t) not in add_n]
+    neg = [t for t in clean_tags(remove) if _norm(t) not in add_n][:MAX_NEGATIVE]
+    return add, keep, neg
+
+
+def prompt_texts(add, keep, neg):
+    """(positive text, negative text) as shown in the box / sent to ComfyUI (without the
+    quality prefix and default negative, which are added on run)."""
+    pos = ', '.join([f'({escape_tag(t)}:{ADD_WEIGHT})' for t in add] + [escape_tag(t) for t in keep])
+    return pos, ', '.join(escape_tag(t) for t in neg)
 
 
 def to_prompt(request_text, current_tags, cfg=None):
-    """Ask Ollama to turn the user's request + the picture's current tags into the new
-    tag list. Never raises: if Ollama is down or answers garbage, falls back to the
-    current tags plus the request text itself (`note` says so). The model stays loaded
-    for 2 minutes (a preview followed by "generate" loads it once); `generate` unloads
-    it before ComfyUI starts if it sits in VRAM (here Ollama runs on the CPU)."""
+    """Ask Ollama what the request changes (add/remove tags) and build the prompt from the
+    picture's current tags. Never raises: if Ollama is down or answers garbage, the request
+    text itself becomes the weighted first part of the prompt (`note` says so).
+    Returns {'positive','negative' (final texts), 'add','remove','denoise','note','source'}.
+    The model stays loaded for 2 minutes (preview then generate loads it once); `generate`
+    unloads it before ComfyUI starts if it sits in VRAM (here Ollama runs on the CPU)."""
     cfg = cfg or config()
     current = clean_tags(current_tags)
-    user = ('Current tags: ' + (', '.join(current) or '(none)') + '\n'
-            'Request: ' + request_text.strip())
+    user = ('Current: ' + (', '.join(current) or '(none)') + ' | Request: ' + request_text.strip())
     body = {
         'model': cfg['ollama_model'], 'stream': False, 'think': False, 'keep_alive': '2m',
         'format': PROMPT_SCHEMA,
@@ -221,12 +256,15 @@ def to_prompt(request_text, current_tags, cfg=None):
             r = c.post(cfg['ollama_url'] + '/api/chat', json=body)
         if r.status_code != 200:
             raise ComfyError(f'Ollama HTTP {r.status_code}: {r.text[:200]}')
-        out = parse_llm_prompt((r.json().get('message') or {}).get('content', ''), cfg['denoise'])
-        out['source'] = 'llm'
-        return out
+        d = parse_llm_prompt((r.json().get('message') or {}).get('content', ''), cfg['denoise'])
+        source, note = 'llm', d['note']
     except Exception as e:
-        return {'positive': clean_tags(current + [request_text]), 'negative': [], 'denoise': cfg['denoise'],
-                'note': f'Ollama unavailable ({str(e)[:120]}) — used your text as is', 'source': 'fallback'}
+        d = {'add': clean_tags([request_text]), 'remove': [], 'denoise': max(cfg['denoise'], 0.65)}
+        source, note = 'fallback', f'Ollama gave no usable answer ({str(e)[:120]}) — your text was used as is'
+    add, keep, neg = apply_diff(current, d['add'], d['remove'])
+    pos_text, neg_text = prompt_texts(add, keep, neg)
+    return {'positive': pos_text, 'negative': neg_text, 'add': add, 'remove': neg,
+            'denoise': d['denoise'], 'note': note, 'source': source}
 
 
 # ── the ComfyUI API workflow ────────────────────────────────────

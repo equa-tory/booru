@@ -3231,12 +3231,6 @@ def _json_body(request):
         return {}
 
 
-def _prompt_texts(pr):
-    """LLM result -> (positive text, negative text) as shown to the user: Danbooru
-    names with parentheses escaped for the prompt (no quality prefix; that is added on run)."""
-    return comfy.join_prompt(pr['positive']), comfy.join_prompt(pr['negative'])
-
-
 def comfy_status(request):
     return JsonResponse(comfy.status())
 
@@ -3261,8 +3255,8 @@ def comfy_prompt(request):
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
     pr = comfy.to_prompt(text, _edit_current_tags(photo), cfg)
-    pos, neg = _prompt_texts(pr)
-    return JsonResponse({'ok': True, 'positive': pos, 'negative': neg, 'denoise': pr['denoise'],
+    return JsonResponse({'ok': True, 'positive': pr['positive'], 'negative': pr['negative'], 'denoise': pr['denoise'],
+                         'add': pr['add'], 'remove': pr['remove'],
                          'note': pr['note'], 'source': pr['source'], 'model': cfg['ollama_model']})
 
 
@@ -3318,7 +3312,7 @@ def comfy_edit(request):
             den = denoise if denoise is not None else cfg['denoise']
         else:
             pr = comfy.to_prompt(text, _edit_current_tags(photo), cfg)
-            pos_text, neg_text = _prompt_texts(pr)
+            pos_text, neg_text = pr['positive'], pr['negative']
             den = denoise if denoise is not None else pr['denoise']
             note = pr['note']
         den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, den))

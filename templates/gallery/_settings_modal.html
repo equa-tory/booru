@@ -139,7 +139,7 @@
         <div class="set-field"><label for="ce-cfg" title="Prompt strength (CFG).">cfg</label><input type="number" id="ce-cfg" min="1" max="30" step="0.5"></div>
         <div class="set-field"><label for="ce-sampler">sampler</label><select id="ce-sampler"></select></div>
         <div class="set-field"><label for="ce-sched">scheduler</label><select id="ce-sched"></select></div>
-        <div class="set-field"><label for="ce-den" title="Default for 'how much may change' (0.2-0.85). Below ~0.4 barely changes anything, 1.0 would ignore the image completely.">default denoise</label><input type="number" id="ce-den" min="0.2" max="0.85" step="0.05"></div>
+        <div class="set-field"><label for="ce-den" title="Default for 'how much may change' (0.2-0.9). Below ~0.4 barely changes anything, 1.0 would ignore the image completely.">default denoise</label><input type="number" id="ce-den" min="0.2" max="0.9" step="0.05"></div>
         <div class="set-field"><label for="ce-mp" title="The image is scaled to about this many megapixels before drawing. Speed is proportional to it.">megapixels</label><input type="number" id="ce-mp" min="0.25" max="2.5" step="0.1"></div>
         <div class="set-field"><label for="ce-temp" title="Wait until the GPU is cooler than this (°C) before sampling. 0 = never wait. Needs the WaitForGPUTemperature node in ComfyUI.">max GPU temp °C (0 = off)</label><input type="number" id="ce-temp" min="0" max="110"></div>
         <label class="set-check" style="align-self:end;" title="Ask ComfyUI to unload its models when an edit is done, so the GPU is free for the AI tagger."><input type="checkbox" id="ce-free"> free GPU memory after each edit</label>

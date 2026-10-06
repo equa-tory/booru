@@ -1832,14 +1832,24 @@ class ComfyPromptTests(TestCase):
         self.assertEqual(comfy.join_prompt('masterpiece, best quality', ['a_b', 'c (d)']), 'masterpiece, best quality, a b, c \\(d\\)')
 
     def test_parse_llm_answer(self):
-        ok = comfy.parse_llm_prompt('```json\n{"positive": ["1girl", "Blue_Hair", "best quality"], "negative": "brown hair", "denoise": 0.95, "note": "x"}\n```', 0.5)
-        self.assertEqual(ok['positive'], ['1girl', 'blue hair'])
-        self.assertEqual(ok['negative'], ['brown hair'])
-        self.assertEqual(ok['denoise'], comfy.DENOISE_MAX)
-        self.assertEqual(comfy.parse_llm_prompt('{"positive": ["a"], "negative": [], "denoise": "oops"}', 0.5)['denoise'], 0.5)
-        for bad in ('', 'no json here', '{"positive": []}', '[1,2]'):
+        ok = comfy.parse_llm_prompt('```json\n{"add": ["Blue_Hair", "best quality"], "remove": "brown hair", "denoise": 0.95, "note": "x"}\n```', 0.5)
+        self.assertEqual((ok['add'], ok['remove'], ok['denoise']), (['blue hair'], ['brown hair'], comfy.DENOISE_MAX))
+        self.assertEqual(comfy.parse_llm_prompt('{"add": ["a"], "remove": [], "denoise": "oops"}', 0.5)['denoise'], 0.5)
+        self.assertEqual(comfy.parse_llm_prompt('{"add": [], "remove": ["glasses"], "denoise": 0.7}', 0.5)['remove'], ['glasses'])
+        for bad in ('', 'no json here', '{"add": [], "remove": []}', '[1,2]'):
             with self.assertRaises(ValueError):
                 comfy.parse_llm_prompt(bad, 0.5)
+
+    def test_diff_builds_the_prompt(self):
+        """#37111: the new outfit must replace the old one, not sit unweighted among 40 old tags."""
+        add, keep, neg = comfy.apply_diff(['1girl', 'school_uniform', 'pleated skirt', 'Blonde_Hair', 'smile'],
+                                          ['astronaut suit', 'helmet'], ['school uniform', 'Pleated_Skirt', 'not_in_picture', 'helmet'])
+        self.assertEqual(keep, ['1girl', 'blonde hair', 'smile'])
+        self.assertEqual(neg, ['school uniform', 'pleated skirt', 'not in picture'])      # added wins over removed
+        pos, negt = comfy.prompt_texts(add, keep, neg)
+        self.assertTrue(pos.startswith('(astronaut suit:1.3), (helmet:1.3), 1girl'))
+        self.assertEqual(comfy.prompt_texts(['x (y)'], [], [])[0], '(x \\(y\\):1.3)')
+        self.assertNotIn('school uniform', pos)
 
     def _client(self, handler):
         return mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(handler)))
@@ -1850,12 +1860,13 @@ class ComfyPromptTests(TestCase):
         def handler(req):
             seen['body'] = json.loads(req.content)
             return httpx.Response(200, json={'message': {'content': json.dumps(
-                {'positive': ['1girl', 'blue hair'], 'negative': ['brown hair'], 'denoise': 0.6, 'note': 'hair'})}})
+                {'add': ['blue hair'], 'remove': ['brown hair'], 'denoise': 0.6, 'note': 'hair'})}})
         with self._client(handler):
             r = comfy.to_prompt('blue hair', ['1girl', 'brown_hair', 'general'])
-        self.assertEqual((r['source'], r['positive'], r['denoise']), ('llm', ['1girl', 'blue hair'], 0.6))
-        self.assertIn('Current tags: 1girl, brown hair', seen['body']['messages'][1]['content'])   # rating tag dropped
+        self.assertEqual((r['source'], r['positive'], r['negative'], r['denoise']), ('llm', '(blue hair:1.3), 1girl', 'brown hair', 0.6))
+        self.assertIn('Current: 1girl, brown hair | Request: blue hair', seen['body']['messages'][1]['content'])   # rating tag dropped
         self.assertIs(seen['body']['think'], False)
+        self.assertEqual(seen['body']['format']['required'], ['add', 'remove', 'denoise', 'note'])   # schema-enforced: any model, no tools
         self.assertEqual(seen['body']['model'], comfy.config()['ollama_model'])
 
     def test_to_prompt_falls_back_when_ollama_is_down_or_rambles(self):
@@ -1863,9 +1874,11 @@ class ComfyPromptTests(TestCase):
             raise httpx.ConnectError('refused')
         with self._client(down):
             r = comfy.to_prompt('add a hat', ['1girl'])
-        self.assertEqual((r['source'], r['positive']), ('fallback', ['1girl', 'add a hat']))
+        self.assertEqual((r['source'], r['positive']), ('fallback', '(add a hat:1.3), 1girl'))
         with self._client(lambda req: httpx.Response(200, json={'message': {'content': 'sure! here you go'}})):
             self.assertEqual(comfy.to_prompt('x', ['a'])['source'], 'fallback')
+        with self._client(lambda req: httpx.Response(200, json={'message': {'content': '{"add": [], "remove": [], "denoise": 0.5, "note": ""}'}})):
+            self.assertEqual(comfy.to_prompt('x', ['a'])['source'], 'fallback')     # "no change" answers are not trusted
 
     def test_config_clamps_and_roundtrips(self):
         saved = comfy.save_config({'steps': 9999, 'cfg': 'abc', 'denoise': 1.0, 'megapixels': 0.01, 'quality': '',
@@ -2035,7 +2048,8 @@ class ComfyEditEndpointTests(TestCase):
         return self.client.post(url, json.dumps(body), content_type='application/json')
 
     def _run_edit(self, body, **kw):
-        pr = {'positive': ['1girl', 'blue hair'], 'negative': ['brown hair'], 'denoise': 0.6, 'note': 'hair', 'source': 'llm'}
+        pr = {'positive': '(blue hair:1.3), 1girl', 'negative': 'brown hair', 'add': ['blue hair'], 'remove': ['brown hair'],
+              'denoise': 0.6, 'note': 'hair', 'source': 'llm'}
         with mock.patch.object(comfy, 'to_prompt', return_value=pr) as tp, \
              mock.patch.object(comfy, 'generate', return_value=(_png((48, 36)), {})) as gen, \
              mock.patch.object(comfy, 'free_comfy', return_value=True) as fr, \
@@ -2079,7 +2093,7 @@ class ComfyEditEndpointTests(TestCase):
         self.assertEqual(comfy.config()['ollama_model'], 'gemma2:9b')
 
     def test_cancel_creates_nothing(self):
-        with mock.patch.object(comfy, 'to_prompt', return_value={'positive': ['a'], 'negative': [], 'denoise': .5, 'note': '', 'source': 'llm'}), \
+        with mock.patch.object(comfy, 'to_prompt', return_value={'positive': 'a', 'negative': '', 'add': [], 'remove': [], 'denoise': .5, 'note': '', 'source': 'llm'}), \
              mock.patch.object(comfy, 'generate', side_effect=TaskCancelled()), \
              mock.patch.object(views, 'run_ai_tagger', return_value={'general': [], 'character': []}), \
              mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
@@ -2110,11 +2124,11 @@ class ComfyEditEndpointTests(TestCase):
         self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'}).status_code, 400)
 
     def test_prompt_preview_returns_editable_text(self):
-        pr = {'positive': ['1girl', 'nakano_miku_(go-toubun)'], 'negative': [], 'denoise': 0.55, 'note': 'n', 'source': 'llm'}
+        pr = {'positive': '(x:1.3), 1girl, nakano miku \\(go-toubun\\)', 'negative': '', 'add': ['x'], 'remove': [], 'denoise': 0.55, 'note': 'n', 'source': 'llm'}
         with mock.patch.object(comfy, 'to_prompt', return_value=pr), \
              mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl'], 'character': [], 'model': 'wd14'}):
             d = self._post('/api/comfy/prompt/', {'photo_id': self.photo.pk, 'request': 'x'}).json()
-        self.assertEqual(d['positive'], '1girl, nakano miku \\(go-toubun\\)')
+        self.assertEqual((d['positive'], d['add']), ('(x:1.3), 1girl, nakano miku \\(go-toubun\\)', ['x']))
         self.assertEqual(d['denoise'], 0.55)
 
     def test_current_tags_include_post_characters_and_tagger_output(self):
@@ -2155,6 +2169,7 @@ class ComfyEditPageTests(TestCase):
         post = self._post('a.png', 'b.mp4', 'c.gif', 'd.pdf', 'e.jpg')
         html = self.client.get(f'/post/{post.pk}/').content.decode()
         self.assertEqual(html.count('class="ai-edit-btn"'), 2)             # a.png and e.jpg only
+        self.assertIn('aria-label="AI edit">&#9998;</button>', html)        # icon only, no text
         self.assertIn('id="aiedit-backdrop"', html)
         for ph in Photo.objects.filter(post=post, rel_path__in=['a.png', 'e.jpg']):
             self.assertIn(f'data-photo-id="{ph.pk}"', html)
@@ -2175,6 +2190,8 @@ class ComfyEditPageTests(TestCase):
         new.save()
         html = self.client.get(f'/post/{new.pk}/').content.decode()
         self.assertIn(f'post #{src.pk} (item 2)</a>', html)
+        self.assertIn(f'href="/post/{src.pk}/" style="font-size:.75rem;" title="open the post this AI edit was made from">&#10548; original #{src.pk}</a>', html)
+        self.assertIn(f"location.href='/post/{src.pk}/'\" title=\"open the original post\"", html)
         self.assertIn('add &lt;glasses&gt;', html)                          # request is escaped
         self.assertIn(f'aiedit={item.pk}&req=add%20%3Cglasses%3E', html)    # "edit again" prefilled
         self.assertIn(f'#{new.pk}</a>', self.client.get(f'/post/{src.pk}/').content.decode())
