@@ -128,6 +128,23 @@
 #aiedit-backdrop textarea { resize:vertical; min-height:3.2rem; }
 #aiedit-backdrop label.ae-l { display:block; font-family:var(--mono); font-size:.66rem; color:var(--text-dim); margin:.55rem 0 .2rem; }
 .ae-row { display:flex; gap:.5rem; align-items:flex-end; }
+.ae-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin:.3rem 0; }
+.ae-chip { font-family:var(--mono); font-size:.68rem; background:var(--bg3); color:var(--text); border:1px solid var(--border);
+  border-radius:999px; padding:.22rem .55rem; cursor:pointer; display:inline-flex; align-items:center; gap:.3rem; max-width:100%; }
+.ae-chip img { width:18px; height:18px; border-radius:50%; object-fit:cover; }
+.ae-chip.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.ae-chip .ae-why { color:var(--text-dim); }
+.ae-res { position:absolute; left:0; right:0; top:100%; z-index:5; background:var(--bg2); border:1px solid var(--border);
+  border-radius:0 0 6px 6px; max-height:240px; overflow-y:auto; box-shadow:0 4px 16px rgba(0,0,0,.5); }
+.ae-res div { display:flex; gap:.45rem; align-items:center; padding:.35rem .5rem; cursor:pointer; font-size:.74rem; border-bottom:1px solid var(--border); }
+.ae-res div:hover { background:var(--bg3); }
+.ae-res img, .ae-lrow img.ae-thumb { width:34px; height:34px; border-radius:6px; object-fit:cover; background:var(--bg3); flex:none; }
+.ae-res small, .ae-lrow small { color:var(--text-dim); font-family:var(--mono); font-size:.62rem; }
+.ae-lrow { border:1px solid var(--border); border-radius:8px; padding:.4rem .5rem; margin-top:.35rem; background:var(--bg3); }
+.ae-lrow .ae-ltop { display:flex; gap:.45rem; align-items:center; }
+.ae-lrow .ae-ltitle { flex:1; min-width:0; font-size:.76rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ae-lrow input[type=range] { width:5.5rem; flex:none; }
+.ae-lrow .ae-x { background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:1rem; padding:0 .2rem; }
 .ae-row > div { flex:1; min-width:0; }
 .scroll-item.zoomed { overflow-x:auto; touch-action:pan-x pan-y; overscroll-behavior-x:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
 /* fit-single: single-item post sized as tall as fits on screen, no vertical
@@ -562,16 +579,18 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       </div>
       {% if gen_info %}
       <details style="margin-top:.5rem;font-family:var(--mono);font-size:.72rem;color:var(--text-dim);">
-        <summary style="cursor:pointer;">generation</summary>
+        <summary style="cursor:pointer;">generation{% if gen_took %} · took {{ gen_took }}{% endif %}</summary>
         <div style="margin-top:.3rem;line-height:1.5;word-break:break-word;">
           <div><b>request:</b> {{ gen_info.request }}</div>
           {% if gen_info.note %}<div><b>note:</b> {{ gen_info.note }}</div>{% endif %}
           <div><b>prompt:</b> {{ gen_info.positive }}</div>
           {% if gen_info.negative %}<div><b>negative:</b> {{ gen_info.negative }}</div>{% endif %}
           <div><b>denoise</b> {{ gen_info.denoise }} · <b>seed</b> {{ gen_info.seed }} · {{ gen_info.steps }} steps · cfg {{ gen_info.cfg }} · {{ gen_info.sampler }}</div>
-          <div>{{ gen_info.checkpoint }} · {{ gen_info.seconds }}s</div>
+          {% for l in gen_info.loras %}<div><b>LoRA</b> {{ l.title }} × {{ l.strength }}{% if l.words %} — {{ l.words|join:" | " }}{% endif %}</div>{% endfor %}
+          <div>{{ gen_info.checkpoint }}</div>
+          {% if gen_took %}<div><b>took</b> {{ gen_took }}{% if gen_timings %} ({{ gen_timings }}){% endif %}</div>{% endif %}
         </div>
-        {% if edit_source and edit_source.photo_id %}<button class="btn" style="margin-top:.4rem;font-size:.72rem;" onclick="location.href='/post/{{ edit_source.id }}/?aiedit={{ edit_source.photo_id }}&req={{ gen_info.request|urlencode }}&den={{ gen_info.denoise }}'" title="open the source post with the AI edit box filled in again">&#9998; edit again</button>{% endif %}
+        {% if edit_source and edit_source.photo_id %}<button class="btn" style="margin-top:.4rem;font-size:.72rem;" onclick="location.href='/post/{{ edit_source.id }}/?aiedit={{ edit_source.photo_id }}&req={{ gen_info.request|urlencode }}&den={{ gen_info.denoise }}&from={{ post.pk }}'" title="open the source post with the AI edit box filled in again (same request, strength and LoRAs)">&#9998; edit again</button>{% endif %}
       </details>
       {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.6rem;">
@@ -802,6 +821,17 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     </div>
     <label class="ae-l" for="aiedit-den">how much may change: <b id="aiedit-den-val">0.60</b> <span style="opacity:.7;">(low = keeps the picture, high = re-draws more)</span></label>
     <input type="range" id="aiedit-den" min="0.2" max="0.9" step="0.05" value="0.65" style="width:100%;" oninput="document.getElementById('aiedit-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
+    <div style="display:flex;align-items:center;gap:.4rem;margin-top:.6rem;">
+      <label class="ae-l" for="aiedit-lora-q" style="margin:0;flex:1;">LoRA <span id="aiedit-lora-n"></span></label>
+      <button type="button" class="btn" id="aiedit-detect-btn" style="font-size:.7rem;padding:.2rem .55rem;" onclick="aiLoraDetect()" title="find LoRAs for the characters in this picture and the words of your request">&#10024; detect</button>
+    </div>
+    <div id="aiedit-lora-sug" class="ae-chips"></div>
+    <div style="position:relative;">
+      <input type="text" id="aiedit-lora-q" placeholder="search LoRA by name or tag…" autocomplete="off" spellcheck="false"
+             oninput="aiLoraSearch(this.value)" onfocus="aiLoraSearch(this.value)" onblur="setTimeout(() => aeEl('aiedit-lora-res').style.display = 'none', 200)">
+      <div id="aiedit-lora-res" class="ae-res" style="display:none;"></div>
+    </div>
+    <div id="aiedit-lora-sel"></div>
     <div id="aiedit-prompt" style="display:none;">
       <label class="ae-l" for="aiedit-pos">prompt (editable)</label>
       <textarea id="aiedit-pos" rows="4"></textarea>
@@ -2901,11 +2931,14 @@ function openAiEditFor(photoId, preset) {
   aeEl('aiedit-seed').value = '';
   aeEl('aiedit-prompt').style.display = 'none';
   aeEl('aiedit-status').textContent = '';
+  aiLoras = []; aiLoraSugList = []; renderAiLoras(); aeEl('aiedit-lora-q').value = '';
   const den = aeEl('aiedit-den'); delete den.dataset.touched;
   if (preset && preset.den) { den.value = preset.den; den.dataset.touched = '1'; aeEl('aiedit-den-val').textContent = (+preset.den).toFixed(2); }
   document.body.style.overflow = 'hidden';
   aeEl('aiedit-backdrop').classList.add('open');
   aiEditLoadStatus();
+  if (preset && preset.loras && preset.loras.length) aiLoraRestore(preset.loras);
+  else aiLoraDetect(true);                  // characters in the picture → suggestions right away
   setTimeout(() => aeEl('aiedit-req').focus(), 50);
 }
 function openAiEdit(btn) {
@@ -2916,9 +2949,77 @@ function closeAiEdit() {
   const b = aeEl('aiedit-backdrop'); if (!b) return;
   b.classList.remove('open'); document.body.style.overflow = '';
 }
+/* LoRAs: suggestions (detect / preview), search, selected rows with strength + trigger-word groups */
+let aiLoras = [], _aiLoraT = null;
+const AI_MAX_LORAS = 6;
+function aiLoraShort(g) { const w = g.split(',').map(x => x.trim()).filter(Boolean); return w.slice(0, 3).join(', ') + (w.length > 3 ? ' +' + (w.length - 3) : ''); }
+function aiLoraAdd(it, selWords, strength) {
+  if (aiLoras.some(l => l.name === it.name)) return;
+  if (aiLoras.length >= AI_MAX_LORAS) { toast('at most ' + AI_MAX_LORAS + ' LoRAs', 'err'); return; }
+  const groups = it.groups || [];
+  let sel = new Set(it.default_groups || []);
+  if (selWords) sel = new Set(groups.map((g, i) => selWords.includes(g) ? i : -1).filter(i => i >= 0));
+  aiLoras.push({name: it.name, title: it.title, kind: it.kind, preview: it.preview || '', groups,
+                strength: strength != null ? +strength : (it.kind === 'character' ? 1.0 : 0.8), sel});
+  renderAiLoras();
+}
+function aiLoraRemove(i) { aiLoras.splice(i, 1); renderAiLoras(); }
+function aiLoraGroup(i, g) { const s = aiLoras[i].sel; s.has(g) ? s.delete(g) : s.add(g); renderAiLoras(); }
+function aiLoraStrength(i, v) { aiLoras[i].strength = +v; const o = aeEl('ae-ls-' + i); if (o) o.textContent = (+v).toFixed(2); }
+function renderAiLoras() {
+  aeEl('aiedit-lora-n').textContent = aiLoras.length ? '(' + aiLoras.length + ')' : '';
+  aeEl('aiedit-lora-sel').innerHTML = aiLoras.map((l, i) => `<div class="ae-lrow">
+    <div class="ae-ltop">${l.preview ? `<img class="ae-thumb" src="${aeEsc(l.preview)}" loading="lazy" alt="">` : ''}
+      <div class="ae-ltitle" title="${aeEsc(l.name)}">${aeEsc(l.title)}<br><small>${l.kind === 'character' ? 'character · ' : ''}${l.groups.length} trigger group(s)</small></div>
+      <input type="range" min="0" max="1.5" step="0.05" value="${l.strength}" oninput="aiLoraStrength(${i}, this.value)" title="strength">
+      <small id="ae-ls-${i}">${(+l.strength).toFixed(2)}</small>
+      <button type="button" class="ae-x" onclick="aiLoraRemove(${i})" title="remove">&#10005;</button></div>
+    ${l.groups.length ? `<div class="ae-chips">${l.groups.map((g, gi) => `<button type="button" class="ae-chip${l.sel.has(gi) ? ' on' : ''}" title="${aeEsc(g)}" onclick="aiLoraGroup(${i}, ${gi})">${aeEsc(aiLoraShort(g))}</button>`).join('')}</div>` : ''}
+  </div>`).join('');
+  renderAiLoraSug();
+}
+let aiLoraSugList = [], aiLoraSugLeft = [];
+function renderAiLoraSug(list) {
+  if (list) aiLoraSugList = list;
+  const left = aiLoraSugLeft = aiLoraSugList.filter(it => !aiLoras.some(l => l.name === it.name));
+  aeEl('aiedit-lora-sug').innerHTML = left.map((it, i) => `<button type="button" class="ae-chip" title="${aeEsc(it.title + (it.reason ? ' — ' + it.reason : ''))}" onclick="aiLoraAdd(aiLoraSugLeft[${i}])">
+    ${it.preview ? `<img src="${aeEsc(it.preview)}" loading="lazy" alt="">` : ''}+ ${aeEsc(it.title.length > 34 ? it.title.slice(0, 33) + '…' : it.title)}${it.reason ? ` <span class="ae-why">${aeEsc(it.reason)}</span>` : ''}</button>`).join('');
+}
+async function aiLoraDetect(quiet) {
+  if (!aiEditPhotoId) return;
+  const btn = aeEl('aiedit-detect-btn'); btn.disabled = true;
+  try {
+    const d = await (await fetch(`/api/comfy/loras/suggest/?photo_id=${aiEditPhotoId}&request=${encodeURIComponent(aeEl('aiedit-req').value)}`)).json();
+    renderAiLoraSug(d.loras || []);
+    if (!quiet && !(d.loras || []).length) toast('no matching LoRA found — try the search');
+  } catch (e) { if (!quiet) toast('LoRA detection failed', 'err'); }
+  finally { btn.disabled = false; }
+}
+function aiLoraSearch(q) {
+  clearTimeout(_aiLoraT);
+  _aiLoraT = setTimeout(async () => {
+    const box = aeEl('aiedit-lora-res');
+    try {
+      const d = await (await fetch('/api/comfy/loras/?q=' + encodeURIComponent(q.trim()))).json();
+      window._aiLoraRes = d.loras || [];
+      box.innerHTML = window._aiLoraRes.map((it, i) => `<div onmousedown="event.preventDefault();aiLoraAdd(window._aiLoraRes[${i}]);aeEl('aiedit-lora-q').value='';aeEl('aiedit-lora-res').style.display='none'">
+        ${it.preview ? `<img src="${aeEsc(it.preview)}" loading="lazy" alt="">` : '<img alt="">'}<span>${aeEsc(it.title)}<br><small>${aeEsc(it.folder)} · ${it.groups.length} group(s)</small></span></div>`).join('')
+        || `<div style="cursor:default;">${d.ok === false ? aeEsc(d.error || 'LoRA list unavailable') : 'no LoRA found'}</div>`;
+      box.style.display = '';
+    } catch (e) { box.style.display = 'none'; }
+  }, 220);
+}
+async function aiLoraRestore(saved) {
+  for (const l of saved) {
+    let it = null;
+    try { it = ((await (await fetch('/api/comfy/loras/?name=' + encodeURIComponent(l.name))).json()).loras || [])[0]; } catch (e) {}
+    aiLoraAdd(it || {name: l.name, title: l.title || l.name, kind: 'other', groups: l.words || [], default_groups: []}, l.words || [], l.strength);
+  }
+}
 function aiEditBody() {
   const b = {photo_id: aiEditPhotoId, request: aeEl('aiedit-req').value.trim(),
-             ollama_model: aeEl('aiedit-model').value};
+             ollama_model: aeEl('aiedit-model').value,
+             loras: aiLoras.map(l => ({name: l.name, strength: l.strength, words: [...l.sel].sort((a, c) => a - c).map(g => l.groups[g])}))};
   const seed = aeEl('aiedit-seed').value.trim();
   if (/^\d+$/.test(seed)) b.seed = seed;
   return b;
@@ -2941,6 +3042,7 @@ async function aiEditPreview() {
     aeEl('aiedit-prompt').style.display = '';
     const den = aeEl('aiedit-den'); den.value = d.denoise; delete den.dataset.touched;
     aeEl('aiedit-den-val').textContent = (+d.denoise).toFixed(2);
+    if (d.suggested_loras) renderAiLoraSug(d.suggested_loras);
     aiEditPrompted = true; st.textContent = 'edit the prompt if you like, then generate';
   } catch (e) { st.textContent = '⚠ request failed'; }
   finally { btn.disabled = false; }
@@ -2955,6 +3057,7 @@ async function aiEditRun() {
   try {
     const {status, d} = await aiEditPost('/api/comfy/edit/', b);
     if (d.ok) {
+      if (typeof watchTask === 'function') watchTask(d.task_id);
       toast('AI edit started — the task card shows progress, the result opens as a new post');
       closeAiEdit(); if (typeof pollTasks === 'function') pollTasks(true);
     } else if (status === 409) st.textContent = '⚠ another AI edit is still running — wait for it (or stop it in the task card)';
@@ -2971,7 +3074,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }, true);
   // "edit again" link from a generated post: ?aiedit=<photo id>&req=…&den=…
   const q = new URLSearchParams(location.search);
-  if (q.get('aiedit') && aeEl('aiedit-backdrop')) openAiEditFor(q.get('aiedit'), {req: q.get('req') || '', den: q.get('den') || ''});
+  if (q.get('aiedit') && aeEl('aiedit-backdrop')) {
+    const preset = {req: q.get('req') || '', den: q.get('den') || ''};
+    if (q.get('from')) {
+      fetch(`/api/post/${encodeURIComponent(q.get('from'))}/gen-info/`).then(r => r.json())
+        .then(d => { preset.loras = (d.gen_info && d.gen_info.loras) || []; openAiEditFor(q.get('aiedit'), preset); })
+        .catch(() => openAiEditFor(q.get('aiedit'), preset));
+    } else openAiEditFor(q.get('aiedit'), preset);
+  }
 });
 </script>
 {% endblock %}

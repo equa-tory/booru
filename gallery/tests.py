@@ -2244,3 +2244,225 @@ const up = (x, y, n = 1) => out.push(d.end({changedTouches: Array.from({length: 
 
     def test_long_press_is_not_a_tap(self):
         self.assertEqual(self._run("down(0,0); now+=400; up(0,0); now+=50; down(0,0); now+=30; up(0,0);"), [None, None])
+
+
+# ── AI edit: LoRAs, timings, notifications ──────────────────────
+def _lm_item(folder, file, title, base='Illustrious', tags=(), groups=(), preview='x.jpeg'):
+    return {'folder': folder, 'file_name': file, 'model_name': title, 'base_model': base, 'tags': list(tags),
+            'file_path': f'/l/{folder}/{file}.safetensors',
+            'preview_url': f'/api/lm/previews?path=%2Fl%2F{file}.{preview.split(".")[-1]}' if preview else '',
+            'civitai': {'trainedWords': list(groups)}}
+
+
+LM_PAGES = [
+    {'items': [
+        _lm_item('Illustrious/character', 'Hayasaka_Ai', 'Hayasaka Ai [Kaguya-sama]', tags=['character', 'hayasaka ai'],
+                 groups=['1girl, hayasaka ai, blonde hair, side ponytail,', 'school uniform, white shirt, <lora:x:1>', 'maid, maid headdress']),
+        _lm_item('Illustrious/character', 'AiChan', 'Ai-chan', tags=['character'], groups=['aichan']),
+        _lm_item('Illustrious/clothing', 'bikini_v2', 'Micro Bikini', tags=['clothing', 'bikini'], groups=['micro bikini, bikini', 'string bikini'], preview='p.mp4'),
+    ], 'total_pages': 2},
+    {'items': [
+        _lm_item('Pony/style', 'ponystyle', 'Pony style', base='Pony', groups=['score_9']),
+        _lm_item('Illustrious/concept', 'nakano', 'Nakano Miku', tags=['character'], groups=['nakano miku, headphones']),
+    ], 'total_pages': 2},
+]
+
+
+class ComfyLoraTests(TestCase):
+    def setUp(self):
+        comfy._catalog_cache.update(t=0.0, key=None, items=None)
+        self.addCleanup(comfy._catalog_cache.update, t=0.0, key=None, items=None)
+        self.pages = 0
+
+        def handler(req):
+            if req.url.path == '/api/lm/loras/list':
+                self.pages += 1
+                return httpx.Response(200, json=LM_PAGES[int(req.url.params['page']) - 1])
+            if req.url.path == '/models/loras':
+                return httpx.Response(200, json=['Illustrious/character/x.safetensors', 'y.safetensors'])
+            return httpx.Response(404)
+        self.handler = handler
+        p = mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(lambda r: self.handler(r))))
+        p.start(); self.addCleanup(p.stop)
+
+    def test_catalog_pages_groups_base_filter_and_cache(self):
+        cat = comfy.lora_catalog()
+        self.assertEqual(self.pages, 2)
+        names = [i['name'] for i in cat]
+        self.assertNotIn('Pony/style/ponystyle.safetensors', names)                 # base model does not fit
+        hay = next(i for i in cat if i['file'] == 'Hayasaka_Ai')
+        self.assertEqual(hay['name'], 'Illustrious/character/Hayasaka_Ai.safetensors')
+        self.assertEqual(hay['groups'], ['1girl, hayasaka ai, blonde hair, side ponytail', 'school uniform, white shirt', 'maid, maid headdress'])
+        self.assertEqual((hay['kind'], hay['preview']), ('character', '/l/Hayasaka_Ai.jpeg'))
+        self.assertEqual(next(i for i in cat if i['file'] == 'bikini_v2')['preview'], '')   # video previews skipped
+        comfy.lora_catalog()
+        self.assertEqual(self.pages, 2)                                                    # cached
+        comfy.lora_catalog(force=True)
+        self.assertEqual(self.pages, 4)
+
+    def test_catalog_falls_back_to_plain_names(self):
+        def no_lm(req):
+            if req.url.path == '/api/lm/loras/list':
+                return httpx.Response(404)
+            return httpx.Response(200, json=['Illustrious/character/x.safetensors', 'y.safetensors'])
+        self.handler = no_lm
+        cat = comfy.lora_catalog(force=True)
+        self.assertEqual([(i['name'], i['kind'], i['groups']) for i in cat],
+                         [('Illustrious/character/x.safetensors', 'character', []), ('y.safetensors', 'other', [])])
+
+    def test_suggestions(self):
+        cat = comfy.lora_catalog()
+        got = comfy.suggest_loras(['hayasaka_ai'], ['make her wear a bikini', 'bikini'], cat)
+        self.assertEqual([g['file'] for g in got], ['Hayasaka_Ai', 'bikini_v2'])           # not the "ai"-only Ai-chan
+        self.assertEqual(got[0]['default_groups'], [0])                                     # character: identity group only
+        self.assertEqual(got[1]['default_groups'], [0, 1])                                  # 2 groups: both
+        self.assertIn('character: hayasaka ai', got[0]['reason'])
+        got = comfy.suggest_loras(['nakano_miku_(go-toubun_no_hanayome)'], [], cat)
+        self.assertEqual([g['file'] for g in got], ['nakano'])
+        self.assertEqual(comfy.suggest_loras([], ['school uniform'], cat), [])              # generic word deep in a group: no match
+
+    def test_search(self):
+        cat = comfy.lora_catalog()
+        self.assertEqual([i['file'] for i in comfy.search_loras('bikini', cat)], ['bikini_v2'])
+        self.assertEqual([i['file'] for i in comfy.search_loras('hayasaka', cat)], ['Hayasaka_Ai'])
+
+    def test_resolve_and_triggers(self):
+        cat = comfy.lora_catalog()
+        got = comfy.resolve_loras([{'name': 'Illustrious/character/Hayasaka_Ai.safetensors', 'strength': 5,
+                                    'words': ['1girl, hayasaka ai', 'pom pom (clothes), <lora:z:1>']}], cat)
+        self.assertEqual(got[0]['strength'], 2.0)
+        self.assertEqual(comfy.trigger_text(got[0]['words']), '1girl, hayasaka ai, pom pom \\(clothes\\)')
+        with self.assertRaises(comfy.ComfyError):
+            comfy.resolve_loras([{'name': '../../etc/passwd'}], cat)
+        with self.assertRaises(comfy.ComfyError):
+            comfy.resolve_loras([{'name': 'x'}] * 7, cat)
+
+
+class ComfyLoraEndpointTests(TestCase):
+    CAT = [{'name': 'Illustrious/character/Hayasaka_Ai.safetensors', 'title': 'Hayasaka Ai', 'file': 'Hayasaka_Ai',
+            'folder': 'Illustrious/character', 'base': 'Illustrious', 'tags': ['hayasaka ai', 'character'],
+            'groups': ['hayasaka ai, side ponytail', 'maid'], 'kind': 'character', 'preview': '/l/h.jpeg'}]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        ov = override_settings(MEDIA_ROOT=self.tmp)
+        ov.enable(); self.addCleanup(ov.disable)
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        comfy.save_config({'enabled': True})
+        self.post = Post.objects.create()
+        with open(os.path.join(self.tmp, 'a.png'), 'wb') as f:
+            f.write(_png((64, 48)))
+        self.photo = Photo.objects.create(post=self.post, order=0, rel_path='a.png', width=64, height=48)
+        add_tags_to_post(self.post, ['hayasaka_ai'], category='character')
+        p = mock.patch.object(comfy, 'lora_catalog', return_value=self.CAT)
+        p.start(); self.addCleanup(p.stop)
+
+    def test_suggest_and_search_and_exact(self):
+        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': [], 'character': [], 'model': 'wd14'}):
+            d = self.client.get(f'/api/comfy/loras/suggest/?photo_id={self.photo.pk}&request=x').json()
+        self.assertEqual([l['name'] for l in d['loras']], [self.CAT[0]['name']])
+        self.assertEqual(d['loras'][0]['preview'], '/api/comfy/lora-preview/?path=/l/h.jpeg')
+        self.assertEqual(d['loras'][0]['default_groups'], [0])
+        self.assertEqual(len(self.client.get('/api/comfy/loras/?q=haya').json()['loras']), 1)
+        self.assertEqual(len(self.client.get('/api/comfy/loras/?name=' + self.CAT[0]['name']).json()['loras']), 1)
+        self.assertEqual(self.client.get('/api/comfy/loras/?name=nope').json()['loras'], [])
+
+    def test_preview_proxy_only_images(self):
+        with mock.patch.object(comfy, 'fetch_lora_preview', return_value=(b'img', 'image/jpeg')):
+            r = self.client.get('/api/comfy/lora-preview/?path=/l/h.jpeg')
+        self.assertEqual((r.status_code, r.content, r['Content-Type']), (200, b'img', 'image/jpeg'))
+        self.assertIsNone(comfy.fetch_lora_preview('/etc/passwd'))
+        self.assertEqual(self.client.get('/api/comfy/lora-preview/?path=/etc/passwd').status_code, 404)
+
+    def _edit(self, body):
+        with mock.patch.object(comfy, 'generate', return_value=(_png((48, 36)), {})) as gen, \
+             mock.patch.object(comfy, 'free_comfy', return_value=True), \
+             mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl'], 'character': [], 'model': 'wd14'}), \
+             mock.patch.object(views, 'apply_ai_tags'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            return self.client.post('/api/comfy/edit/', json.dumps(body), content_type='application/json'), gen
+
+    def test_edit_with_lora_puts_triggers_first_and_records_everything(self):
+        r, gen = self._edit({'photo_id': self.photo.pk, 'request': 'x', 'positive': '(maid:1.3), 1girl', 'negative': '',
+                             'loras': [{'name': self.CAT[0]['name'], 'strength': 0.9, 'words': ['hayasaka ai, side ponytail']}]})
+        self.assertEqual(r.status_code, 200)
+        pos = gen.call_args[0][1]
+        q = comfy.config()['quality']
+        self.assertEqual(pos, q + ', hayasaka ai, side ponytail, (maid:1.3), 1girl')            # quality, triggers, prompt
+        self.assertEqual(gen.call_args.kwargs['loras'], [(self.CAT[0]['name'], 0.9)])
+        new = Post.objects.exclude(pk=self.post.pk).get()
+        self.assertEqual(new.gen_info['loras'][0]['title'], 'Hayasaka Ai')
+        self.assertEqual(set(new.gen_info['timings']), {'prompt', 'generate', 'save', 'tagging', 'total'})
+        d = self.client.get(f'/api/post/{new.pk}/gen-info/').json()
+        self.assertEqual((d['gen_info']['loras'][0]['words'], d['source_photo']), (['hayasaka ai, side ponytail'], self.photo.pk))
+        html = self.client.get(f'/post/{new.pk}/').content.decode()
+        self.assertIn('<b>LoRA</b> Hayasaka Ai × 0.9 — hayasaka ai, side ponytail', html)
+        self.assertIn(f'&from={new.pk}', html)
+
+    def test_unknown_lora_is_refused(self):
+        r, gen = self._edit({'photo_id': self.photo.pk, 'request': 'x', 'loras': [{'name': 'evil.safetensors'}]})
+        self.assertEqual(r.status_code, 400)
+        gen.assert_not_called()
+
+
+class GenerationTimeTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def test_summary_shows_how_long_it_took(self):
+        src = Post.objects.create()
+        new = Post.objects.create(source_post=src, gen_info={'request': 'r', 'positive': 'p', 'denoise': 0.6, 'seed': 1,
+                                                             'timings': {'prompt': 55, 'generate': 150, 'save': 1, 'tagging': 12, 'total': 218}})
+        html = self.client.get(f'/post/{new.pk}/').content.decode()
+        self.assertIn('generation · took 3m 38s</summary>', html)
+        self.assertIn('(prompt 55s · drawing 2m 30s · saving 1s · tagging 12s)', html)
+        old = Post.objects.create(source_post=src, gen_info={'request': 'r', 'positive': 'p', 'seconds': 292})   # #37111-style, no timings
+        self.assertIn('generation · took 4m 52s</summary>', self.client.get(f'/post/{old.pk}/').content.decode())
+
+
+class TaskRetentionTests(TestCase):
+    def test_finished_ai_edit_stays_for_a_day_other_tasks_five_minutes(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        ago = timezone.now() - timezone.timedelta(hours=2)
+        Task.objects.create(kind='comfy_edit', status='done', message='done → post #5', finished_at=ago)
+        Task.objects.create(kind='scan', status='done', finished_at=ago)
+        Task.objects.create(kind='comfy_edit', status='done', finished_at=timezone.now() - timezone.timedelta(hours=25))
+        kinds = [t['kind'] for t in self.client.get('/api/tasks/').json()['tasks']]
+        self.assertEqual(kinds, ['comfy_edit'])
+
+
+class WatchedTaskJsTests(TestCase):
+    """base.html: a watched task is polled even in fast mode and toasts when it finishes."""
+    def test_fast_mode_still_polls_a_watched_task(self):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/base.html'), encoding='utf-8').read()
+        a = src.index('// A task the user is waiting for'); b = src.index('async function cancelTask')
+        prog = """
+const store = {fastMode: '1'}; const localStorage = {getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; }, removeItem: k => { delete store[k]; }};
+const TASK_LABELS = {comfy_edit: 'AI edit (ComfyUI)'}; let toasts = [], fetched = 0, _taskTimer, _hadRunning = false;
+function toast(m, t) { toasts.push(m); } function renderTasks() {} function setTimeout() {} function clearTimeout() {}
+let reply = {tasks: [{id: 7, kind: 'comfy_edit', status: 'running', message: 'generating…'}]};
+async function fetch() { fetched++; return {json: async () => reply}; }
+const document = {getElementById: () => null};
+""" + src[a:b] + """
+(async () => {
+  await pollTasks(); const before = fetched;               // fast mode, nothing watched: no request
+  watchTask(7); await pollTasks();                          // watched: polled anyway
+  reply = {tasks: [{id: 7, kind: 'comfy_edit', status: 'done', message: 'done in 200s → post #42'}]};
+  await pollTasks(); await pollTasks();
+  console.log(JSON.stringify({before, fetched, toasts, watch: watchedTask()}));
+})();"""
+        r = subprocess.run(['node', '-e', prog], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:400])
+        out = json.loads(r.stdout)
+        self.assertEqual(out['before'], 0)
+        self.assertEqual(out['fetched'], 2)                   # third call: watch cleared → fast mode skips again
+        self.assertEqual(out['toasts'], ['AI edit (ComfyUI) done → post #42 (open it from the task card)'])
+        self.assertIsNone(out['watch'])
+
+
+class TriggerNegativeConflictTests(TestCase):
+    def test_selected_trigger_words_leave_the_negative(self):
+        self.assertEqual(comfy.drop_terms('white shirt, school uniform, pom pom \\(clothes\\)', 'Hayasaka, white_shirt, pom pom \\(clothes\\)'),
+                         'school uniform')
+        self.assertEqual(comfy.drop_terms('a, b', ''), 'a, b')

@@ -13,6 +13,7 @@ Settings live in the server-side pref `comfy` (see gallery/prefs.py).
 import hashlib
 import io
 import json
+import os
 import re
 import time
 
@@ -37,6 +38,7 @@ DEFAULTS = {
     'quality': 'masterpiece, best quality, amazing quality, very aesthetic, absurdres',
     'negative': ('bad quality, worst quality, worst detail, sketch, censor, lowres, bad anatomy, '
                  'bad hands, jpeg artifacts, watermark, text, signature'),
+    'lora_bases': 'Illustrious, NoobAI',   # LoRA base models that fit the checkpoint ('' = all)
 }
 DENOISE_MIN, DENOISE_MAX = 0.2, 0.9
 MAX_UPLOAD_MP = 4.0          # bigger sources are shrunk before upload; ComfyUI rescales to `megapixels` anyway
@@ -62,7 +64,7 @@ def config():
         for k, v in saved.items():
             if k in DEFAULTS and v not in (None, ''):
                 cfg[k] = v
-            elif k in ('quality', 'negative') and v == '':
+            elif k in ('quality', 'negative', 'lora_bases') and v == '':
                 cfg[k] = ''          # an empty quality prefix / negative is a valid choice
     return clean_config(cfg)
 
@@ -89,7 +91,7 @@ def clean_config(cfg):
         out[k] = str(out[k]).strip().rstrip('/') or DEFAULTS[k]
     for k in ('ollama_model', 'checkpoint', 'sampler', 'scheduler'):
         out[k] = str(out[k]).strip() or DEFAULTS[k]
-    for k in ('quality', 'negative'):
+    for k in ('quality', 'negative', 'lora_bases'):
         out[k] = str(out[k]).strip()
     return out
 
@@ -537,15 +539,16 @@ def unload_ollama(cfg=None):
         pass
 
 
-def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, progress=None):
-    """Upload `src_path`, run the img2img workflow, return (png_bytes, workflow_used)."""
+def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, progress=None, loras=()):
+    """Upload `src_path`, run the img2img workflow (with `loras` = [(name, strength)]),
+    return (png_bytes, workflow_used)."""
     cfg = cfg or config()
     stat = status_light(cfg)
     if progress:
         progress('uploading to ComfyUI…')
     unload_ollama(cfg)
     name = upload_image(src_path, cfg)
-    wf = build_img2img(name, positive, negative, seed, cfg, denoise, temp_node=stat['temp_node'])
+    wf = build_img2img(name, positive, negative, seed, cfg, denoise, loras=loras, temp_node=stat['temp_node'])
     problems = workflow_problems(wf)
     if problems:
         raise ComfyError('internal workflow error: ' + problems[0])
@@ -563,3 +566,225 @@ def status_light(cfg):
         return {'temp_node': bool(_comfy_get(cfg, '/object_info/WaitForGPUTemperature').json())}
     except ComfyError:
         return {'temp_node': False}
+
+
+# ── LoRAs (catalog from ComfyUI-Lora-Manager, suggestions, trigger-word groups) ────────
+MAX_LORAS = 6
+CATALOG_TTL = 600
+_catalog_cache = {'t': 0.0, 'key': None, 'items': None}
+_LORA_SYNTAX = re.compile(r'<lora:[^>]*>', re.I)
+GENERIC_TOKENS = {'illustrious', 'illustriousxl', 'illu', 'illus', 'il', 'ill', 'ilxl', 'illxl', 'xl', 'sdxl', 'lora',
+                  'nochekaiser', 'character', 'characters', 'concept', 'style', 'v1', 'v2', 'v3', 'v4', 'v5', 'the',
+                  'and', 'of', 'a', 'an', 'in', 'with', 'for', 'to', 'by', 'from', 'epoch', 'version', 'model', 'anime',
+                  'safetensors', 'pony', 'noobai', 'her', 'his', 'make', 'add', 'put', 'remove', 'on', 'it', 'is'}
+
+
+def clean_trigger_group(text):
+    """One trigger-word group -> clean comma list ('' when nothing is left).
+    A1111 `<lora:x:1>` syntax is dropped (meaningless in ComfyUI)."""
+    words = [re.sub(r'\s+', ' ', w).strip() for w in _LORA_SYNTAX.sub('', str(text or '')).split(',')]
+    return ', '.join(w for w in words if w)
+
+
+def _tokens(text):
+    return [t for t in re.findall(r'[a-z0-9]+', str(text).lower().replace('_', ' ')) if t not in GENERIC_TOKENS and not t.isdigit()]
+
+
+def _lora_item(it):
+    folder = (it.get('folder') or '').strip('/')
+    fname = it.get('file_name') or ''
+    path = it.get('file_path') or ''
+    ext = os.path.splitext(path)[1] if path else '.safetensors'
+    name = (folder + '/' if folder else '') + fname + (ext or '.safetensors')
+    groups = [g for g in (clean_trigger_group(x) for x in ((it.get('civitai') or {}).get('trainedWords') or [])) if g]
+    tags = [str(t).lower() for t in (it.get('tags') or [])]
+    kind = 'character' if ('character' in folder.lower().split('/') or 'character' in tags) else 'other'
+    # preview_url is '/api/lm/previews?path=<absolute file>'; keep the path of image previews
+    # (videos are skipped) for the booru proxy, the browser can't reach ComfyUI's 127.0.0.1
+    from urllib.parse import parse_qs, urlparse
+    pv = it.get('preview_url') or ''
+    pv = parse_qs(urlparse(pv).query).get('path', [''])[0] if '?' in pv else pv
+    preview = pv if re.search(r'\.(jpe?g|png|webp|gif)$', pv, re.I) else ''
+    return {'name': name, 'title': it.get('model_name') or fname, 'file': fname, 'folder': folder,
+            'base': it.get('base_model') or '', 'tags': tags, 'groups': groups, 'kind': kind, 'preview': preview}
+
+
+def lora_catalog(cfg=None, force=False):
+    """All LoRAs usable with the checkpoint (base model in cfg['lora_bases']), from the
+    LoRA Manager API (100 per page), cached 10 minutes per process. Without LoRA Manager,
+    ComfyUI's plain /models/loras names are used (no tags, no trigger words)."""
+    cfg = cfg or config()
+    key = (cfg['comfy_url'], cfg['lora_bases'])
+    now = time.time()
+    if not force and _catalog_cache['items'] is not None and _catalog_cache['key'] == key and now - _catalog_cache['t'] < CATALOG_TTL:
+        return _catalog_cache['items']
+    items = []
+    try:
+        with _client(20.0) as c:
+            page = 1
+            while page <= 100:
+                r = c.get(cfg['comfy_url'] + '/api/lm/loras/list', params={'page': page, 'page_size': 100})
+                if r.status_code != 200:
+                    raise ComfyError(f'LoRA Manager HTTP {r.status_code}')
+                d = r.json()
+                items += [_lora_item(it) for it in d.get('items', [])]
+                if page >= int(d.get('total_pages') or 1):
+                    break
+                page += 1
+    except (httpx.HTTPError, ValueError, ComfyError):
+        items = []
+        try:
+            names = _comfy_get(cfg, '/models/loras', 10.0).json()
+            items = [{'name': n, 'title': os.path.splitext(n.rsplit('/', 1)[-1])[0], 'file': os.path.splitext(n.rsplit('/', 1)[-1])[0],
+                      'folder': n.rsplit('/', 1)[0] if '/' in n else '', 'base': '', 'tags': [], 'groups': [],
+                      'kind': 'character' if '/character' in n.lower() else 'other', 'preview': ''} for n in names]
+        except (ComfyError, ValueError):
+            items = []
+    bases = {b.strip().lower() for b in cfg['lora_bases'].split(',') if b.strip()}
+    if bases:
+        items = [i for i in items if not i['base'] or i['base'].lower() in bases]
+    items.sort(key=lambda i: i['title'].lower())
+    _catalog_cache.update(t=now, key=key, items=items)
+    return items
+
+
+def search_loras(q, catalog, limit=12):
+    toks = _tokens(q) or [w for w in re.findall(r'[a-z0-9]+', q.lower())]
+    if not toks:
+        return catalog[:limit]
+    out = []
+    for it in catalog:
+        hay = ' '.join([it['title'], it['file'], it['folder'], ' '.join(it['tags'])]).lower().replace('_', ' ')
+        if all(t in hay for t in toks):
+            title_hit = all(t in it['title'].lower() for t in toks)
+            out.append((0 if title_hit else 1, it['title'].lower(), it))
+    return [x[2] for x in sorted(out, key=lambda x: x[:2])[:limit]]
+
+
+def default_groups(item):
+    """Indexes of the trigger groups pre-selected for a LoRA: a character's first group
+    (its identity; the others are usually outfits), else all of up to 2 groups, else the first."""
+    n = len(item['groups'])
+    if not n:
+        return []
+    if item['kind'] == 'character' or n > 2:
+        return [0]
+    return list(range(n))
+
+
+def _char_name(tag):
+    """'nakano_miku_(go-toubun_no_hanayome)' -> 'nakano miku'."""
+    return re.sub(r'\(.*?\)', '', str(tag).replace('_', ' ')).strip()
+
+
+def suggest_loras(char_tags, terms, catalog, limit=8):
+    """Deterministic LoRA suggestions: characters whose full name matches the picture's
+    character tags, then concept/clothing LoRAs whose tags or trigger words match the
+    request / added tags. Returns items + score, reason, default_groups."""
+    scored = {}
+
+    def bump(it, score, reason):
+        cur = scored.setdefault(it['name'], {'item': it, 'score': 0, 'reasons': []})
+        cur['score'] += score
+        if reason not in cur['reasons']:
+            cur['reasons'].append(reason)
+
+    for ct in char_tags or []:
+        name = _char_name(ct)
+        toks = {t for t in re.findall(r'[a-z0-9]+', name.lower()) if not t.isdigit()}
+        if not toks:
+            continue
+        for it in catalog:
+            first = it['groups'][0] if it['groups'] else ''
+            hay = set(re.findall(r'[a-z0-9]+', ' '.join([it['title'], it['file'], ' '.join(it['tags']), first]).lower().replace('_', ' ')))
+            if toks <= hay:
+                bump(it, 100 + len(toks) + (5 if it['kind'] == 'character' else 0), 'character: ' + name)
+    phrases = []
+    for t in terms or []:
+        t = re.sub(r'\s+', ' ', str(t).lower().replace('_', ' ')).strip()
+        if t and t not in GENERIC_TOKENS and t not in phrases:
+            phrases.append(t)
+    for it in catalog:
+        if it['kind'] == 'character':
+            continue
+        # key trigger words = the first 3 of each group (the rest are often generic: 1girl, solo, school uniform...)
+        key_words = {w.strip().lower().replace('_', ' ') for g in it['groups'] for w in g.split(',')[:3]}
+        tagset = {t.replace('_', ' ') for t in it['tags']}
+        title_toks = set(_tokens(it['title'] + ' ' + it['file']))
+        for ph in phrases:
+            if ph in tagset or ph in key_words:
+                bump(it, 10, ph)
+            elif len(ph) > 3 and set(_tokens(ph)) and set(_tokens(ph)) <= title_toks:
+                bump(it, 6, ph)
+    out = []
+    for v in sorted(scored.values(), key=lambda v: (-v['score'], v['item']['title'].lower())):
+        if v['score'] < 10:
+            continue
+        it = dict(v['item'])
+        it.update(score=v['score'], reason=', '.join(v['reasons'][:4]), default_groups=default_groups(it))
+        out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def trigger_text(words):
+    """Selected trigger words -> prompt text: parentheses escaped, underscores kept."""
+    parts = []
+    for g in words or []:
+        for w in clean_trigger_group(g).split(','):
+            w = w.strip()
+            if w and w not in parts:
+                parts.append(w)
+    return ', '.join(w.replace('\\(', '(').replace('\\)', ')').replace('(', '\\(').replace(')', '\\)') for w in parts)
+
+
+def drop_terms(text, remove_text):
+    """Comma text minus the items that also appear in `remove_text` (case/underscore/escape
+    insensitive): trigger words the user selected must never sit in the negative too."""
+    gone = {_norm(w) for w in str(remove_text or '').split(',') if w.strip()}
+    return ', '.join(w.strip() for w in str(text or '').split(',') if w.strip() and _norm(w) not in gone)
+
+
+def resolve_loras(requested, catalog):
+    """Browser LoRA list -> [{'name','title','strength','words'}]; names must exist in
+    the catalog (raises ComfyError otherwise)."""
+    if not requested:
+        return []
+    if not isinstance(requested, list):
+        raise ComfyError('bad LoRA list')
+    if len(requested) > MAX_LORAS:
+        raise ComfyError(f'at most {MAX_LORAS} LoRAs')
+    by_name = {i['name']: i for i in catalog}
+    out, seen = [], set()
+    for r in requested:
+        name = str((r or {}).get('name') or '')
+        if name in seen:
+            continue
+        it = by_name.get(name)
+        if not it:
+            raise ComfyError(f'unknown LoRA: {name[:120]}')
+        try:
+            strength = min(2.0, max(0.0, float(r.get('strength', 1.0))))
+        except (TypeError, ValueError):
+            strength = 1.0
+        words = [clean_trigger_group(w) for w in (r.get('words') or []) if isinstance(w, str) and clean_trigger_group(w)][:20]
+        out.append({'name': name, 'title': it['title'], 'strength': round(strength, 2), 'words': words})
+        seen.add(name)
+    return out
+
+
+def fetch_lora_preview(path, cfg=None):
+    """(bytes, content_type) of a LoRA Manager preview image, or None."""
+    cfg = cfg or config()
+    if not re.search(r'\.(jpe?g|png|webp|gif)$', path, re.I):
+        return None
+    try:
+        with _client(10.0) as c:
+            r = c.get(cfg['comfy_url'] + '/api/lm/previews', params={'path': path})
+    except httpx.HTTPError:
+        return None
+    ctype = r.headers.get('content-type', '')
+    if r.status_code != 200 or not ctype.startswith('image/'):
+        return None
+    return r.content, ctype

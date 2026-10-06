@@ -3,6 +3,7 @@ import re
 import tempfile
 import json
 import random
+from urllib.parse import quote
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
 from django.core.paginator import Paginator
@@ -777,7 +778,10 @@ def tasks_list(request):
     time. The frontend polls this to show progress / notifications."""
     _sweep_stale_tasks()
     cutoff = timezone.now() - timezone.timedelta(minutes=5)
-    qs = Task.objects.filter(Q(status='running') | Q(finished_at__gte=cutoff))[:20]
+    # a finished AI edit (≈4 min, carries the "open post #N" link) stays until dismissed, up to a day
+    edit_cutoff = timezone.now() - timezone.timedelta(hours=24)
+    qs = Task.objects.filter(Q(status='running') | Q(finished_at__gte=cutoff)
+                             | Q(kind='comfy_edit', finished_at__gte=edit_cutoff))[:20]
     out = []
     for t in qs:
         out.append({
@@ -3189,8 +3193,24 @@ def _edit_context(post):
                 idx = ids.index(post.source_photo_id) + 1
         ctx['edit_source'] = {'id': src.id, 'item': idx, 'photo_id': post.source_photo_id}
     ctx['edit_derived'] = list(post.derived_posts.order_by('id').values_list('id', flat=True)[:50])
-    ctx['gen_info'] = post.gen_info or None
+    gi = post.gen_info or None
+    ctx['gen_info'] = gi
+    if gi:
+        tm = gi.get('timings') or {}
+        total = tm.get('total', gi.get('seconds'))
+        ctx['gen_took'] = _fmt_dur(total) if total is not None else ''
+        ctx['gen_timings'] = ' · '.join(f'{label} {_fmt_dur(tm[k])}' for k, label in
+                                        (('prompt', 'prompt'), ('generate', 'drawing'), ('save', 'saving'), ('tagging', 'tagging'))
+                                        if k in tm)
     return ctx
+
+
+def _fmt_dur(sec):
+    try:
+        sec = int(round(float(sec)))
+    except (TypeError, ValueError):
+        return ''
+    return f'{sec // 60}m {sec % 60:02d}s' if sec >= 60 else f'{sec}s'
 
 
 def _editable_photo(body):
@@ -3254,10 +3274,81 @@ def comfy_prompt(request):
     cfg = comfy.config()
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
-    pr = comfy.to_prompt(text, _edit_current_tags(photo), cfg)
+    tags = _edit_current_tags(photo)
+    pr = comfy.to_prompt(text, tags, cfg)
     return JsonResponse({'ok': True, 'positive': pr['positive'], 'negative': pr['negative'], 'denoise': pr['denoise'],
                          'add': pr['add'], 'remove': pr['remove'],
-                         'note': pr['note'], 'source': pr['source'], 'model': cfg['ollama_model']})
+                         'note': pr['note'], 'source': pr['source'], 'model': cfg['ollama_model'],
+                         'suggested_loras': _lora_suggestions(photo, text, pr['add'], tags, cfg)})
+
+
+def _char_tags_for(photo, tags=None):
+    """Character tags of the item (tagger output + the post's character tags)."""
+    names = list(photo.post.tags.filter(category='character').values_list('name', flat=True)) if photo.post_id else []
+    if tags is None:
+        try:
+            names += run_ai_tagger(photo.file_path, photo.thumb_path).get('character', [])
+        except Exception:
+            pass
+    else:
+        names += list(Tag.objects.filter(name__in=list(tags), category='character').values_list('name', flat=True))
+    return list(dict.fromkeys(names))
+
+
+def _lora_suggestions(photo, text, add_tags, tags=None, cfg=None):
+    try:
+        catalog = comfy.lora_catalog(cfg)
+    except Exception:
+        return []
+    return [_lora_json(i) for i in comfy.suggest_loras(_char_tags_for(photo, tags), [text] + list(add_tags or []), catalog)]
+
+
+def _lora_json(it):
+    out = {k: it[k] for k in ('name', 'title', 'folder', 'kind', 'groups', 'tags') if k in it}
+    out['tags'] = out.get('tags', [])[:8]
+    out['preview'] = ('/api/comfy/lora-preview/?path=' + quote(it['preview'])) if it.get('preview') else ''
+    out['default_groups'] = it.get('default_groups', comfy.default_groups(it))
+    for k in ('score', 'reason'):
+        if k in it:
+            out[k] = it[k]
+    return out
+
+
+def comfy_loras(request):
+    """Manual LoRA picker: search the catalog (name, folder, tags)."""
+    try:
+        catalog = comfy.lora_catalog(force=request.GET.get('refresh') == '1')
+    except Exception as e:
+        return JsonResponse({'ok': False, 'error': str(e), 'loras': []})
+    name = request.GET.get('name', '')
+    if name:                                   # exact lookup ("edit again" restores the LoRAs of a generated post)
+        return JsonResponse({'ok': True, 'total': len(catalog), 'loras': [_lora_json(i) for i in catalog if i['name'] == name]})
+    q = request.GET.get('q', '').strip()
+    return JsonResponse({'ok': True, 'total': len(catalog), 'loras': [_lora_json(i) for i in comfy.search_loras(q, catalog)]})
+
+
+def comfy_lora_suggest(request):
+    """Auto-detect: LoRAs for the item's characters and the request's words."""
+    photo, err = _editable_photo(request.GET)
+    if err:
+        return err
+    text = request.GET.get('request', '').strip()
+    return JsonResponse({'ok': True, 'loras': _lora_suggestions(photo, text, comfy.clean_tags(text.split(',')))})
+
+
+def comfy_lora_preview(request):
+    got = comfy.fetch_lora_preview(request.GET.get('path', ''))
+    if not got:
+        raise Http404
+    resp = HttpResponse(got[0], content_type=got[1])
+    resp['Cache-Control'] = 'private, max-age=86400'
+    return resp
+
+
+def post_gen_info(request, pk):
+    post = get_object_or_404(Post, pk=pk)
+    return JsonResponse({'ok': True, 'gen_info': post.gen_info or None,
+                         'source_post': post.source_post_id, 'source_photo': post.source_photo_id})
 
 
 @require_POST
@@ -3293,6 +3384,10 @@ def comfy_edit(request):
         denoise = float(body['denoise']) if body.get('denoise') not in (None, '') else None
     except (TypeError, ValueError):
         denoise = None
+    try:
+        loras = comfy.resolve_loras(body.get('loras') or [], comfy.lora_catalog(cfg)) if body.get('loras') else []
+    except comfy.ComfyError as e:
+        return JsonResponse({'ok': False, 'error': str(e)}, status=400)
     photo_id = photo.id
 
     def work(task):
@@ -3316,7 +3411,10 @@ def comfy_edit(request):
             den = denoise if denoise is not None else pr['denoise']
             note = pr['note']
         den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, den))
-        positive = comfy.join_prompt(cfg['quality'], pos_text)
+        triggers = comfy.trigger_text([w for l in loras for w in l['words']])
+        positive = comfy.join_prompt(cfg['quality'], triggers, pos_text)
+        t_prompt = _t.time() - t0
+        neg_text = comfy.drop_terms(neg_text, triggers)           # a selected trigger word wins over the negative
         negative = comfy.join_prompt(cfg['negative'], neg_text)
         task.done = 1; task.message = 'starting ComfyUI…'
         task.save(update_fields=['done', 'message'])
@@ -3339,7 +3437,12 @@ def comfy_edit(request):
         def progress(msg):
             task.message = msg
             task.save(update_fields=['message'])
-        png, _wf = comfy.generate(photo.file_path, positive, negative, seed, den, cfg, check=check, progress=progress)
+        if loras:
+            progress(f'generating with {len(loras)} LoRA(s)…')
+        png, _wf = comfy.generate(photo.file_path, positive, negative, seed, den, cfg, check=check, progress=progress,
+                                  loras=[(l['name'], l['strength']) for l in loras])
+        t_gen = _t.time() - gen_start
+        t_save0 = _t.time()
         task.done = 2; task.message = 'saving the new post…'
         task.save(update_fields=['done', 'message'])
 
@@ -3361,6 +3464,7 @@ def comfy_edit(request):
             'checkpoint': cfg['checkpoint'], 'steps': cfg['steps'], 'cfg': cfg['cfg'], 'sampler': cfg['sampler'],
             'scheduler': cfg['scheduler'], 'megapixels': cfg['megapixels'], 'ollama_model': cfg['ollama_model'],
             'note': note, 'seconds': int(_t.time() - t0), 'source_photo': photo.id,
+            'loras': loras, 'triggers': triggers,
         }
         new.save(update_fields=['source_post', 'source_photo', 'gen_info'])
         add_tags_to_post(new, ['ai_edit'], category='meta')
@@ -3368,10 +3472,17 @@ def comfy_edit(request):
             comfy.free_comfy(cfg)
         task.done = 3; task.message = 'tagging the new post…'
         task.save(update_fields=['done', 'message'])
+        t_tag0 = _t.time()
+        t_save = t_tag0 - t_save0
         try:
             apply_ai_tags(new)
         except Exception as e:
             print(f'AI edit: tagging new post {new.id} failed: {e}')
+        total = _t.time() - t0
+        new.gen_info['seconds'] = int(total)
+        new.gen_info['timings'] = {'prompt': round(t_prompt), 'generate': round(t_gen), 'save': round(t_save),
+                                   'tagging': round(_t.time() - t_tag0), 'total': round(total)}
+        new.save(update_fields=['gen_info'])
         task.done = 4
         task.message = f'done in {int(_t.time() - t0)}s → post #{new.id}'
         task.save(update_fields=['done', 'message'])

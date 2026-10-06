@@ -143,10 +143,11 @@
         <div class="set-field"><label for="ce-mp" title="The image is scaled to about this many megapixels before drawing. Speed is proportional to it.">megapixels</label><input type="number" id="ce-mp" min="0.25" max="2.5" step="0.1"></div>
         <div class="set-field"><label for="ce-temp" title="Wait until the GPU is cooler than this (°C) before sampling. 0 = never wait. Needs the WaitForGPUTemperature node in ComfyUI.">max GPU temp °C (0 = off)</label><input type="number" id="ce-temp" min="0" max="110"></div>
         <label class="set-check" style="align-self:end;" title="Ask ComfyUI to unload its models when an edit is done, so the GPU is free for the AI tagger."><input type="checkbox" id="ce-free"> free GPU memory after each edit</label>
+        <div class="set-field wide"><label for="ce-bases" title="Only LoRAs made for these base models are offered (they must fit the checkpoint). Empty = all.">LoRA base models</label><input type="text" id="ce-bases" spellcheck="false" autocomplete="off"></div>
         <div class="set-field wide"><label for="ce-quality" title="Added in front of every prompt.">quality tags (prefix)</label><textarea id="ce-quality" rows="2" spellcheck="false"></textarea></div>
         <div class="set-field wide"><label for="ce-neg" title="Always sent as the negative prompt (your own negative is added to it).">default negative prompt</label><textarea id="ce-neg" rows="3" spellcheck="false"></textarea></div>
       </div>
-      <div class="set-actions"><button class="btn primary" onclick="saveComfy()">save</button><button class="btn" onclick="loadComfy()" title="Reload the status and the model lists from ComfyUI and Ollama.">&#8635; refresh</button></div>
+      <div class="set-actions"><button class="btn primary" onclick="saveComfy()">save</button><button class="btn" onclick="loadComfy()" title="Reload the status and the model lists from ComfyUI and Ollama.">&#8635; refresh</button><button class="btn" onclick="refreshLoras()" title="Re-read the LoRA list (names, tags, trigger words) from LoRA Manager in ComfyUI.">&#8635; LoRA list</button></div>
       <div class="set-note">An edit takes about 2&ndash;3 minutes on this GPU and becomes a new post (tag <code>ai_edit</code>) that links back to the source. One edit runs at a time.</div>
     </div>
 
@@ -191,7 +192,7 @@ function openSettings() {
   loadComfy();
 }
 const CE_FIELDS = {comfy_url:'ce-comfy', ollama_url:'ce-ollama', steps:'ce-steps', cfg:'ce-cfg', denoise:'ce-den', megapixels:'ce-mp',
-                   max_temp:'ce-temp', quality:'ce-quality', negative:'ce-neg'};
+                   max_temp:'ce-temp', quality:'ce-quality', negative:'ce-neg', lora_bases:'ce-bases'};
 function _ceFill(sel, items, cur) {
   const list = (items || []).slice(); if (cur && !list.includes(cur)) list.unshift(cur);
   sel.innerHTML = list.map(x => `<option value="${x.replace(/"/g,'&quot;')}"${x === cur ? ' selected' : ''}>${x.replace(/</g,'&lt;')}</option>`).join('');
@@ -211,6 +212,10 @@ async function loadComfy() {
     const ol = d.ollama.ok ? `Ollama ${d.ollama.version} ✓` : `Ollama ✗ ${d.ollama.error || ''}`;
     note.textContent = cm + ' · ' + ol;
   } catch(e) { note.textContent = 'could not read the status'; }
+}
+async function refreshLoras() {
+  try { const d = await (await fetch('/api/comfy/loras/?refresh=1&q=')).json(); toast(d.ok ? d.total + ' LoRAs' : (d.error || 'LoRA list unavailable'), d.ok ? '' : 'err'); }
+  catch(e) { toast('LoRA list unavailable', 'err'); }
 }
 async function saveComfy() {
   const g = id => document.getElementById(id).value;

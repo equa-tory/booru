@@ -1038,15 +1038,32 @@ function renderTasks(tasks) {
   }).join('') + (tasks.filter(t => t.status !== 'running').length > 1
       ? `<div class="tc-clearall" onclick="clearTasks()">clear all</div>` : '');
 }
+// A task the user is waiting for (an AI edit takes minutes): it is polled even in fast
+// mode / with notifications off, survives page reloads, and toasts when it finishes.
+function watchedTask() { try { return localStorage.getItem('watchTask'); } catch(e) { return null; } }
+function watchTask(id) { try { if (id) localStorage.setItem('watchTask', String(id)); else localStorage.removeItem('watchTask'); } catch(e) {} }
+function checkWatchedTask(tasks) {
+  const id = watchedTask(); if (!id) return;
+  const t = tasks.find(x => String(x.id) === id);
+  if (!t) { watchTask(null); return; }
+  if (t.status === 'running') return;
+  watchTask(null);
+  const m = /post #(\d+)/.exec(t.message || '');
+  const label = TASK_LABELS[t.kind] || t.kind;
+  if (t.status === 'done') toast(label + ' done' + (m ? ' → post #' + m[1] + ' (open it from the task card)' : ''));
+  else toast(label + ' ' + (t.status === 'error' ? 'failed: ' + (t.error || '').slice(0, 120) : 'stopped'), 'err');
+}
 async function pollTasks(force) {
-  // when notifications are off OR fast mode is on, skip polling to cut traffic
-  if (!force && (localStorage.getItem('notifOff') === '1' || localStorage.getItem('fastMode') === '1')) {
+  // when notifications are off OR fast mode is on, skip polling to cut traffic —
+  // unless the user is waiting for a task (watchTask)
+  if (!force && !watchedTask() && (localStorage.getItem('notifOff') === '1' || localStorage.getItem('fastMode') === '1')) {
     clearTimeout(_taskTimer); _taskTimer = setTimeout(() => pollTasks(), 30000);
     return;
   }
   try {
     const d = await (await fetch('/api/tasks/')).json();
     renderTasks(d.tasks);
+    checkWatchedTask(d.tasks);
     const running = d.tasks.some(t => t.status === 'running');
     const scanRunning = d.tasks.some(t => t.kind === 'scan' && t.status === 'running');
     if (scanRunning && localStorage.getItem('liveScan') === '1'
