@@ -12,7 +12,12 @@
   width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
   color: var(--text); font-family: var(--mono); font-size: .8rem; padding: .4rem .5rem;
 }
-.set-field input:focus { outline: none; border-color: var(--accent); }
+.set-field select, .set-field textarea {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-family: var(--mono); font-size: .8rem; padding: .4rem .5rem; box-sizing: border-box;
+}
+.set-field textarea { resize: vertical; }
+.set-field input:focus, .set-field select:focus, .set-field textarea:focus { outline: none; border-color: var(--accent); }
 .set-check { display: flex; align-items: center; gap: .5rem; font-size: .82rem; cursor: pointer; }
 .set-check input { accent-color: var(--accent); width: 16px; height: 16px; }
 .set-note { font-family: var(--mono); font-size: .68rem; color: var(--text-dim); margin: .4rem 0; line-height: 1.5; }
@@ -122,6 +127,30 @@
     </div>
 
     <div class="set-sec">
+      <h3>AI edit (ComfyUI) <span style="text-transform:none;letter-spacing:0;font-weight:400;">· "&#9998; AI edit" on every still image of a post</span></h3>
+      <div class="set-note" id="ce-status">checking…</div>
+      <label class="set-check" style="margin:.2rem 0 .6rem;" title="Show the AI edit button on images in posts."><input type="checkbox" id="ce-enabled"> enabled</label>
+      <div class="set-grid">
+        <div class="set-field"><label for="ce-comfy" title="Address of the ComfyUI server.">ComfyUI address</label><input type="text" id="ce-comfy" spellcheck="false" autocomplete="off"></div>
+        <div class="set-field"><label for="ce-ollama" title="Address of the Ollama server.">Ollama address</label><input type="text" id="ce-ollama" spellcheck="false" autocomplete="off"></div>
+        <div class="set-field"><label for="ce-model" title="The Ollama model that turns your request into prompt tags. Also selectable in the AI edit box.">prompt model (Ollama)</label><select id="ce-model"></select></div>
+        <div class="set-field"><label for="ce-ckpt" title="Checkpoint ComfyUI draws with.">checkpoint</label><select id="ce-ckpt"></select></div>
+        <div class="set-field"><label for="ce-steps" title="Sampling steps. This GPU needs about 9 s per step at 1 megapixel; 20 is a good balance.">steps</label><input type="number" id="ce-steps" min="1" max="150"></div>
+        <div class="set-field"><label for="ce-cfg" title="Prompt strength (CFG).">cfg</label><input type="number" id="ce-cfg" min="1" max="30" step="0.5"></div>
+        <div class="set-field"><label for="ce-sampler">sampler</label><select id="ce-sampler"></select></div>
+        <div class="set-field"><label for="ce-sched">scheduler</label><select id="ce-sched"></select></div>
+        <div class="set-field"><label for="ce-den" title="Default for 'how much may change' (0.2-0.85). Below ~0.4 barely changes anything, 1.0 would ignore the image completely.">default denoise</label><input type="number" id="ce-den" min="0.2" max="0.85" step="0.05"></div>
+        <div class="set-field"><label for="ce-mp" title="The image is scaled to about this many megapixels before drawing. Speed is proportional to it.">megapixels</label><input type="number" id="ce-mp" min="0.25" max="2.5" step="0.1"></div>
+        <div class="set-field"><label for="ce-temp" title="Wait until the GPU is cooler than this (°C) before sampling. 0 = never wait. Needs the WaitForGPUTemperature node in ComfyUI.">max GPU temp °C (0 = off)</label><input type="number" id="ce-temp" min="0" max="110"></div>
+        <label class="set-check" style="align-self:end;" title="Ask ComfyUI to unload its models when an edit is done, so the GPU is free for the AI tagger."><input type="checkbox" id="ce-free"> free GPU memory after each edit</label>
+        <div class="set-field wide"><label for="ce-quality" title="Added in front of every prompt.">quality tags (prefix)</label><textarea id="ce-quality" rows="2" spellcheck="false"></textarea></div>
+        <div class="set-field wide"><label for="ce-neg" title="Always sent as the negative prompt (your own negative is added to it).">default negative prompt</label><textarea id="ce-neg" rows="3" spellcheck="false"></textarea></div>
+      </div>
+      <div class="set-actions"><button class="btn primary" onclick="saveComfy()">save</button><button class="btn" onclick="loadComfy()" title="Reload the status and the model lists from ComfyUI and Ollama.">&#8635; refresh</button></div>
+      <div class="set-note">An edit takes about 2&ndash;3 minutes on this GPU and becomes a new post (tag <code>ai_edit</code>) that links back to the source. One edit runs at a time.</div>
+    </div>
+
+    <div class="set-sec">
       <h3>backups <span id="bk-state" style="text-transform:none;letter-spacing:0;font-weight:400;"></span></h3>
       <div class="set-grid">
         <div class="set-field"><label for="bk-max">max backups kept</label><input type="number" id="bk-max" min="1" max="100"></div>
@@ -159,6 +188,37 @@ function openSettings() {
   loadCustom();
   loadQuickLinks();
   loadNetPath();
+  loadComfy();
+}
+const CE_FIELDS = {comfy_url:'ce-comfy', ollama_url:'ce-ollama', steps:'ce-steps', cfg:'ce-cfg', denoise:'ce-den', megapixels:'ce-mp',
+                   max_temp:'ce-temp', quality:'ce-quality', negative:'ce-neg'};
+function _ceFill(sel, items, cur) {
+  const list = (items || []).slice(); if (cur && !list.includes(cur)) list.unshift(cur);
+  sel.innerHTML = list.map(x => `<option value="${x.replace(/"/g,'&quot;')}"${x === cur ? ' selected' : ''}>${x.replace(/</g,'&lt;')}</option>`).join('');
+}
+async function loadComfy() {
+  const note = document.getElementById('ce-status');
+  try {
+    const d = await (await fetch('/api/comfy/status/')).json(), c = d.config;
+    for (const [k, id] of Object.entries(CE_FIELDS)) document.getElementById(id).value = c[k];
+    document.getElementById('ce-enabled').checked = !!c.enabled;
+    document.getElementById('ce-free').checked = !!c.free_after;
+    _ceFill(document.getElementById('ce-model'), d.ollama.ok ? d.ollama.models : [], c.ollama_model);
+    _ceFill(document.getElementById('ce-ckpt'), d.comfy.checkpoints, c.checkpoint);
+    _ceFill(document.getElementById('ce-sampler'), d.comfy.samplers, c.sampler);
+    _ceFill(document.getElementById('ce-sched'), d.comfy.schedulers, c.scheduler);
+    const cm = d.comfy.ok ? `ComfyUI ${d.comfy.version} ✓ (${d.comfy.gpu}, ${Math.round(d.comfy.vram_free/1048576)} MiB free${d.comfy.temp_node ? '' : '; no WaitForGPUTemperature node'})` : `ComfyUI ✗ ${d.comfy.error || ''}`;
+    const ol = d.ollama.ok ? `Ollama ${d.ollama.version} ✓` : `Ollama ✗ ${d.ollama.error || ''}`;
+    note.textContent = cm + ' · ' + ol;
+  } catch(e) { note.textContent = 'could not read the status'; }
+}
+async function saveComfy() {
+  const g = id => document.getElementById(id).value;
+  const body = {enabled: document.getElementById('ce-enabled').checked, free_after: document.getElementById('ce-free').checked,
+                ollama_model: g('ce-model'), checkpoint: g('ce-ckpt'), sampler: g('ce-sampler'), scheduler: g('ce-sched')};
+  for (const [k, id] of Object.entries(CE_FIELDS)) body[k] = g(id);
+  const r = await fetch('/api/comfy/settings/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  toast(r.ok ? 'saved' : 'could not save', r.ok ? '' : 'err'); loadComfy();
 }
 async function loadNetPath() {
   try {

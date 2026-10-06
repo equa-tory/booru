@@ -1765,3 +1765,465 @@ class SearchSelectorRegressionTests(TestCase):
         src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/index.html'), encoding='utf-8').read()
         self.assertIn("querySelectorAll('#tag-list .tag-entry')", src)
         self.assertNotIn("querySelectorAll('.tag-entry')", src)
+
+
+# ── AI edit: ComfyUI img2img + Ollama prompt ───────────────────
+import io as _io
+
+import httpx
+
+from . import comfy
+
+
+def _png(size=(32, 24), color=(200, 30, 30)):
+    buf = _io.BytesIO()
+    Image.new('RGB', size, color).save(buf, 'PNG')
+    return buf.getvalue()
+
+
+class ComfyWorkflowTests(TestCase):
+    def test_every_link_resolves_and_chain_is_wired(self):
+        wf = comfy.build_img2img('a.png', 'pos', 'neg', 5, comfy.config(), 0.6, temp_node=True)
+        self.assertEqual(comfy.workflow_problems(wf), [])
+        ks = wf['8']['inputs']
+        self.assertEqual(ks['latent_image'], ['7', 0])                 # temperature gate sits between encode and sampler
+        self.assertEqual(wf['7']['inputs']['passthrough'], ['4', 0])
+        self.assertEqual(wf['10']['class_type'], 'PreviewImage')       # nothing lands in ComfyUI's output folder
+        self.assertEqual((ks['denoise'], ks['seed']), (0.6, 5))
+
+    def test_no_temp_node_when_unavailable_or_off(self):
+        wf = comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config(), temp_node=False)
+        self.assertNotIn('7', wf)
+        self.assertEqual(wf['8']['inputs']['latent_image'], ['4', 0])
+        cfg = dict(comfy.config(), max_temp=0)
+        self.assertNotIn('7', comfy.build_img2img('a.png', 'p', 'n', 1, cfg, temp_node=True))
+
+    def test_denoise_is_clamped_and_never_one(self):
+        for asked, want in ((1.0, comfy.DENOISE_MAX), (0.0, comfy.DENOISE_MIN), (0.55, 0.55)):
+            wf = comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config(), asked)
+            self.assertEqual(wf['8']['inputs']['denoise'], want)
+
+    def test_lora_chain(self):
+        wf = comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config(), loras=[('x.safetensors', 0.8), ('y.safetensors', 1)])
+        self.assertEqual(comfy.workflow_problems(wf), [])
+        self.assertEqual(wf['20']['inputs']['model'], ['1', 0])
+        self.assertEqual(wf['21']['inputs']['model'], ['20', 0])
+        self.assertEqual(wf['8']['inputs']['model'], ['21', 0])
+        self.assertEqual(wf['5']['inputs']['clip'], ['21', 1])
+        self.assertEqual(wf['6']['inputs']['clip'], ['21', 1])
+
+    def test_shipped_api_json_matches_the_builder(self):
+        path = os.path.join(settings.BASE_DIR, 'docs', 'comfyui', 'booru_img2img_api.json')
+        with open(path) as f:
+            self.assertEqual(json.load(f), comfy.example_workflow())
+
+    def test_a_broken_link_is_reported(self):
+        wf = comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config())
+        wf['9']['inputs']['samples'] = ['99', 0]
+        self.assertEqual(len(comfy.workflow_problems(wf)), 1)
+
+
+class ComfyPromptTests(TestCase):
+    def test_escape_and_clean(self):
+        self.assertEqual(comfy.escape_tag('nakano_miku_(go-toubun_no_hanayome)'), 'nakano miku \\(go-toubun no hanayome\\)')
+        self.assertEqual(comfy.escape_tag('already \\(escaped\\)'), 'already \\(escaped\\)')
+        got = comfy.clean_tags(['Long_Hair', 'long hair', 'explicit', 'masterpiece', ' 1girl ,', '', 'blue eyes'])
+        self.assertEqual(got, ['long hair', '1girl', 'blue eyes'])
+        self.assertEqual(comfy.join_prompt('masterpiece, best quality', ['a_b', 'c (d)']), 'masterpiece, best quality, a b, c \\(d\\)')
+
+    def test_parse_llm_answer(self):
+        ok = comfy.parse_llm_prompt('```json\n{"positive": ["1girl", "Blue_Hair", "best quality"], "negative": "brown hair", "denoise": 0.95, "note": "x"}\n```', 0.5)
+        self.assertEqual(ok['positive'], ['1girl', 'blue hair'])
+        self.assertEqual(ok['negative'], ['brown hair'])
+        self.assertEqual(ok['denoise'], comfy.DENOISE_MAX)
+        self.assertEqual(comfy.parse_llm_prompt('{"positive": ["a"], "negative": [], "denoise": "oops"}', 0.5)['denoise'], 0.5)
+        for bad in ('', 'no json here', '{"positive": []}', '[1,2]'):
+            with self.assertRaises(ValueError):
+                comfy.parse_llm_prompt(bad, 0.5)
+
+    def _client(self, handler):
+        return mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(handler)))
+
+    def test_to_prompt_uses_the_model_answer(self):
+        seen = {}
+
+        def handler(req):
+            seen['body'] = json.loads(req.content)
+            return httpx.Response(200, json={'message': {'content': json.dumps(
+                {'positive': ['1girl', 'blue hair'], 'negative': ['brown hair'], 'denoise': 0.6, 'note': 'hair'})}})
+        with self._client(handler):
+            r = comfy.to_prompt('blue hair', ['1girl', 'brown_hair', 'general'])
+        self.assertEqual((r['source'], r['positive'], r['denoise']), ('llm', ['1girl', 'blue hair'], 0.6))
+        self.assertIn('Current tags: 1girl, brown hair', seen['body']['messages'][1]['content'])   # rating tag dropped
+        self.assertIs(seen['body']['think'], False)
+        self.assertEqual(seen['body']['model'], comfy.config()['ollama_model'])
+
+    def test_to_prompt_falls_back_when_ollama_is_down_or_rambles(self):
+        def down(req):
+            raise httpx.ConnectError('refused')
+        with self._client(down):
+            r = comfy.to_prompt('add a hat', ['1girl'])
+        self.assertEqual((r['source'], r['positive']), ('fallback', ['1girl', 'add a hat']))
+        with self._client(lambda req: httpx.Response(200, json={'message': {'content': 'sure! here you go'}})):
+            self.assertEqual(comfy.to_prompt('x', ['a'])['source'], 'fallback')
+
+    def test_config_clamps_and_roundtrips(self):
+        saved = comfy.save_config({'steps': 9999, 'cfg': 'abc', 'denoise': 1.0, 'megapixels': 0.01, 'quality': '',
+                                   'comfy_url': ' http://h:1/ ', 'unknown': 1})
+        self.assertEqual((saved['steps'], saved['cfg'], saved['denoise'], saved['megapixels']), (150, comfy.DEFAULTS['cfg'], comfy.DENOISE_MAX, 0.25))
+        self.assertEqual((saved['comfy_url'], saved['quality']), ('http://h:1', ''))
+        self.assertEqual(comfy.config()['quality'], '')               # an empty prefix is a valid choice
+        self.assertNotIn('unknown', comfy.config())
+
+
+class ComfyHttpFlowTests(TestCase):
+    """upload -> queue -> poll -> download against a fake ComfyUI."""
+    def setUp(self):
+        self.calls = []
+        self.history_polls = 0
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.src = os.path.join(self.tmp, 'src.png')
+        with open(self.src, 'wb') as f:
+            f.write(_png((64, 48)))
+        for patch in (mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(self.handler))),
+                      mock.patch.object(comfy.time, 'sleep', lambda s: None)):
+            patch.start(); self.addCleanup(patch.stop)
+        self.temp_node = {}
+        self.history = lambda n: {'p1': {'status': {'status_str': 'success', 'completed': True, 'messages': []},
+                                         'outputs': {'10': {'images': [{'filename': 'o.png', 'subfolder': '', 'type': 'temp'}]}}}} if n >= 3 else {}
+
+    def handler(self, req):
+        path = req.url.path
+        self.calls.append((req.method, path))
+        if path == '/system_stats':
+            return httpx.Response(200, json={'system': {}, 'devices': []})
+        if path == '/object_info/WaitForGPUTemperature':
+            return httpx.Response(200, json=self.temp_node)
+        if path == '/upload/image':
+            self.upload = req.content
+            return httpx.Response(200, json={'name': 'src_x.png', 'subfolder': 'booru', 'type': 'input'})
+        if path == '/prompt':
+            self.prompt = json.loads(req.content)['prompt']
+            return httpx.Response(200, json={'prompt_id': 'p1'})
+        if path == '/history/p1':
+            self.history_polls += 1
+            return httpx.Response(200, json=self.history(self.history_polls))
+        if path == '/queue' and req.method == 'GET':
+            return httpx.Response(200, json={'queue_pending': [[1, 'other', {}], [2, 'p1', {}]]})
+        if path == '/view':
+            return httpx.Response(200, content=_png())
+        if path == '/api/ps':
+            return httpx.Response(200, json={'models': [{'name': 'cpu-model', 'size_vram': 0}]})
+        return httpx.Response(200, json={})
+
+    def test_generate_happy_path(self):
+        msgs = []
+        png, wf = comfy.generate(self.src, 'pos', 'neg', 42, 0.55, check=lambda: None, progress=msgs.append)
+        self.assertEqual(Image.open(_io.BytesIO(png)).size, (32, 24))
+        self.assertEqual(self.prompt['2']['inputs']['image'], 'booru/src_x.png')          # LoadImage points at the uploaded file
+        self.assertNotIn('7', self.prompt)                                                 # ComfyUI has no temperature node here
+        self.assertEqual(self.prompt['8']['inputs']['denoise'], 0.55)
+        self.assertTrue(any('queue' in m for m in msgs))
+        self.assertNotIn(('POST', '/api/generate'), self.calls)                            # CPU-only Ollama is left loaded
+
+    def test_temperature_node_used_when_installed(self):
+        self.temp_node = {'WaitForGPUTemperature': {}}
+        comfy.generate(self.src, 'p', 'n', 1, 0.5)
+        self.assertEqual(self.prompt['7']['class_type'], 'WaitForGPUTemperature')
+
+    def test_upload_is_deduplicated_by_content_name(self):
+        a = comfy.upload_image(self.src)
+        self.assertEqual(a, 'booru/src_x.png')
+        self.assertIn(b'name="image"; filename="src_', self.upload)
+
+    def test_node_errors_are_shown(self):
+        orig = self.handler
+
+        def bad(req):
+            if req.url.path == '/prompt':
+                return httpx.Response(400, json={'error': {'message': 'Prompt outputs failed validation'},
+                                                 'node_errors': {'1': {'class_type': 'CheckpointLoaderSimple',
+                                                                       'errors': [{'message': 'Value not in list', 'details': 'ckpt_name: x'}]}}})
+            return orig(req)
+        self.handler = bad
+        with self.assertRaises(comfy.ComfyError) as cm:
+            comfy.generate(self.src, 'p', 'n', 1, 0.5)
+        self.assertIn('Value not in list', str(cm.exception))
+
+    def test_execution_error_is_reported(self):
+        self.history = lambda n: {'p1': {'status': {'status_str': 'error', 'completed': False, 'messages': [
+            ['execution_error', {'node_type': 'KSampler', 'exception_message': 'CUDA out of memory'}]]}, 'outputs': {}}}
+        with self.assertRaises(comfy.ComfyError) as cm:
+            comfy.generate(self.src, 'p', 'n', 1, 0.5)
+        self.assertIn('CUDA out of memory', str(cm.exception))
+
+    def test_cancel_interrupts_comfyui_and_reraises(self):
+        self.history = lambda n: {}
+        n = {'i': 0}
+
+        def check():
+            n['i'] += 1
+            if n['i'] > 2:
+                raise TaskCancelled()
+        with self.assertRaises(TaskCancelled):
+            comfy.generate(self.src, 'p', 'n', 1, 0.5, check=check)
+        self.assertIn(('POST', '/interrupt'), self.calls)
+        self.assertIn(('POST', '/queue'), self.calls)
+
+    def test_ollama_model_in_vram_is_unloaded_before_comfyui(self):
+        orig = self.handler
+        seen = []
+
+        def h(req):
+            if req.url.path == '/api/ps':
+                return httpx.Response(200, json={'models': [{'name': 'big', 'size_vram': 5 << 30}]})
+            if req.url.path == '/api/generate':
+                seen.append(json.loads(req.content))
+            return orig(req)
+        self.handler = h
+        comfy.unload_ollama()
+        self.assertEqual(seen, [{'model': 'big', 'keep_alive': 0}])
+
+    def test_status_summarises_both_servers(self):
+        def h(req):
+            p = req.url.path
+            if p == '/system_stats':
+                return httpx.Response(200, json={'system': {'comfyui_version': '9.9'}, 'devices': [{'name': 'gpu', 'vram_free': 1, 'vram_total': 2}]})
+            if p == '/object_info/KSampler':
+                return httpx.Response(200, json={'KSampler': {'input': {'required': {'sampler_name': [['euler']], 'scheduler': [['normal']]}}}})
+            if p == '/object_info/CheckpointLoaderSimple':
+                return httpx.Response(200, json={'CheckpointLoaderSimple': {'input': {'required': {'ckpt_name': [['a.safetensors']]}}}})
+            if p == '/object_info/WaitForGPUTemperature':
+                return httpx.Response(200, json={})
+            if p == '/api/version':
+                return httpx.Response(200, json={'version': '0.1'})
+            if p == '/api/tags':
+                return httpx.Response(200, json={'models': [{'name': 'z'}, {'name': 'a'}]})
+            return httpx.Response(404)
+        self.handler = h
+        st = comfy.status()
+        self.assertEqual((st['comfy']['ok'], st['comfy']['version'], st['comfy']['checkpoints'], st['comfy']['temp_node']), (True, '9.9', ['a.safetensors'], False))
+        self.assertEqual(st['ollama']['models'], ['a', 'z'])
+
+    def test_status_when_nothing_runs(self):
+        def down(req):
+            raise httpx.ConnectError('refused')
+        self.handler = down
+        st = comfy.status()
+        self.assertFalse(st['comfy']['ok']); self.assertFalse(st['ollama']['ok'])
+        self.assertIn('not reachable', st['comfy']['error'])
+
+
+class ComfyEditEndpointTests(TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        ov = override_settings(MEDIA_ROOT=self.tmp)
+        ov.enable(); self.addCleanup(ov.disable)
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        comfy.save_config({'enabled': True})
+        self.post = Post.objects.create()
+        self.photo = self._photo('a.png', self.post)
+
+    def _photo(self, name, post, data=None):
+        with open(os.path.join(self.tmp, name), 'wb') as f:
+            f.write(data or _png((64, 48)))
+        return Photo.objects.create(post=post, order=0, rel_path=name, width=64, height=48, is_video=name.endswith('.mp4'))
+
+    def _post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type='application/json')
+
+    def _run_edit(self, body, **kw):
+        pr = {'positive': ['1girl', 'blue hair'], 'negative': ['brown hair'], 'denoise': 0.6, 'note': 'hair', 'source': 'llm'}
+        with mock.patch.object(comfy, 'to_prompt', return_value=pr) as tp, \
+             mock.patch.object(comfy, 'generate', return_value=(_png((48, 36)), {})) as gen, \
+             mock.patch.object(comfy, 'free_comfy', return_value=True) as fr, \
+             mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl'], 'character': [], 'model': 'wd14'}), \
+             mock.patch.object(views, 'apply_ai_tags') as tag, \
+             mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            r = self._post('/api/comfy/edit/', body)
+        return r, tp, gen, fr, tag
+
+    def test_creates_a_linked_post(self):
+        r, tp, gen, fr, tag = self._run_edit({'photo_id': self.photo.pk, 'request': 'make her hair blue', 'seed': '77'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['seed'], 77)
+        new = Post.objects.exclude(pk=self.post.pk).get()
+        self.assertEqual((new.source_post_id, new.source_photo_id), (self.post.pk, self.photo.pk))
+        self.assertEqual(new.gen_info['request'], 'make her hair blue')
+        self.assertEqual((new.gen_info['seed'], new.gen_info['denoise']), (77, 0.6))
+        self.assertIn('blue hair', new.gen_info['positive'])
+        self.assertTrue(new.title.startswith(f'AI edit of #{self.post.pk}: make her hair blue'))
+        self.assertTrue(new.tags.filter(name='ai_edit', category='meta').exists())
+        self.assertEqual(new.images.count(), 1)
+        self.assertTrue(os.path.isfile(new.images.first().file_path))
+        self.assertIn(os.sep + 'ai_edits' + os.sep, new.images.first().file_path)
+        tag.assert_called_once()                                  # the new post is AI-tagged
+        fr.assert_called_once()                                   # ComfyUI memory released
+        args = gen.call_args[0]
+        self.assertTrue(args[1].startswith(comfy.config()['quality']))     # quality prefix in front
+        self.assertIn('brown hair', args[2]); self.assertIn(comfy.config()['negative'], args[2])
+        self.assertTrue(Task.objects.get(kind='comfy_edit').message.endswith(f'→ post #{new.pk}'))
+        self.assertEqual(list(self.post.derived_posts.values_list('pk', flat=True)), [new.pk])
+
+    def test_previewed_prompt_skips_the_llm(self):
+        r, tp, gen, *_ = self._run_edit({'photo_id': self.photo.pk, 'request': 'x', 'positive': 'my own tags', 'negative': 'bad', 'denoise': '0.7'})
+        tp.assert_not_called()
+        self.assertEqual(gen.call_args[0][4], 0.7)
+        self.assertIn('my own tags', gen.call_args[0][1])
+
+    def test_ollama_model_choice_is_remembered(self):
+        self._run_edit({'photo_id': self.photo.pk, 'request': 'x', 'ollama_model': 'gemma2:9b'})
+        self.assertEqual(comfy.config()['ollama_model'], 'gemma2:9b')
+
+    def test_cancel_creates_nothing(self):
+        with mock.patch.object(comfy, 'to_prompt', return_value={'positive': ['a'], 'negative': [], 'denoise': .5, 'note': '', 'source': 'llm'}), \
+             mock.patch.object(comfy, 'generate', side_effect=TaskCancelled()), \
+             mock.patch.object(views, 'run_ai_tagger', return_value={'general': [], 'character': []}), \
+             mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            with self.assertRaises(TaskCancelled):
+                self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'})
+        self.assertEqual(Post.objects.count(), 1)
+
+    def test_refuses_video_pdf_gif_missing_and_empty_request(self):
+        for name in ('v.mp4', 'd.pdf', 'g.gif'):
+            ph = self._photo(name, Post.objects.create(), b'x')
+            r = self._post('/api/comfy/edit/', {'photo_id': ph.pk, 'request': 'x'})
+            self.assertEqual(r.status_code, 400, name)
+            self.assertEqual(self._post('/api/comfy/prompt/', {'photo_id': ph.pk, 'request': 'x'}).status_code, 400, name)
+        gone = Photo.objects.create(post=self.post, order=1, rel_path='missing.png')
+        self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': gone.pk, 'request': 'x'}).status_code, 404)
+        self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': 999999, 'request': 'x'}).status_code, 404)
+        self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': '  '}).status_code, 400)
+        self.assertEqual(self._post('/api/comfy/prompt/', {'photo_id': self.photo.pk, 'request': ''}).status_code, 400)
+
+    def test_one_edit_at_a_time(self):
+        t = Task.objects.create(kind='comfy_edit')
+        r = self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'})
+        self.assertEqual((r.status_code, r.json()['busy'], r.json()['task_id']), (409, True, t.pk))
+
+    def test_switched_off(self):
+        comfy.save_config({'enabled': False})
+        self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'}).status_code, 400)
+
+    def test_prompt_preview_returns_editable_text(self):
+        pr = {'positive': ['1girl', 'nakano_miku_(go-toubun)'], 'negative': [], 'denoise': 0.55, 'note': 'n', 'source': 'llm'}
+        with mock.patch.object(comfy, 'to_prompt', return_value=pr), \
+             mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl'], 'character': [], 'model': 'wd14'}):
+            d = self._post('/api/comfy/prompt/', {'photo_id': self.photo.pk, 'request': 'x'}).json()
+        self.assertEqual(d['positive'], '1girl, nakano miku \\(go-toubun\\)')
+        self.assertEqual(d['denoise'], 0.55)
+
+    def test_current_tags_include_post_characters_and_tagger_output(self):
+        add_tags_to_post(self.post, ['miku'], category='character')
+        add_tags_to_post(self.post, ['smile'], category='general')
+        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl'], 'character': ['rin'], 'model': 'wd14'}):
+            names = views._edit_current_tags(self.photo)
+        self.assertEqual(names[:2], ['rin', '1girl'])
+        self.assertIn('miku', names); self.assertIn('smile', names)        # single-image post: general tags too
+
+    def test_settings_endpoint_and_status_endpoint(self):
+        d = self._post('/api/comfy/settings/', {'steps': 12, 'enabled': False}).json()
+        self.assertEqual((d['config']['steps'], d['config']['enabled']), (12, False))
+        with mock.patch.object(comfy, 'status', return_value={'comfy': {'ok': False}, 'ollama': {'ok': False}, 'config': comfy.config()}):
+            self.assertIn('config', self.client.get('/api/comfy/status/').json())
+
+    def test_free_vram_also_frees_comfyui(self):
+        with mock.patch.object(comfy, 'free_comfy', return_value=True) as fr, \
+             mock.patch('gallery.ai_runtime.request_unload_all'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch('gallery.ai_runtime.gpu_info', return_value={}):
+            d = self.client.post('/api/ai/free-vram/').json()
+        fr.assert_called_once()
+        self.assertTrue(d['comfy_freed'])
+
+
+class ComfyEditPageTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        comfy.save_config({'enabled': True})
+
+    def _post(self, *names):
+        post = Post.objects.create()
+        for i, n in enumerate(names):
+            Photo.objects.create(post=post, order=i, rel_path=n, is_video=n.endswith('.mp4'))
+        return post
+
+    def test_button_only_on_still_images(self):
+        post = self._post('a.png', 'b.mp4', 'c.gif', 'd.pdf', 'e.jpg')
+        html = self.client.get(f'/post/{post.pk}/').content.decode()
+        self.assertEqual(html.count('class="ai-edit-btn"'), 2)             # a.png and e.jpg only
+        self.assertIn('id="aiedit-backdrop"', html)
+        for ph in Photo.objects.filter(post=post, rel_path__in=['a.png', 'e.jpg']):
+            self.assertIn(f'data-photo-id="{ph.pk}"', html)
+
+    def test_nothing_rendered_when_switched_off(self):
+        comfy.save_config({'enabled': False})
+        html = self.client.get(f'/post/{self._post("a.png").pk}/').content.decode()
+        self.assertNotIn('class="ai-edit-btn"', html)
+        self.assertNotIn('id="aiedit-backdrop"', html)
+
+    def test_source_and_derived_links_and_generation_block(self):
+        src = self._post('a.png', 'b.png')
+        item = src.images.order_by('order').last()
+        new = self._post('n.png')
+        new.source_post, new.source_photo = src, item
+        new.gen_info = {'request': 'add <glasses>', 'positive': 'p', 'negative': 'n', 'denoise': 0.6, 'seed': 5, 'steps': 20,
+                        'cfg': 5.5, 'sampler': 'euler', 'checkpoint': 'ck', 'seconds': 99, 'note': ''}
+        new.save()
+        html = self.client.get(f'/post/{new.pk}/').content.decode()
+        self.assertIn(f'post #{src.pk} (item 2)</a>', html)
+        self.assertIn('add &lt;glasses&gt;', html)                          # request is escaped
+        self.assertIn(f'aiedit={item.pk}&req=add%20%3Cglasses%3E', html)    # "edit again" prefilled
+        self.assertIn(f'#{new.pk}</a>', self.client.get(f'/post/{src.pk}/').content.decode())
+
+    def test_deleting_the_source_keeps_the_edit(self):
+        src = self._post('a.png'); new = self._post('n.png')
+        new.source_post = src; new.save()
+        src.delete()
+        new.refresh_from_db()
+        self.assertIsNone(new.source_post_id)
+
+
+class DoubleTapJsTests(TestCase):
+    """makeDoubleTap (detail.html): scrolling right after a zoom double-tap must not count as a tap."""
+    def _run(self, steps):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/detail.html'), encoding='utf-8').read()
+        js = src[src.index('function makeDoubleTap()'):src.index('function attachZoom(')]
+        prog = js + """
+let now = 1000; Date.now = () => now;
+const d = makeDoubleTap(), out = [];
+const T = (x, y) => ({clientX: x, clientY: y});
+const down = (x, y, n = 1) => d.start({touches: Array.from({length: n}, () => T(x, y))});
+const up = (x, y, n = 1) => out.push(d.end({changedTouches: Array.from({length: n}, () => T(x, y))}));
+""" + steps + "\nconsole.log(JSON.stringify(out));"
+        r = subprocess.run(['node', '-e', prog], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:300])
+        return json.loads(r.stdout)
+
+    def test_two_quick_taps_are_a_double_tap(self):
+        self.assertEqual(self._run("down(100,100); now+=40; up(100,100); now+=120; down(102,101); now+=40; up(102,101);"),
+                         [None, {'x': 102, 'y': 101}])
+
+    def test_a_quick_swipe_after_the_zoom_tap_is_not_a_second_double_tap(self):
+        steps = ("down(100,100); now+=40; up(100,100); now+=100; down(100,100); now+=40; up(100,100);"      # zoom in
+                 "now+=60; down(100,300); now+=90; up(100,180);"                                              # scroll right away
+                 "now+=60; down(100,300); now+=90; up(100,180);")
+        got = self._run(steps)
+        self.assertEqual(got[1], {'x': 100, 'y': 100})      # the zoom itself
+        self.assertEqual(got[2:], [None, None])             # the swipes never toggle it again
+
+    def test_tap_after_a_zoom_is_a_fresh_pair(self):
+        steps = ("down(5,5); now+=30; up(5,5); now+=100; down(5,5); now+=30; up(5,5);"
+                 "now+=100; down(5,5); now+=30; up(5,5);")
+        self.assertEqual([bool(x) for x in self._run(steps)], [False, True, False])   # third tap does NOT undo the zoom
+
+    def test_slow_or_distant_second_tap_and_multitouch_do_not_count(self):
+        self.assertEqual(self._run("down(0,0); now+=30; up(0,0); now+=400; down(0,0); now+=30; up(0,0);"), [None, None])
+        self.assertEqual(self._run("down(0,0); now+=30; up(0,0); now+=100; down(90,0); now+=30; up(90,0);"), [None, None])
+        self.assertEqual(self._run("down(0,0); now+=30; up(0,0); now+=100; down(0,0,2); now+=30; up(0,0,2);"), [None, None])
+
+    def test_long_press_is_not_a_tap(self):
+        self.assertEqual(self._run("down(0,0); now+=400; up(0,0); now+=50; down(0,0); now+=30; up(0,0);"), [None, None])

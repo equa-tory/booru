@@ -17,7 +17,7 @@ from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
                     make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
-from . import char_tagger, ai_models, custom_model, prefs
+from . import char_tagger, ai_models, custom_model, prefs, comfy
 
 
 # ── Search syntax helpers ──────────────────────────────────────
@@ -505,6 +505,7 @@ def post_detail(request, pk):
         'back_url': back_url,
         'net_prefix': _net_prefix(request),
         'search_qs': search_qs,
+        **_edit_context(post),
     })
 
 
@@ -2828,7 +2829,7 @@ def custom_concept_delete(request, pk):
 
 
 # ── AI models panel: status / download / delete / main selector / free VRAM ──
-AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply']
+AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply', 'comfy_edit']
 
 
 def ai_models_info(request):
@@ -2905,7 +2906,9 @@ def ai_free_vram(request):
     stopped = Task.objects.filter(status='running', kind__in=AI_TASK_KINDS).update(cancel_requested=True)
     ai_runtime.request_unload_all()
     here = ai_runtime.force_unload()
-    return JsonResponse({'ok': True, 'tasks_stopped': stopped, 'unloaded_here': here, 'before': before})
+    comfy_freed = comfy.free_comfy() if _comfy_enabled() else False     # ComfyUI shares the GPU
+    return JsonResponse({'ok': True, 'tasks_stopped': stopped, 'unloaded_here': here, 'before': before,
+                         'comfy_freed': comfy_freed})
 
 
 @require_POST
@@ -3164,3 +3167,220 @@ def media_serve(request, path):
     resp['Last-Modified'] = http_date(st.st_mtime)
     resp['Content-Disposition'] = f'inline; filename="{os.path.basename(full)}"'.encode('ascii', 'replace').decode()
     return resp
+
+
+# ── AI edit: ComfyUI img2img with an Ollama-written prompt (gallery/comfy.py) ────────
+def _comfy_enabled():
+    try:
+        return bool(comfy.config()['enabled'])
+    except Exception:
+        return False
+
+
+def _edit_context(post):
+    """Template context for the AI-edit button/box and the source/derived links."""
+    ctx = {'comfy_enabled': _comfy_enabled(), 'edit_source': None, 'edit_derived': []}
+    if post.source_post_id:
+        src = post.source_post
+        idx = None
+        if post.source_photo_id:
+            ids = list(src.images.order_by('order', 'id').values_list('id', flat=True))
+            if post.source_photo_id in ids:
+                idx = ids.index(post.source_photo_id) + 1
+        ctx['edit_source'] = {'id': src.id, 'item': idx, 'photo_id': post.source_photo_id}
+    ctx['edit_derived'] = list(post.derived_posts.order_by('id').values_list('id', flat=True)[:50])
+    ctx['gen_info'] = post.gen_info or None
+    return ctx
+
+
+def _editable_photo(body):
+    """(photo, error JsonResponse). Only still images can be edited."""
+    try:
+        photo = Photo.objects.select_related('post').get(pk=int(body.get('photo_id')))
+    except (TypeError, ValueError, Photo.DoesNotExist):
+        return None, JsonResponse({'ok': False, 'error': 'unknown image'}, status=404)
+    if photo.is_video or photo.is_pdf or photo.is_gif:
+        return None, JsonResponse({'ok': False, 'error': 'only still images can be edited (not video, PDF or GIF)'}, status=400)
+    if not os.path.isfile(photo.file_path):
+        return None, JsonResponse({'ok': False, 'error': 'the file is missing on disk'}, status=404)
+    return photo, None
+
+
+def _edit_current_tags(photo):
+    """Tags describing THIS item: the AI tagger run on it (about 0.2 s on the GPU;
+    a multi-image post's stored tags are merged over all items), plus the post's own
+    character tags — and its general tags too when it is a single image."""
+    names = []
+    try:
+        res = run_ai_tagger(photo.file_path, photo.thumb_path)
+        names += res.get('character', []) + res.get('general', [])
+    except Exception as e:
+        print(f'AI edit: tagger failed for photo {photo.id}: {e}')
+    post = photo.post
+    if post is not None:
+        cats = ['character'] if post.images.count() > 1 else ['character', 'general', 'ai']
+        names += list(post.tags.filter(category__in=cats).values_list('name', flat=True))
+    return names
+
+
+def _json_body(request):
+    try:
+        data = json.loads(request.body or '{}')
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _prompt_texts(pr):
+    """LLM result -> (positive text, negative text) as shown to the user: Danbooru
+    names with parentheses escaped for the prompt (no quality prefix; that is added on run)."""
+    return comfy.join_prompt(pr['positive']), comfy.join_prompt(pr['negative'])
+
+
+def comfy_status(request):
+    return JsonResponse(comfy.status())
+
+
+@require_POST
+def comfy_settings(request):
+    body = _json_body(request)
+    return JsonResponse({'ok': True, 'config': comfy.save_config(body)})
+
+
+@require_POST
+def comfy_prompt(request):
+    """Preview: turn the user's request into the prompt that would be sent (they can edit it)."""
+    body = _json_body(request)
+    text = str(body.get('request') or '').strip()
+    if not text:
+        return JsonResponse({'ok': False, 'error': 'type what should change'}, status=400)
+    photo, err = _editable_photo(body)
+    if err:
+        return err
+    cfg = comfy.config()
+    if body.get('ollama_model'):
+        cfg['ollama_model'] = str(body['ollama_model']).strip()
+    pr = comfy.to_prompt(text, _edit_current_tags(photo), cfg)
+    pos, neg = _prompt_texts(pr)
+    return JsonResponse({'ok': True, 'positive': pos, 'negative': neg, 'denoise': pr['denoise'],
+                         'note': pr['note'], 'source': pr['source'], 'model': cfg['ollama_model']})
+
+
+@require_POST
+def comfy_edit(request):
+    """Start an AI edit of one image: a background task that writes the prompt (unless a
+    previewed one is sent), runs ComfyUI and saves the result as a NEW post linked to
+    the source. One at a time — the 8 GB card cannot hold two SDXL runs."""
+    body = _json_body(request)
+    photo, err = _editable_photo(body)
+    if err:
+        return err
+    text = str(body.get('request') or '').strip()
+    pos_in = str(body.get('positive') or '').strip()
+    neg_in = body.get('negative')
+    if not text and not pos_in:
+        return JsonResponse({'ok': False, 'error': 'type what should change'}, status=400)
+    if not _comfy_enabled():
+        return JsonResponse({'ok': False, 'error': 'AI edit is switched off in settings'}, status=400)
+    busy = Task.objects.filter(kind='comfy_edit', status='running').first()
+    if busy:
+        return JsonResponse({'ok': False, 'busy': True, 'task_id': busy.id,
+                             'error': 'another AI edit is still running'}, status=409)
+    cfg = comfy.config()
+    if body.get('ollama_model') and str(body['ollama_model']).strip() != cfg['ollama_model']:
+        cfg = comfy.save_config({'ollama_model': str(body['ollama_model']).strip()})   # the box remembers the last choice
+    try:
+        seed = int(body.get('seed'))
+        if seed < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        seed = random.randint(0, 2 ** 32 - 1)
+    try:
+        denoise = float(body['denoise']) if body.get('denoise') not in (None, '') else None
+    except (TypeError, ValueError):
+        denoise = None
+    photo_id = photo.id
+
+    def work(task):
+        import time as _t
+        from . import ai_runtime
+        t0 = _t.time()
+        photo = Photo.objects.select_related('post').get(pk=photo_id)
+        src_post = photo.post
+        task.total = 4; task.done = 0
+        task.message = 'preparing the prompt…'
+        task.save(update_fields=['total', 'done', 'message'])
+        check_cancel(task)
+        note = ''
+        if pos_in:
+            pos_text = pos_in
+            neg_text = str(neg_in or '').strip() if neg_in is not None else ''
+            den = denoise if denoise is not None else cfg['denoise']
+        else:
+            pr = comfy.to_prompt(text, _edit_current_tags(photo), cfg)
+            pos_text, neg_text = _prompt_texts(pr)
+            den = denoise if denoise is not None else pr['denoise']
+            note = pr['note']
+        den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, den))
+        positive = comfy.join_prompt(cfg['quality'], pos_text)
+        negative = comfy.join_prompt(cfg['negative'], neg_text)
+        task.done = 1; task.message = 'starting ComfyUI…'
+        task.save(update_fields=['done', 'message'])
+        check_cancel(task)
+        try:
+            ai_runtime.force_unload()            # this worker's tagger sessions: the SDXL checkpoint needs the VRAM
+        except Exception:
+            pass
+        gen_start = _t.time()
+
+        def check():
+            check_cancel(task)
+            if _t.time() - task._beat >= 10:      # heartbeat: keeps the row "alive" for exclusivity / stale sweeps
+                task._beat = _t.time()
+                el = int(_t.time() - gen_start)
+                task.message = f'generating… {el // 60}m {el % 60:02d}s'
+                task.save(update_fields=['message'])
+        task._beat = 0
+
+        def progress(msg):
+            task.message = msg
+            task.save(update_fields=['message'])
+        png, _wf = comfy.generate(photo.file_path, positive, negative, seed, den, cfg, check=check, progress=progress)
+        task.done = 2; task.message = 'saving the new post…'
+        task.save(update_fields=['done', 'message'])
+
+        now = timezone.now()
+        folder = os.path.join(settings.MEDIA_ROOT, 'ai_edits', now.strftime('%Y-%m'))
+        os.makedirs(folder, exist_ok=True)
+        base = f'edit_{src_post.id if src_post else 0}_{photo.id}_{seed}'
+        path, n = os.path.join(folder, base + '.png'), 1
+        while os.path.exists(path):
+            path = os.path.join(folder, f'{base}_{n}.png'); n += 1
+        with open(path, 'wb') as f:
+            f.write(png)
+        title = ('AI edit of #%s: %s' % (src_post.id if src_post else '?', text))[:480]
+        new = create_post_from_files([path], title=title)
+        new.source_post = src_post
+        new.source_photo = photo
+        new.gen_info = {
+            'request': text, 'positive': pos_text, 'negative': neg_text, 'denoise': den, 'seed': seed,
+            'checkpoint': cfg['checkpoint'], 'steps': cfg['steps'], 'cfg': cfg['cfg'], 'sampler': cfg['sampler'],
+            'scheduler': cfg['scheduler'], 'megapixels': cfg['megapixels'], 'ollama_model': cfg['ollama_model'],
+            'note': note, 'seconds': int(_t.time() - t0), 'source_photo': photo.id,
+        }
+        new.save(update_fields=['source_post', 'source_photo', 'gen_info'])
+        add_tags_to_post(new, ['ai_edit'], category='meta')
+        if cfg['free_after']:
+            comfy.free_comfy(cfg)
+        task.done = 3; task.message = 'tagging the new post…'
+        task.save(update_fields=['done', 'message'])
+        try:
+            apply_ai_tags(new)
+        except Exception as e:
+            print(f'AI edit: tagging new post {new.id} failed: {e}')
+        task.done = 4
+        task.message = f'done in {int(_t.time() - t0)}s → post #{new.id}'
+        task.save(update_fields=['done', 'message'])
+
+    task = _start_task('comfy_edit', work, total=4, message='starting…', exclusive=True)
+    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed})

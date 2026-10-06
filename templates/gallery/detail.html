@@ -112,7 +112,21 @@
    ones above/below it sideways — #scroll-container itself never scrolls horizontally.
    Deliberately NOT display:flex: as flex items the images lose their aspect-driven height
    (align-items:stretch) and, worse, flex-shrink undoes the 2x width that zoom sets. */
-.scroll-item { width:100%; flex:0 0 auto; overflow-x:hidden; }
+.scroll-item { width:100%; flex:0 0 auto; overflow-x:hidden; position:relative; }
+/* AI edit button: hover on desktop; on a phone one tap on the picture reveals it (.show-edit) */
+.ai-edit-btn { position:absolute; top:8px; right:8px; z-index:6; opacity:0; pointer-events:none; transition:opacity .15s;
+  font-family:var(--mono); font-size:.78rem; background:rgba(0,0,0,.72); color:#fff; border:1px solid rgba(255,255,255,.35);
+  border-radius:8px; padding:.45rem .8rem; min-height:38px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.scroll-item.show-edit .ai-edit-btn, .ai-edit-btn:focus-visible { opacity:1; pointer-events:auto; }
+@media (hover:hover) { .scroll-item:hover .ai-edit-btn { opacity:1; pointer-events:auto; } }
+#aiedit-backdrop .modal { max-width:520px; width:100%; max-height:92vh; overflow-y:auto; }
+#aiedit-backdrop textarea, #aiedit-backdrop input[type=text], #aiedit-backdrop input[type=number], #aiedit-backdrop select {
+  width:100%; background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:6px;
+  padding:.4rem .5rem; font-family:var(--mono); font-size:.8rem; outline:none; box-sizing:border-box; }
+#aiedit-backdrop textarea { resize:vertical; min-height:3.2rem; }
+#aiedit-backdrop label.ae-l { display:block; font-family:var(--mono); font-size:.66rem; color:var(--text-dim); margin:.55rem 0 .2rem; }
+.ae-row { display:flex; gap:.5rem; align-items:flex-end; }
+.ae-row > div { flex:1; min-width:0; }
 .scroll-item.zoomed { overflow-x:auto; touch-action:pan-x pan-y; overscroll-behavior-x:contain; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
 /* fit-single: single-item post sized as tall as fits on screen, no vertical
    scroll padding. Deliberately no justify-content:center — centering flex
@@ -498,7 +512,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <!-- SCROLL: all stacked -->
     <div class="scroll-container" id="scroll-container">
       {% for img in images %}
-      <div class="scroll-item">
+      <div class="scroll-item" data-photo-id="{{ img.pk }}">
+      {% if comfy_enabled and not img.is_video and not img.is_pdf and not img.is_gif %}<button type="button" class="ai-edit-btn" onclick="event.stopPropagation();openAiEdit(this)" ontouchend="event.stopPropagation()" title="AI edit: re-draw this image with your changes (new post)">&#9998; AI edit</button>{% endif %}
       {% if img.is_video %}
       <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="{% if images|length == 1 %}metadata{% else %}none{% endif %}"
              {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
@@ -539,7 +554,23 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       {% if post.title %}<div class="meta-row"><span class="meta-key">title</span><span class="meta-val" title="{{ post.title }}">{{ post.title }}</span></div>{% endif %}
       <div class="meta-row"><span class="meta-key">images</span><span class="meta-val">{{ images|length }}</span></div>
       <div class="meta-row"><span class="meta-key">added</span><span class="meta-val">{{ post.added_at|date:"Y-m-d" }}</span></div>
+      {% if edit_source %}<div class="meta-row"><span class="meta-key">made from</span><span class="meta-val"><a href="/post/{{ edit_source.id }}/" style="color:var(--accent);">post #{{ edit_source.id }}{% if edit_source.item %} (item {{ edit_source.item }}){% endif %}</a></span></div>{% endif %}
+      {% if edit_derived %}<div class="meta-row"><span class="meta-key">AI edits</span><span class="meta-val">{% for d in edit_derived %}<a href="/post/{{ d }}/" style="color:var(--accent);">#{{ d }}</a> {% endfor %}</span></div>{% endif %}
       </div>
+      {% if gen_info %}
+      <details style="margin-top:.5rem;font-family:var(--mono);font-size:.72rem;color:var(--text-dim);">
+        <summary style="cursor:pointer;">generation</summary>
+        <div style="margin-top:.3rem;line-height:1.5;word-break:break-word;">
+          <div><b>request:</b> {{ gen_info.request }}</div>
+          {% if gen_info.note %}<div><b>note:</b> {{ gen_info.note }}</div>{% endif %}
+          <div><b>prompt:</b> {{ gen_info.positive }}</div>
+          {% if gen_info.negative %}<div><b>negative:</b> {{ gen_info.negative }}</div>{% endif %}
+          <div><b>denoise</b> {{ gen_info.denoise }} · <b>seed</b> {{ gen_info.seed }} · {{ gen_info.steps }} steps · cfg {{ gen_info.cfg }} · {{ gen_info.sampler }}</div>
+          <div>{{ gen_info.checkpoint }} · {{ gen_info.seconds }}s</div>
+        </div>
+        {% if edit_source and edit_source.photo_id %}<button class="btn" style="margin-top:.4rem;font-size:.72rem;" onclick="location.href='/post/{{ edit_source.id }}/?aiedit={{ edit_source.photo_id }}&req={{ gen_info.request|urlencode }}&den={{ gen_info.denoise }}'" title="open the source post with the AI edit box filled in again">&#9998; edit again</button>{% endif %}
+      </details>
+      {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.6rem;">
         <button class="btn" id="gallery-page-btn" onclick="goToGalleryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the gallery at this post's page, keeping the current search">&#8862; gallery</button>
         <button class="btn" id="library-page-btn" onclick="goToLibraryPage()" style="flex:1;justify-content:center;font-size:.78rem;" title="open the whole library (no search filters) at the page containing this post">&#9776; library</button>
@@ -746,6 +777,43 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="modal-actions"><button class="btn primary" onclick="closeQuickTagSheet()">done</button></div>
   </div>
 </div>
+
+{% if comfy_enabled %}
+<div class="modal-backdrop" id="aiedit-backdrop" onclick="if(event.target===this) closeAiEdit()">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>&#9998; AI edit</h2>
+    <div style="display:flex;gap:.7rem;align-items:flex-start;">
+      <img id="aiedit-thumb" src="" alt="" style="width:84px;height:84px;object-fit:cover;border-radius:6px;background:var(--bg3);flex:none;">
+      <div style="flex:1;min-width:0;">
+        <label class="ae-l" for="aiedit-req" style="margin-top:0;">what should change?</label>
+        <textarea id="aiedit-req" rows="3" placeholder="e.g. make her hair blue and add glasses" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();aiEditRun();}"></textarea>
+      </div>
+    </div>
+    <div class="ae-row">
+      <div><label class="ae-l" for="aiedit-model" title="the Ollama model that writes the prompt from your request">prompt model (Ollama)</label>
+        <select id="aiedit-model"></select></div>
+      <div style="flex:0 0 7rem;"><label class="ae-l" for="aiedit-seed" title="empty = random">seed</label>
+        <input type="text" id="aiedit-seed" inputmode="numeric" placeholder="random"></div>
+    </div>
+    <label class="ae-l" for="aiedit-den">how much may change: <b id="aiedit-den-val">0.60</b> <span style="opacity:.7;">(low = keeps the picture, high = re-draws more)</span></label>
+    <input type="range" id="aiedit-den" min="0.2" max="0.85" step="0.05" value="0.6" style="width:100%;" oninput="document.getElementById('aiedit-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
+    <div id="aiedit-prompt" style="display:none;">
+      <label class="ae-l" for="aiedit-pos">prompt (editable)</label>
+      <textarea id="aiedit-pos" rows="4"></textarea>
+      <label class="ae-l" for="aiedit-neg">negative (editable, added to the default negative)</label>
+      <textarea id="aiedit-neg" rows="2"></textarea>
+      <div id="aiedit-note" style="font-family:var(--mono);font-size:.7rem;color:var(--text-dim);margin-top:.3rem;"></div>
+    </div>
+    <div id="aiedit-status" style="font-family:var(--mono);font-size:.74rem;margin-top:.5rem;min-height:1.1em;color:var(--text-dim);"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeAiEdit()">cancel</button>
+      <button class="btn" id="aiedit-prev-btn" onclick="aiEditPreview()" title="let the model write the prompt first, so you can read and change it (about 30 s on the CPU)">preview prompt</button>
+      <button class="btn primary" id="aiedit-run-btn" onclick="aiEditRun()" title="re-draw the image (about 2-3 minutes on this GPU); the result becomes a new post">generate</button>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
@@ -1198,6 +1266,33 @@ function prevImage() {
 let zoomScale = 1;
 
 // Double-tap to zoom + pan. No pinch — pinch is disabled.
+/* Double-tap detector. Only a REAL tap (one finger, moved < 12px, shorter than 300ms) can be
+   either half of a double-tap: the end of a scroll/pan swipe used to count as the "second
+   tap" of the zoom-in tap just before it, so scrolling right after zooming zoomed back out.
+   end(e) returns {x, y} on the second tap, else null; a double-tap resets the pair. */
+function makeDoubleTap() {
+  let lastTap = 0, lastX = 0, lastY = 0, sx = 0, sy = 0, st = 0, single = false;
+  return {
+    start(e) {
+      single = e.touches.length === 1;
+      if (!single) { lastTap = 0; return; }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now();
+    },
+    end(e) {
+      if (e.changedTouches.length !== 1) { lastTap = 0; return null; }
+      const t = e.changedTouches[0], now = Date.now();
+      const real = single && Math.abs(t.clientX - sx) < 12 && Math.abs(t.clientY - sy) < 12 && now - st < 300;
+      if (!real) { lastTap = 0; return null; }
+      if (lastTap && now - lastTap < 280 && Math.abs(t.clientX - lastX) < 40 && Math.abs(t.clientY - lastY) < 40) {
+        lastTap = 0;
+        return {x: t.clientX, y: t.clientY};
+      }
+      lastTap = now; lastX = t.clientX; lastY = t.clientY;
+      return null;
+    }
+  };
+}
+
 function attachZoom(el, wrapper, lockPointer=true) {
   if (!el) return;
   el.style.transformOrigin = 'center center';
@@ -1247,18 +1342,15 @@ function attachZoom(el, wrapper, lockPointer=true) {
   }, {passive:true});
 
   // Double-tap: toggle 2× zoom / reset
-  let lastTap = 0;
+  const dbl = makeDoubleTap();
+  (wrapper || el).addEventListener('touchstart', dbl.start, {passive:true});
   (wrapper || el).addEventListener('touchend', e => {
-    if (e.changedTouches.length !== 1) return;
-    const now = Date.now();
-    if (now - lastTap < 280) {
-      e.preventDefault();
-      e.stopPropagation(); // don't let the main gesture handler see this as a tap
-      if (scale > 1) { scale=1; panX=0; panY=0; }
-      else { scale=2; }
-      zoomScale = scale; apply();
-    }
-    lastTap = now;
+    if (!dbl.end(e)) return;
+    e.preventDefault();
+    e.stopPropagation(); // don't let the main gesture handler see this as a tap
+    if (scale > 1) { scale=1; panX=0; panY=0; }
+    else { scale=2; }
+    zoomScale = scale; apply();
   }, {passive:false});
 }
 
@@ -1319,17 +1411,14 @@ function setScrollZoom(img, on, tapX, tapY) {
 
 function attachScrollZoom(img) {
   if (!img) return;
-  let lastTap = 0;
+  const dbl = makeDoubleTap();
+  img.addEventListener('touchstart', dbl.start, {passive:true});
   img.addEventListener('touchend', e => {
-    if (e.changedTouches.length !== 1) return;
-    const now = Date.now();
-    if (now - lastTap < 280) {
-      e.preventDefault();
-      e.stopPropagation(); // don't let the main gesture handler see this as a tap
-      const t = e.changedTouches[0];
-      setScrollZoom(img, zoomedImg !== img, t.clientX, t.clientY);
-    }
-    lastTap = now;
+    const p = dbl.end(e);
+    if (!p) return;
+    e.preventDefault();
+    e.stopPropagation(); // don't let the main gesture handler see this as a tap
+    setScrollZoom(img, zoomedImg !== img, p.x, p.y);
   }, {passive:false});
 }
 
@@ -1845,6 +1934,11 @@ document.addEventListener('keydown', e => {
       if (!blockVidSwipe && dt<800 && absDx>40 && absDx>absDy*1.4) { if(dx<0)navTo('next');else navTo('prev','last'); return; }
       const sc = document.getElementById('scroll-container');
       if (dt<700 && dy>55 && absDy>absDx*1.15 && sc && sc.scrollTop<10) { swipeDownExit(); return; }
+      // a tap on a still image reveals its "AI edit" button for a few seconds (no hover on a phone)
+      if (isTap && topEl && !topEl.closest('.ai-edit-btn')) {
+        const ei = topEl.closest('.scroll-item');
+        if (ei && ei.querySelector('.ai-edit-btn')) toggleEditBtn(ei);
+      }
       // single tap on an item → open it in paged mode (unless disabled)
       if (isTap && IS_MULTI) {
         const tappedImg = topEl && topEl.closest('.scroll-img');
@@ -2769,5 +2863,110 @@ document.addEventListener('error', e => {
     el.focus({preventScroll: true});
   } catch (e) {}
 })();
+
+/* ── AI edit (ComfyUI img2img → new post) ───────────────────── */
+let aiEditPhotoId = null, aiEditPrompted = false;
+function aeEl(id) { return document.getElementById(id); }
+function aeEsc(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+function toggleEditBtn(item) {
+  const on = !item.classList.contains('show-edit');
+  document.querySelectorAll('.scroll-item.show-edit').forEach(el => el.classList.remove('show-edit'));
+  clearTimeout(window._editBtnT);
+  if (on) { item.classList.add('show-edit'); window._editBtnT = setTimeout(() => item.classList.remove('show-edit'), 5000); }
+}
+async function aiEditLoadStatus() {
+  const sel = aeEl('aiedit-model'), st = aeEl('aiedit-status');
+  try {
+    const d = await (await fetch('/api/comfy/status/')).json();
+    const cur = d.config.ollama_model;
+    const models = d.ollama.ok ? d.ollama.models.slice() : [];
+    if (cur && !models.includes(cur)) models.unshift(cur);
+    sel.innerHTML = models.map(m => `<option value="${aeEsc(m)}"${m === cur ? ' selected' : ''}>${aeEsc(m)}</option>`).join('');
+    const den = aeEl('aiedit-den');
+    if (!den.dataset.touched) { den.value = d.config.denoise; aeEl('aiedit-den-val').textContent = (+d.config.denoise).toFixed(2); }
+    if (!d.comfy.ok) st.textContent = '⚠ ' + (d.comfy.error || 'ComfyUI is not reachable');
+    else if (!d.ollama.ok) st.textContent = '⚠ ' + (d.ollama.error || 'Ollama is not reachable') + ' — your text will be used as the prompt';
+  } catch (e) { st.textContent = '⚠ could not read the AI edit status'; }
+}
+function openAiEditFor(photoId, preset) {
+  const im = IMAGES.find(i => i.id === +photoId);
+  if (!im) return;
+  aiEditPhotoId = im.id; aiEditPrompted = false;
+  aeEl('aiedit-thumb').src = im.thumb || im.url;
+  aeEl('aiedit-req').value = (preset && preset.req) || '';
+  aeEl('aiedit-seed').value = '';
+  aeEl('aiedit-prompt').style.display = 'none';
+  aeEl('aiedit-status').textContent = '';
+  const den = aeEl('aiedit-den'); delete den.dataset.touched;
+  if (preset && preset.den) { den.value = preset.den; den.dataset.touched = '1'; aeEl('aiedit-den-val').textContent = (+preset.den).toFixed(2); }
+  document.body.style.overflow = 'hidden';
+  aeEl('aiedit-backdrop').classList.add('open');
+  aiEditLoadStatus();
+  setTimeout(() => aeEl('aiedit-req').focus(), 50);
+}
+function openAiEdit(btn) {
+  const item = btn.closest('.scroll-item');
+  if (item) openAiEditFor(item.dataset.photoId);
+}
+function closeAiEdit() {
+  const b = aeEl('aiedit-backdrop'); if (!b) return;
+  b.classList.remove('open'); document.body.style.overflow = '';
+}
+function aiEditBody() {
+  const b = {photo_id: aiEditPhotoId, request: aeEl('aiedit-req').value.trim(),
+             ollama_model: aeEl('aiedit-model').value};
+  const seed = aeEl('aiedit-seed').value.trim();
+  if (/^\d+$/.test(seed)) b.seed = seed;
+  return b;
+}
+async function aiEditPost(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  return {status: r.status, d};
+}
+async function aiEditPreview() {
+  const b = aiEditBody(), st = aeEl('aiedit-status');
+  if (!b.request) { st.textContent = 'type what should change'; return; }
+  const btn = aeEl('aiedit-prev-btn'); btn.disabled = true; st.textContent = 'writing the prompt… (the first call loads the model, up to a minute)';
+  try {
+    const {d} = await aiEditPost('/api/comfy/prompt/', b);
+    if (!d.ok) { st.textContent = '⚠ ' + (d.error || 'error'); return; }
+    aeEl('aiedit-pos').value = d.positive; aeEl('aiedit-neg').value = d.negative;
+    aeEl('aiedit-note').textContent = (d.source === 'llm' ? d.model + ': ' : '') + d.note;
+    aeEl('aiedit-prompt').style.display = '';
+    const den = aeEl('aiedit-den'); den.value = d.denoise; delete den.dataset.touched;
+    aeEl('aiedit-den-val').textContent = (+d.denoise).toFixed(2);
+    aiEditPrompted = true; st.textContent = 'edit the prompt if you like, then generate';
+  } catch (e) { st.textContent = '⚠ request failed'; }
+  finally { btn.disabled = false; }
+}
+async function aiEditRun() {
+  const b = aiEditBody(), st = aeEl('aiedit-status');
+  if (!b.request) { st.textContent = 'type what should change'; return; }
+  const den = aeEl('aiedit-den');
+  if (aiEditPrompted) { b.positive = aeEl('aiedit-pos').value; b.negative = aeEl('aiedit-neg').value; b.denoise = den.value; }
+  else if (den.dataset.touched) b.denoise = den.value;
+  const btn = aeEl('aiedit-run-btn'); btn.disabled = true;
+  try {
+    const {status, d} = await aiEditPost('/api/comfy/edit/', b);
+    if (d.ok) {
+      toast('AI edit started — the task card shows progress, the result opens as a new post');
+      closeAiEdit(); if (typeof pollTasks === 'function') pollTasks(true);
+    } else if (status === 409) st.textContent = '⚠ another AI edit is still running — wait for it (or stop it in the task card)';
+    else st.textContent = '⚠ ' + (d.error || 'error');
+  } catch (e) { st.textContent = '⚠ request failed'; }
+  finally { btn.disabled = false; }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const rq = aeEl('aiedit-req');
+  if (rq) rq.addEventListener('input', () => { aiEditPrompted = false; aeEl('aiedit-prompt').style.display = 'none'; });
+  document.addEventListener('keydown', e => {
+    const bd = aeEl('aiedit-backdrop');
+    if (e.key === 'Escape' && bd && bd.classList.contains('open')) { e.stopPropagation(); closeAiEdit(); }
+  }, true);
+  // "edit again" link from a generated post: ?aiedit=<photo id>&req=…&den=…
+  const q = new URLSearchParams(location.search);
+  if (q.get('aiedit') && aeEl('aiedit-backdrop')) openAiEditFor(q.get('aiedit'), {req: q.get('req') || '', den: q.get('den') || ''});
+});
 </script>
 {% endblock %}

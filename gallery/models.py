@@ -32,6 +32,10 @@ class Post(models.Model):
     # which model last tagged this post's characters: '' (old tagger / never), 'wd14', 'pixai'
     char_model  = models.CharField(max_length=16, blank=True, default='')
     ai_multi    = models.BooleanField(default=False)   # every item of this multi-image post was AI-tagged, not just the cover
+    # AI edit (ComfyUI img2img): the post/item this one was made from + the settings used
+    source_post  = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='derived_posts')
+    source_photo = models.ForeignKey('Photo', null=True, blank=True, on_delete=models.SET_NULL, related_name='derived_posts')
+    gen_info     = models.JSONField(null=True, blank=True, default=None)
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
     rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)

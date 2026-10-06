@@ -1016,7 +1016,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;
@@ -1028,7 +1028,8 @@ function renderTasks(tasks) {
     const right = t.status === 'running'
                  ? `<button class="tc-stop" ${t.cancel_requested?'disabled':''} onclick="cancelTask(${t.id})">${t.cancel_requested?'stopping…':'&#9632; stop'}</button>`
                  : `<span class="tc-x" title="dismiss" onclick="dismissTask(${t.id})">&#10005;</span>`;
-    const msg = (t.status === 'error' ? (t.error || 'error') : (t.message || '')).replace(/</g,'&lt;');
+    const msg = (t.status === 'error' ? (t.error || 'error') : (t.message || '')).replace(/</g,'&lt;')
+      .replace(/→ post #(\d+)/, '→ <a href="/post/$1/" style="color:var(--accent);text-decoration:underline;">open post #$1</a>');
     return `<div class="task-card ${t.status}">
       <div class="tc-top"><span>${label} · ${st} · ${fmtElapsed(t.elapsed)}</span><span>${right}</span></div>
       <div class="tc-msg">${msg}${t.total?` (${t.done}/${t.total})`:''}</div>
