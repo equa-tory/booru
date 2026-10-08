@@ -1479,9 +1479,9 @@ class SettingsPanelLayoutTests(TestCase):
         self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
         html = self.client.get('/').content.decode()
         sec = html.split('<h3>maintenance</h3>')[1].split('<h3>ai models</h3>')[0]
-        for needle in ('startCharRetag()', 'startMultiRetag()', 'rebasePaths()', 'soundTagAll()', 'organizeSinglesDeep()'):
+        for needle in ('startCharRetag()', 'startMultiRetag()', 'measureVideoLengths()', 'rebasePaths()', 'soundTagAll()', 'organizeSinglesDeep()'):
             self.assertIn(needle, sec)
-        self.assertEqual(len(re.findall(r'<button class="btn"[^>]*title="', sec)) + len(re.findall(r'<a class="btn"[^>]*title="', sec)), 6)
+        self.assertEqual(len(re.findall(r'<button class="btn"[^>]*title="', sec)) + len(re.findall(r'<a class="btn"[^>]*title="', sec)), 7)
         tagging = html.split('<h3>ai tagging</h3>')[1].split('<h3>debug overlays')[0]
         self.assertNotIn('startCharRetag', tagging)
         self.assertIn('id="ai-auto"', tagging)
@@ -2466,3 +2466,179 @@ class TriggerNegativeConflictTests(TestCase):
         self.assertEqual(comfy.drop_terms('white shirt, school uniform, pom pom \\(clothes\\)', 'Hayasaka, white_shirt, pom pom \\(clothes\\)'),
                          'school uniform')
         self.assertEqual(comfy.drop_terms('a, b', ''), 'a, b')
+
+
+# ── length: search, folder context, page scroll memory, phone jump buttons ──
+from urllib.parse import quote as _q
+
+from .models import Folder
+
+
+class LengthSearchTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.p = {}
+        for name, dur in (('a', 30), ('b', 90), ('c', 210), ('d', 720), ('e', None)):
+            post = Post.objects.create()
+            Photo.objects.create(post=post, order=0, rel_path=f'len_{name}.mp4', is_video=True, duration=dur)
+            self.p[name] = post.pk
+        img = Post.objects.create()
+        Photo.objects.create(post=img, order=0, rel_path='len_f.png')
+        self.p['f'] = img.pk
+        multi = Post.objects.create()            # a short clip AND a long one: the longest counts
+        Photo.objects.create(post=multi, order=0, rel_path='len_g1.mp4', is_video=True, duration=20)
+        Photo.objects.create(post=multi, order=1, rel_path='len_g2.mp4', is_video=True, duration=400)
+        self.p['g'] = multi.pk
+
+    def ids(self, *tokens):
+        qs = '&'.join('tag=' + _q(t) for t in tokens)
+        got = {x['id'] for x in self.client.get('/api/posts/?' + qs).json()['posts']}
+        inv = {v: k for k, v in self.p.items()}
+        return ''.join(sorted(inv[i] for i in got))
+
+    def test_more_and_less_in_minutes(self):
+        self.assertEqual(self.ids('length:>5'), 'dg')
+        self.assertEqual(self.ids('length:<2'), 'ab')                 # unmeasured (e) and images (f) never match
+        self.assertEqual(self.ids('length:>=1.5'), 'bcdg')
+        self.assertEqual(self.ids('length:<=1.5'), 'ab')
+        self.assertEqual(self.ids('len:>10'), 'd')
+
+    def test_exact_minute_range_and_seconds(self):
+        self.assertEqual(self.ids('length:3'), 'c')                   # 3:00-3:59
+        self.assertEqual(self.ids('length:2-5'), 'c')
+        self.assertEqual(self.ids('length:30s-90s'), 'ab')
+        self.assertEqual(self.ids('length:<=30s'), 'a')
+        self.assertEqual(self.ids('length:>60s'), 'bcdg')
+
+    def test_combine_not_and_or(self):
+        self.assertEqual(self.ids('length:>1', 'length:<4'), 'bc')
+        self.assertEqual(self.ids('-length:>5'), 'abcef')             # NOT keeps unmeasured + images
+        self.assertEqual(self.ids('(', 'length:<1', '~', 'length:>10', ')'), 'ad')
+
+    def test_unmeasured_videos_start_the_background_measurement(self):
+        with mock.patch.object(views, '_start_task') as st:
+            html = self.client.get('/?tag=' + _q('length:>5')).content.decode()
+        st.assert_called_once()
+        self.assertEqual(st.call_args[0][0], 'video_len')
+        self.assertIn('measuring 1 video lengths', html)
+        with mock.patch.object(views, '_start_task') as st:
+            self.client.get('/?tag=1girl')
+        st.assert_not_called()
+
+    def test_measure_task_only_touches_unmeasured_and_keeps_unreadable_null(self):
+        todo = Photo.objects.create(post=Post.objects.create(), rel_path='len_todo.mp4', is_video=True)
+        bad = Photo.objects.create(post=Post.objects.create(), rel_path='len_bad.mp4', is_video=True)
+        calls = []
+
+        def fake(path):
+            calls.append(os.path.basename(path))
+            return 0.0 if 'bad' in path else 125.5
+        with mock.patch('gallery.utils._video_duration', side_effect=fake):
+            _run_now('video_len', views._video_len_work)
+        self.assertEqual(sorted(calls), sorted(['len_todo.mp4', 'len_bad.mp4', 'len_e.mp4']))   # not the 4 already measured
+        todo.refresh_from_db(); bad.refresh_from_db()
+        self.assertEqual((todo.duration, bad.duration), (125.5, None))
+
+    def test_ingest_stores_the_length(self):
+        from . import utils
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        f = os.path.join(tmp, 'clip.mp4')
+        open(f, 'wb').write(b'x')
+        with override_settings(MEDIA_ROOT=tmp), mock.patch.object(utils, '_video_duration', return_value=61.5), \
+             mock.patch.object(utils, 'make_thumb', return_value=''):
+            ph = utils.ingest_photo(f, Post.objects.create())
+        self.assertEqual((ph.is_video, ph.duration), (True, 61.5))
+
+
+class FolderContextTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.folder = Folder.objects.create(name='Trip <b>')
+
+    def test_pill_and_clear_all_stay_in_the_folder(self):
+        html = self.client.get(f'/?folder={self.folder.pk}').content.decode()
+        self.assertIn('Trip &lt;b&gt;', html)
+        self.assertIn("removeFilter('folder')", html)
+        self.assertIn(f'<a href="/?folder={self.folder.pk}" class="btn"', html)
+        self.assertNotIn('class="active-tags"', self.client.get('/').content.decode())
+
+    def test_sidebar_tag_links_keep_the_context(self):
+        add_tags_to_post(Post.objects.create(), ['cat'])
+        self.assertIn('onclick="return tagLinkGo(event, this)"', self.client.get('/').content.decode())
+
+    def test_search_and_tag_click_stay_in_folder_sort_and_filters(self):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/base.html'), encoding='utf-8').read()
+        a = src.index('function galleryContextParams()'); b = src.index('function runSearchQuery(query) {')
+        b = src.index('\n}\n', b) + 3
+        prog = src[a:b] + """
+let grid = true, SEARCH_QS_VAL = null;
+const document = {getElementById: id => (id === 'photo-grid' && grid ? {} : null)};
+let location = {search: ''}, window = {location: {href: ''}};
+function startProgress() {}
+const out = {};
+location.search = '?folder=3&tag=old&page=4&sort=old&fav=1&ids=1,2';
+out.ctx = galleryContextParams().toString();
+runSearchQuery('cat -dog'); out.search = window.location.href;
+grid = false; var SEARCH_QS = 'tag=x&folder=3&sort=old&seed=9';
+out.post = galleryContextParams().toString();
+runSearchQuery('a'); out.postSearch = window.location.href;
+SEARCH_QS = ''; runSearchQuery(''); out.empty = window.location.href;
+console.log(JSON.stringify(out));"""
+        r = subprocess.run(['node', '-e', prog], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:400])
+        o = json.loads(r.stdout)
+        self.assertEqual(o['ctx'], 'folder=3&sort=old&fav=1')
+        self.assertEqual(o['search'], '/?folder=3&sort=old&fav=1&tag=cat&tag=-dog')
+        self.assertEqual(o['post'], 'folder=3&sort=old&seed=9')              # post page: the context it was opened from
+        self.assertEqual(o['postSearch'], '/?folder=3&sort=old&seed=9&tag=a')
+        self.assertEqual(o['empty'], '/')
+
+
+class PageScrollKeyTests(TestCase):
+    def test_key_is_per_page_and_order_independent(self):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/index.html'), encoding='utf-8').read()
+        a = src.index('function pageScrollKey() {'); b = src.index('function savePageScroll()')
+        prog = src[a:b] + """
+const keys = s => { location = {pathname: '/', search: s}; return pageScrollKey(); };
+console.log(JSON.stringify([keys(''), keys('?page=1'), keys('?page=2'), keys('?tag=b&tag=a&page=2'), keys('?page=2&tag=a&tag=b'), keys('?folder=3&page=2')]));"""
+        r = subprocess.run(['node', '-e', 'var location;' + prog], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:300])
+        k = json.loads(r.stdout)
+        self.assertEqual(k[0], k[1])                  # bare URL == page 1
+        self.assertEqual(len({k[0], k[2], k[3], k[5]}), 4)
+        self.assertEqual(k[3], k[4])                  # param order does not matter
+
+
+class PhoneJumpButtonsTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def test_markup_and_mode_toggle_lives_in_the_bar(self):
+        post = Post.objects.create()
+        html = self.client.get(f'/post/{post.pk}/').content.decode()
+        nav = html.split('id="mini-nav"')[1].split('id="mini-bar"')[0]
+        self.assertEqual(nav.count('class="mini-jump-btn"'), 2)
+        self.assertLess(nav.index('id="mini-prev"'), nav.index('id="mini-jump"'))      # between the two circles
+        self.assertLess(nav.index('id="mini-jump"'), nav.index('id="mini-next"'))
+        self.assertIn("jumpDetail('top')", nav); self.assertIn("jumpDetail('bottom')", nav)
+        bar = html.split('id="mini-bar"')[1]
+        top_row = bar.split('mini-row-bottom')[0]
+        self.assertIn('id="mini-mode-btn"', top_row)                                    # scroll/paged toggle: top row of the panel
+        self.assertIn('body.minimal-ui.mini-jump-on #mode-toggle-fixed { display:none !important; }', html)
+
+    def test_jump_is_instant_and_aims_at_the_items(self):
+        src = open(os.path.join(settings.BASE_DIR, 'templates/gallery/detail.html'), encoding='utf-8').read()
+        a = src.index('function jumpDetail(where) {'); b = src.index('function scrollDetailTop() {')
+        prog = src[a:b] + """
+const box = top => ({getBoundingClientRect: () => ({top, height: 1000})});
+const sc = {scrollTop: 5000, clientHeight: 800, calls: [], getBoundingClientRect: () => ({top: 100}),
+  querySelectorAll: () => [box(100 - 5000 + 300), box(100 - 5000 + 9000)], scrollTo(o) { this.calls.push(o); }};
+const document = {getElementById: () => sc};
+jumpDetail('top'); jumpDetail('bottom');
+console.log(JSON.stringify(sc.calls));"""
+        r = subprocess.run(['node', '-e', prog], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:300])
+        top, bottom = json.loads(r.stdout)
+        self.assertEqual((top['behavior'], bottom['behavior']), ('instant', 'instant'))
+        self.assertEqual(top['top'], 292)                    # first item (offset 300) minus 8
+        self.assertEqual(bottom['top'], 9000 + 1000 - 800 + 8)   # last item's bottom at the viewport bottom

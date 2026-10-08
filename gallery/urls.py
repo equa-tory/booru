@@ -49,6 +49,7 @@ urlpatterns = [
     path('api/ai/char-model/download/', views.char_model_download, name='char_model_download'),
     path('api/ai/char-retag/', views.char_retag_start, name='char_retag_start'),
     path('api/ai/multi-retag/', views.ai_multi_retag, name='ai_multi_retag'),
+    path('api/video-len/', views.video_len_bg, name='video_len_bg'),
     path('api/comfy/status/', views.comfy_status, name='comfy_status'),
     path('api/comfy/settings/', views.comfy_settings, name='comfy_settings'),
     path('api/comfy/prompt/', views.comfy_prompt, name='comfy_prompt'),

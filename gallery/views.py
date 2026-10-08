@@ -8,7 +8,7 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
-from django.db.models import Q, Case, When, IntegerField, F, Count, Value, OuterRef, Subquery
+from django.db.models import Q, Case, When, IntegerField, FloatField, F, Count, Max, Value, OuterRef, Subquery
 from django.db.models.functions import Mod, Coalesce
 from django.conf import settings
 
@@ -31,6 +31,51 @@ from . import char_tagger, ai_models, custom_model, prefs, comfy
 #   pages:3          PAGES — posts with exactly 3 images (also >15, <12, >=, <=)
 
 _PAGES_RE = re.compile(r'^pages:(>=|<=|>|<)?(\d+)$')
+# video length (minutes unless the number ends in s): length:>5  length:<=2  length:1.5  length:2-5  length:>30s
+_LEN_RE = re.compile(r'^(?:length|len|duration):(>=|<=|>|<)?(\d+(?:\.\d+)?)([sm])?$', re.I)
+_LEN_RANGE_RE = re.compile(r'^(?:length|len|duration):(\d+(?:\.\d+)?)([sm])?-(\d+(?:\.\d+)?)([sm])?$', re.I)
+
+
+def _is_length_term(t):
+    t = t.lstrip('-')
+    return bool(_LEN_RE.match(t) or _LEN_RANGE_RE.match(t))
+
+
+def _length_q(term):
+    """Q over the `_vlen` annotation (the post's longest video, in seconds; 0 = no
+    measured video) for a length: term, or None when it isn't one. `length:5` = from 5:00
+    up to (not including) 6:00; ranges are inclusive; posts without a measured video
+    never match (not even `<`)."""
+    m = _LEN_RANGE_RE.match(term)
+    if m:
+        u2 = (m.group(4) or '').lower()
+        u1 = (m.group(2) or u2 or 'm').lower()            # 30-90s: one unit covers both ends
+        lo = float(m.group(1)) * (1 if u1 == 's' else 60)
+        hi = float(m.group(3)) * (1 if (u2 or 'm') == 's' else 60)
+        return Q(_vlen__gt=0, _vlen__gte=min(lo, hi), _vlen__lte=max(lo, hi))
+    m = _LEN_RE.match(term)
+    if not m:
+        return None
+    op, n, unit = m.group(1), float(m.group(2)), (m.group(3) or 'm').lower()
+    sec = n * (1 if unit == 's' else 60)
+    if op == '>':
+        return Q(_vlen__gt=sec)
+    if op == '>=':
+        return Q(_vlen__gte=sec) & Q(_vlen__gt=0)
+    if op == '<':
+        return Q(_vlen__gt=0, _vlen__lt=sec)
+    if op == '<=':
+        return Q(_vlen__gt=0, _vlen__lte=sec)
+    return Q(_vlen__gte=sec, _vlen__lt=sec + (1 if unit == 's' else 60)) & Q(_vlen__gt=0)
+
+
+def _video_len_sq():
+    """Correlated subquery: the longest measured video of each post, in seconds (0 if none)."""
+    return Coalesce(Subquery(
+        Photo.objects.filter(post=OuterRef('pk'), is_video=True, duration__isnull=False).order_by()
+             .values('post').annotate(m=Max('duration')).values('m')[:1],
+        output_field=FloatField()), Value(0.0))
+
 
 def _levenshtein(a, b):
     if a == b:
@@ -86,6 +131,9 @@ def _term_to_q(term):
         return Q(images__rel_path__icontains=term[5:]), True
     if term.startswith('folder:') and len(term) > 7:  # search by folder name
         return Q(images__rel_path__icontains=term[7:]), True
+    lq = _length_q(term)                               # video-length filter
+    if lq is not None:
+        return lq, False
     m = _PAGES_RE.match(term)                          # image-count filter
     if m:
         op, n = m.group(1), int(m.group(2))
@@ -194,6 +242,9 @@ def _build_post_qs(request):
     # so "-pages:1" NOT-queries are detected as well).
     if any(t.lstrip('-').startswith('pages:') for t in q_tags):
         posts = posts.annotate(_pages=_page_count_sq())
+
+    if any(_is_length_term(t) for t in q_tags):
+        posts = posts.annotate(_vlen=_video_len_sq())
 
     if q_tags:
         ands, ors, nots = _parse_tag_tokens(q_tags)
@@ -354,6 +405,14 @@ def index(request):
 
     posts, q_tags, sort_by, multi_only, single_only = _build_post_qs(request)
 
+    # A length: search needs stored video lengths; measure the missing ones in the
+    # background (results fill up as it goes — the page says so)
+    vlen_pending = 0
+    if any(_is_length_term(t) for t in q_tags) and not request.headers.get('HX-Request'):
+        vlen_pending = Photo.objects.filter(is_video=True, duration__isnull=True).count()
+        if vlen_pending:
+            _start_task('video_len', _video_len_work, message='measuring videos…', exclusive=True)
+
     # Full nav query string (tags + sort + filters + seed/ids, minus paging) so
     # links into a post carry the exact browsing context for prev/next.
     np = request.GET.copy()
@@ -420,6 +479,9 @@ def index(request):
         'sort_by': sort_by,
         'multi_only': request.GET.get('multi_only',''),
         'proc': request.GET.get('proc', ''),
+        'vlen_pending': vlen_pending,
+        'active_folder_obj': (Folder.objects.filter(pk=int(request.GET['folder'])).first()
+                              if request.GET.get('folder', '').isdigit() else None),
         'single_only': request.GET.get('single_only',''),
         'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
         'folders': Folder.objects.all(),
@@ -1033,6 +1095,42 @@ def sound_tag_all_bg(request):
             task.save(update_fields=['done', 'message'])
             _t.sleep(0)
     return JsonResponse({'task_id': _start_task('sound_tag', work, message='detecting audio…', exclusive=True).id})
+
+
+def _video_len_work(task):
+    """Measure (ffprobe) every video whose length is not stored yet, 6 at a time (the files
+    sit on a network share: one at a time was ~3 videos/s). Resumable: only NULL rows."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .utils import _video_duration
+    rows = list(Photo.objects.filter(is_video=True, duration__isnull=True).values_list('id', 'rel_path'))
+    task.total = len(rows); task.done = 0
+    task.save(update_fields=['total', 'done'])
+    bad = done = 0
+
+    def probe(row):
+        pid, rel = row
+        try:
+            return pid, _video_duration(Photo(rel_path=rel).file_path)
+        except Exception as e:
+            print(f'video length error photo {pid}: {e}')
+            return pid, 0.0
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for k in range(0, len(rows), 24):
+            check_cancel(task)
+            for pid, d in pool.map(probe, rows[k:k + 24]):
+                if d > 0:
+                    Photo.objects.filter(pk=pid).update(duration=d)
+                else:
+                    bad += 1          # unreadable / missing file: stays NULL (never matches a length: search)
+                done += 1
+            _throttled_save(task, done=done, message=f'{done}/{len(rows)} measured' + (f' · {bad} unreadable' if bad else ''))
+    task.save(update_fields=['done', 'message'])
+
+
+@require_POST
+def video_len_bg(request):
+    """Settings -> maintenance: store the length of every video (needed by `length:` searches)."""
+    return JsonResponse({'task_id': _start_task('video_len', _video_len_work, message='measuring videos…', exclusive=True).id})
 
 
 @require_POST

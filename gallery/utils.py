@@ -438,10 +438,11 @@ def ingest_photo(path, post, order=0):
         ph = ''
     else:
         ph = compute_phash(path)
+    length = _video_duration(path) if vid else 0.0
     photo = Photo(
         post=post, order=order,
         width=w, height=h, file_size=size, phash=ph,
-        is_video=vid,
+        is_video=vid, duration=length if length > 0 else None,
     )
     photo.file_path = path    # property setter — stores relative to MEDIA_ROOT
     photo.thumb_path = thumb  # property setter

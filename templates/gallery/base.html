@@ -613,6 +613,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <div><code class="cheat-code">ta*1</code> — <b>wildcard</b>: tags starting with “ta” and ending “1”. <code class="cheat-code">*</code> matches anything.</div>
       <div><code class="cheat-code">file:cat</code> — posts whose <b>file name</b> contains “cat”.</div>
       <div><code class="cheat-code">folder:trip</code> — posts whose <b>folder</b> path contains “trip”.</div>
+      <div><code class="cheat-code">length:&gt;5</code> — <b>videos</b> longer than 5 minutes. Also <code class="cheat-code">length:&lt;2</code>, <code class="cheat-code">length:&gt;=1.5</code>, <code class="cheat-code">length:&lt;=10</code>, <code class="cheat-code">length:3</code> (3:00&ndash;3:59), a range <code class="cheat-code">length:2-5</code>, or seconds <code class="cheat-code">length:&lt;30s</code>. <code class="cheat-code">len:</code> works too.</div>
       <div><code class="cheat-code">pages:3</code> — posts with exactly 3 images. Also <code class="cheat-code">pages:&gt;15</code>, <code class="cheat-code">pages:&lt;12</code>, <code class="cheat-code">pages:&gt;=15</code>, <code class="cheat-code">pages:&lt;=12</code>.</div>
       <div style="color:var(--text-dim);font-size:.76rem;border-top:1px solid var(--border);padding-top:.5rem;">Combine freely, e.g.&nbsp; <code class="cheat-code">1girl ( red_hair ~ blue_hair ) -monochrome file:2024</code></div>
     </div>
@@ -1016,7 +1017,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', video_len:'Measuring video lengths', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;
@@ -1244,6 +1245,13 @@ async function aiTagAll() {
   } catch(e) { toast('could not start ai tagging','err'); }
 }
 
+async function measureVideoLengths() {
+  try {
+    await fetch('/api/video-len/', {method:'POST', headers:{'X-CSRFToken': getCsrf()}});
+    toast('measuring video lengths in the background…');
+    if (typeof pollTasks !== 'undefined') pollTasks(true);
+  } catch(e) { toast('could not start measuring','err'); }
+}
 async function soundTagAll() {
   if (!confirm('Re-check every video post for an audio track and sync the "sound" tag?\nThis can take a while; you can keep using or close the site.')) return;
   try {
@@ -1498,8 +1506,20 @@ async function initRecentSync() {
   });
 }
 document.addEventListener('DOMContentLoaded', initRecentSync);
+// Everything the user is "inside" except the tags and the page: the open folder, sort,
+// rating/fav/proc filters, seed. On a post page it comes from the gallery context the post
+// was opened from (SEARCH_QS). A new search / tag click starts from this, so searching
+// inside a folder stays inside it. `ids` (find-similar) would override the search: dropped.
+function galleryContextParams() {
+  let p;
+  if (document.getElementById('photo-grid')) p = new URLSearchParams(location.search);
+  else if (typeof SEARCH_QS === 'string') p = new URLSearchParams(SEARCH_QS);
+  else p = new URLSearchParams();
+  ['tag', 'page', 'ids'].forEach(k => p.delete(k));
+  return p;
+}
 function runSearchQuery(query) {
-  const p = new URLSearchParams();
+  const p = galleryContextParams();
   query.trim().split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
   if (typeof startProgress !== 'undefined') startProgress();
   window.location.href = p.toString() ? '/?' + p.toString() : '/';
@@ -1600,10 +1620,9 @@ function sheetPickSuggestion(name) {
 // run the search with everything typed in the box
 function sheetSearch() {
   const val = document.getElementById('sheet-search').value.trim();
-  if (!val) { window.location.href = '/'; return; }
+  if (!val) { const q = galleryContextParams().toString(); window.location.href = q ? '/?' + q : '/'; return; }
   pushRecentSearch(val);
-  const p = new URLSearchParams(window.location.search);
-  p.delete('tag'); p.delete('page');
+  const p = galleryContextParams();
   val.split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
   startProgress();
   window.location.href = '/?' + p.toString();
@@ -1623,7 +1642,7 @@ function searchTokenAt(value, caret) {
   if (!raw || raw === '(' || raw === ')' || raw === '~') return null;
   const prefix = raw[0] === '-' ? '-' : '';
   const query = raw.slice(prefix.length);
-  if (!query || /^(file|folder):/i.test(query) || /[*~]/.test(query) || /^[<>=]/.test(query)) return null;
+  if (!query || /^(file|folder|length|len|duration|pages):/i.test(query) || /[*~]/.test(query) || /^[<>=]/.test(query)) return null;
   const others = (value.slice(0, start) + ' ' + value.slice(end)).split(/\s+/)
     .filter(t => t && t !== '(' && t !== ')' && t !== '~').map(t => t.replace(/^-/, '').toLowerCase());
   return {start, end, prefix, query, others};

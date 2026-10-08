@@ -242,7 +242,7 @@ body.select-mode .scroll-fabs { display:none; }
       {% ifchanged tag.group %}<div class="tag-group-title">{% if tag.group == 'favorites' %}&#9829; pinned{% else %}{{ tag.group }}{% endif %}</div>{% endifchanged %}
       <div class="tag-item tag-entry" data-name="{{ tag.name }}" data-cat="{{ tag.category }}">
         <span class="tag-fav-btn {% if tag.fav %}active{% endif %}" onclick="toggleTagFav('{{ tag.name }}', this)">&#9829;</span>
-        <a class="tag-link {{ tag.category }}" href="?tag={{ tag.name }}" title="{{ tag.name }}">{{ tag.name }}</a>
+        <a class="tag-link {{ tag.category }}" href="?tag={{ tag.name }}" onclick="return tagLinkGo(event, this)" title="{{ tag.name }}">{{ tag.name }}</a>
         <span class="tag-count">{% if filtering_active %}{{ tag.filtered_count }}{% else %}{{ tag.count }}{% endif %}</span>
         <span class="tag-sub-btn" onclick="addTagToSearch('{{ tag.name }}', true)" title="exclude from search">&minus;</span>
         <span class="tag-add-btn" onclick="addTagToSearch('{{ tag.name }}')" title="add">+</span>
@@ -255,8 +255,10 @@ body.select-mode .scroll-fabs { display:none; }
 
 {% block content %}
 <div id="recent-strip" class="recent-strip" style="display:none;"></div>
-{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only or proc %}
+{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only or proc or active_folder_obj %}
 <div class="active-tags">
+  {% if active_folder_obj %}<span class="active-tag" style="border-color:var(--accent);" title="you are inside this folder; searches, filters and sorting apply to it">&#128193; {{ active_folder_obj.name }}{% if active_folder_obj.include_subfolders %} +sub{% endif %} <span class="remove" onclick="removeFilter('folder')">x</span></span>{% endif %}
+  {% if vlen_pending %}<span class="active-tag" style="border-color:#22d3ee;" title="video lengths are being measured in the background; reload in a moment for the full result">&#9201; measuring {{ vlen_pending }} video lengths…</span>{% endif %}
   {% if fav_only == '1' %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.15);">&#9829; favs <span class="remove" onclick="removeFilter('fav')">x</span></span>{% endif %}
   {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <span class="remove" onclick="removeFilter('multi_only')">x</span></span>{% endif %}
   {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <span class="remove" onclick="removeFilter('single_only')">x</span></span>{% endif %}
@@ -264,7 +266,7 @@ body.select-mode .scroll-fabs { display:none; }
   {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <span class="remove" onclick="removeFilter('min_rating')">x</span></span>{% endif %}
   {% if exact_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{% if exact_rating == '0' %}&#9734; unrated{% else %}{{ exact_rating }}&#9733;{% endif %} <span class="remove" onclick="removeFilter('rating')">x</span></span>{% endif %}
   <span id="tag-pills"></span>
-  <a href="/" class="btn" style="padding:.15rem .5rem;font-size:.75rem;">clear all</a>
+  <a href="/{% if active_folder_obj %}?folder={{ active_folder_obj.pk }}{% endif %}" class="btn" style="padding:.15rem .5rem;font-size:.75rem;" title="{% if active_folder_obj %}clear the search and filters (stays in this folder){% else %}clear the search and filters{% endif %}">clear all</a>
 </div>
 {% endif %}
 
@@ -730,6 +732,15 @@ function toggleMultiOnly(btn) {
 }
 // + adds `name`, - adds `-name` (exclude); either one replaces the opposite if it is
 // already in the search, so the two buttons swap cleanly.
+// a tag name click = search that tag, but stay in the open folder / keep sort and filters
+function tagLinkGo(e, a) {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return true;    // new tab etc.: plain link
+  const p = galleryContextParams();
+  p.append('tag', a.title);
+  if (typeof startProgress !== 'undefined') startProgress();
+  window.location.href = '/?' + p.toString();
+  return false;
+}
 function addTagToSearch(name, neg) {
   const want = neg ? '-' + name : name, opp = neg ? name : '-' + name;
   const p = new URLSearchParams(window.location.search);
@@ -823,11 +834,10 @@ let suggestItems = [], suggestIdx = -1, suggestTimer = null;
 
 function doSearch() {
   const val = document.getElementById('tag-search').value.trim();
-  if (!val) { window.location.href = '/'; return; }
+  if (!val) { const q = galleryContextParams().toString(); window.location.href = q ? '/?' + q : '/'; return; }
   pushRecentSearch(val);
-  // preserve other params
-  const p = new URLSearchParams(window.location.search);
-  p.delete('tag'); p.delete('page');
+  // preserve other params (open folder, sort, filters)
+  const p = galleryContextParams();
   val.split(/\s+/).filter(Boolean).forEach(t => p.append('tag', t));
   if (typeof startProgress !== 'undefined') startProgress();
   window.location.href = '/?' + p.toString();
@@ -1387,19 +1397,54 @@ document.addEventListener('DOMContentLoaded', () => {
     // came back from a post → show its card; else (reload etc.) re-load pages to the saved depth, then scroll
     restoreFocusPost().then(found => found ? null : restoreInfiniteScroll()).then(() => initInfiniteScroll());
   } else {
-    restoreFocusPost().then(found => { if (!found) restoreScrollY(); });
+    restoreFocusPost().then(found => { if (!found && !restoreScrollY()) restorePageScroll(); });
   }
 });
 function restoreScrollY() {
-  {
-    const savedURL = sessionStorage.getItem('scrollURL');
-    const savedY   = sessionStorage.getItem('scrollY');
-    if (savedURL && savedY && window.location.href === savedURL) {
-      requestAnimationFrame(() => window.scrollTo(0, parseInt(savedY)));
-      sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
-    }
+  const savedURL = sessionStorage.getItem('scrollURL');
+  const savedY   = sessionStorage.getItem('scrollY');
+  if (savedURL && savedY && window.location.href === savedURL) {
+    requestAnimationFrame(() => window.scrollTo(0, parseInt(savedY)));
+    sessionStorage.removeItem('scrollURL'); sessionStorage.removeItem('scrollY');
+    return true;
   }
+  return false;
 }
+
+// ── Per-page scroll memory (paged mode) ───────────────────────
+// Every page of a search remembers how far down it was left (per tab), so going to the
+// next page and back (prev button, page numbers, browser back) lands where you were
+// instead of at the top. Key = path + sorted query, which includes ?page=N.
+const PAGE_SCROLL_KEY = 'pageScrollMap', PAGE_SCROLL_TTL = 6 * 3600 * 1000;
+function pageScrollKey() {
+  const p = new URLSearchParams(location.search);
+  const page = parseInt(p.get('page') || '1') || 1;
+  p.delete('page');
+  const e = [...p.entries()].sort((a, b) => a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : (a[0] < b[0] ? -1 : 1));
+  e.push(['page', String(page)]);                          // ?page=1 and the bare URL are the same page
+  return location.pathname + '?' + new URLSearchParams(e).toString();
+}
+function savePageScroll() {
+  if (SCROLL_MODE) return;
+  try {
+    const m = JSON.parse(sessionStorage.getItem(PAGE_SCROLL_KEY) || '{}');
+    m[pageScrollKey()] = {y: Math.round(window.scrollY), t: Date.now()};
+    const keys = Object.keys(m);
+    if (keys.length > 60) keys.sort((a, b) => m[a].t - m[b].t).slice(0, keys.length - 60).forEach(k => delete m[k]);
+    sessionStorage.setItem(PAGE_SCROLL_KEY, JSON.stringify(m));
+  } catch (e) {}
+}
+function restorePageScroll() {
+  try {
+    const e = (JSON.parse(sessionStorage.getItem(PAGE_SCROLL_KEY) || '{}'))[pageScrollKey()];
+    if (!e || !e.y || Date.now() - e.t > PAGE_SCROLL_TTL) return;
+    const go = () => window.scrollTo(0, e.y);
+    requestAnimationFrame(() => requestAnimationFrame(go));
+    setTimeout(go, 350);                       // thumbnails may still shift the layout
+  } catch (err) {}
+}
+window.addEventListener('pagehide', savePageScroll);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') savePageScroll(); });
 
 // save grid size to prefs when changed
 const origSetGridSize = setGridSize;

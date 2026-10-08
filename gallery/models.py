@@ -92,6 +92,7 @@ class Photo(models.Model):
     file_size  = models.BigIntegerField(default=0)
     phash      = models.CharField(max_length=64, blank=True, db_index=True)
     is_video   = models.BooleanField(default=False)
+    duration   = models.FloatField(null=True, blank=True)   # video length in seconds (ffprobe); NULL = not measured yet
 
     class Meta:
         ordering = ['order', 'id']

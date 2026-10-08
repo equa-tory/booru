@@ -312,6 +312,22 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
     -webkit-tap-highlight-color:transparent; cursor:pointer;
   }
   .mini-nav-btn:active   { background:rgba(124,106,247,.25); border-color:rgba(124,106,247,.8); }
+  /* Two tiny circles stacked in the gap between the nav circles (same total height as
+     one of them): jump to the top / bottom of the post. Barely visible on purpose.
+     Multi-image / tall posts only (body.mini-jump-on); not in paged mode (nothing to scroll). */
+  .mini-jump { display:none; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    flex-direction:column; gap:4px; pointer-events:none; }
+  body.minimal-ui.mini-jump-on:not(.mode-paged) .mini-jump { display:flex; }
+  .mini-jump-btn { pointer-events:auto; touch-action:manipulation; width:28px; height:28px; border-radius:50%; padding:0;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.2); color:rgba(255,255,255,.4);
+    font-size:.8rem; line-height:1; display:flex; align-items:center; justify-content:center;
+    -webkit-tap-highlight-color:transparent; cursor:pointer; }
+  .mini-jump-btn:active { background:rgba(124,106,247,.25); border-color:rgba(124,106,247,.8); color:#fff; }
+  /* with the jump buttons the scroll/paged toggle leaves the gap and lives in the bar's top row */
+  body.minimal-ui.mini-jump-on #mode-toggle-fixed { display:none !important; }
+  .mini-mode { display:none; }
+  body.minimal-ui.mini-jump-on .mini-mode { display:block; background:none; border:none; color:var(--text);
+    font-size:1.25rem; padding:0 .3rem; flex:none; height:100%; -webkit-tap-highlight-color:transparent; cursor:pointer; }
   .mini-nav-btn.disabled { opacity:.15; pointer-events:none; }
   /* Mode toggle sits lower, right above the rating row, in the horizontal
      gap between the two nav circles instead of floating high on its own. */
@@ -758,6 +774,10 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
      only shown when body.minimal-ui is active (phone). -->
 <div class="mini-nav mobile-only" id="mini-nav">
   <button class="mini-nav-btn" id="mini-prev" onclick="navTo('prev')" aria-label="previous"></button>
+  <div class="mini-jump" id="mini-jump">
+    <button class="mini-jump-btn" onclick="jumpDetail('top')" aria-label="jump to top" title="top">&#8963;</button>
+    <button class="mini-jump-btn" onclick="jumpDetail('bottom')" aria-label="jump to bottom" title="bottom">&#8964;</button>
+  </div>
   <button class="mini-nav-btn" id="mini-next" onclick="navTo('next')" aria-label="next"></button>
 </div>
 <div class="mini-bar mobile-only" id="mini-bar">
@@ -768,6 +788,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       {% endfor %}
     </div>
     <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="mobFav()">&#9829;</button>
+    <button class="mini-mode" id="mini-mode-btn" onclick="toggleViewMode()" aria-label="scroll / paged mode" title="switch scroll / paged mode">&#9783;</button>
   </div>
   <div class="mini-row mini-row-bottom">
     <button class="mini-icon" id="mini-scrolltop-btn" onclick="scrollDetailTop()" title="scroll to top" style="display:none;">&#10514;</button>
@@ -939,6 +960,8 @@ function applyViewMode(mode, persist) {
   if (toggle) toggle.textContent = label;
   const fixedBtn = document.getElementById('mode-toggle-fixed');
   if (fixedBtn) fixedBtn.textContent = label;
+  const miniMode = document.getElementById('mini-mode-btn');
+  if (miniMode) miniMode.textContent = mode === 'paged' ? '\u2783' : '\u2637';
   const topbar = document.getElementById('img-topbar');
   // post type drives which UI-hiding behavior applies
   document.body.classList.toggle('is-single', !IS_MULTI);
@@ -2727,6 +2750,19 @@ document.addEventListener('click',e=>{if(!e.target.closest('#new-tag')&&!e.targe
 // Scroll the current media back to the top — for the minimal-UI bottom-bar
 // button, shown only on multi-image or tall posts (the ones actually worth
 // scrolling back up from).
+// instant jump (no smooth animation) to the first / last item of the post; the scroller has
+// blank padding above and below the items, so aim at the items, not at scrollTop 0 / scrollHeight
+function jumpDetail(where) {
+  const sc = document.getElementById('scroll-container');
+  const items = sc ? sc.querySelectorAll('.scroll-item') : [];
+  if (!sc || !items.length) return;
+  const rel = el => sc.scrollTop + el.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+  const top = where === 'top'
+    ? rel(items[0]) - 8
+    : rel(items[items.length - 1]) + items[items.length - 1].getBoundingClientRect().height - sc.clientHeight + 8;
+  sc.scrollTo({top: Math.max(0, top), behavior: 'instant'});
+}
+
 function scrollDetailTop() {
   const sc = document.getElementById('scroll-container');
   if (sc) sc.scrollTo({top: 0, behavior: 'smooth'});
@@ -2739,6 +2775,7 @@ function scrollDetailTop() {
 applyViewMode(viewMode, IS_MULTI);
 const scrollTopBtn = document.getElementById('mini-scrolltop-btn');
 if (scrollTopBtn && (IS_MULTI || IS_TALL)) scrollTopBtn.style.display = '';
+document.body.classList.toggle('mini-jump-on', IS_MULTI || IS_TALL);   // phone minimal UI: top/bottom circles + mode button in the bar
 loadNeighbors();
 if (IS_MULTI && typeof preloadNeighbors !== 'undefined') preloadNeighbors(currentImgIdx || 0);
 if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
