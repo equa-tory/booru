@@ -79,10 +79,7 @@ function renderTags() {
 }
 
 async function tagManage(body) {
-  const r = await fetch('/api/tag/manage/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify(body)
-  });
+  const r = await apiPost('/api/tag/manage/', body);
   return r.json();
 }
 

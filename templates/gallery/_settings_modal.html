@@ -181,7 +181,7 @@
 
 <script>
 function openSettings() {
-  document.getElementById('settings-modal').classList.add('open');
+  openModal('settings-modal');
   if (typeof closeMobMenu === 'function') closeMobMenu();
   loadBackupInfo();
   loadDbgStats();
@@ -223,7 +223,7 @@ async function saveComfy() {
   const body = {enabled: document.getElementById('ce-enabled').checked, free_after: document.getElementById('ce-free').checked,
                 ollama_model: g('ce-model'), checkpoint: g('ce-ckpt'), sampler: g('ce-sampler'), scheduler: g('ce-sched')};
   for (const [k, id] of Object.entries(CE_FIELDS)) body[k] = g(id);
-  const r = await fetch('/api/comfy/settings/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  const r = await apiPost('/api/comfy/settings/', body);
   toast(r.ok ? 'saved' : 'could not save', r.ok ? '' : 'err'); loadComfy();
 }
 async function loadNetPath() {
@@ -237,11 +237,11 @@ async function loadNetPath() {
 }
 async function saveNetPath() {
   const prefix = document.getElementById('np-prefix').value.trim();
-  const r = await fetch('/api/net-path/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({prefix})});
+  const r = await apiPost('/api/net-path/', {prefix});
   toast(r.ok ? 'saved' : 'could not save', r.ok ? '' : 'err'); loadNetPath();
 }
 async function _qlPost(body) {
-  const r = await fetch('/api/quick-links/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  const r = await apiPost('/api/quick-links/', body);
   let d = {}; try { d = await r.json(); } catch(e) {}
   return {ok: r.ok, d};
 }
@@ -287,7 +287,7 @@ async function loadDbgStats() {
 async function recategorizeCharacters() {
   if (!confirm('Move every tag that is a known character name from category "ai" to "character"?\n\nOnly the category label changes (sidebar grouping/colour) — no post is re-tagged, and tags you categorised yourself are not touched.')) return;
   try {
-    const d = await (await fetch('/api/tags/recategorize-characters/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}})).json();
+    const d = await (await apiPost('/api/tags/recategorize-characters/')).json();
     toast(d.ok ? `${d.updated} tag(s) moved to character` : (d.error || 'failed'), d.ok ? '' : 'err');
     loadDbgStats();
   } catch(e) { toast('failed', 'err'); }
@@ -308,7 +308,7 @@ async function loadAiInfo() {
 async function setAiAuto(on) {
   // saved on the server; the box always shows what the server actually stored
   try {
-    const r = await fetch('/api/pref/set/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({key:'aiCharAuto', value: !!on})});
+    const r = await apiPost('/api/pref/set/', {key:'aiCharAuto', value: !!on});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     toast(on ? 'character model will run with AI tagging' : 'character model only runs on demand');
   } catch(e) { toast('could not save the setting', 'err'); }
@@ -321,7 +321,7 @@ const AIM_DESC = {
   custom: 'clone of the default + things you taught it',
 };
 async function _aimPost(url, body) {
-  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body || {})});
+  const r = await apiPost(url, body || {});
   let d = {}; try { d = await r.json(); } catch(e) {}
   return {ok: r.ok, status: r.status, d};
 }
@@ -510,7 +510,7 @@ async function startCharRetag() {
   const limit = parseInt(document.getElementById('ai-limit').value || '0', 10) || 0;
   if (!confirm(`Run the character model on ${limit ? 'up to ' + limit : 'ALL remaining'} post(s), newest first?\n\nIt only adds character tags (nothing is removed) and you can stop it any time; the next run continues where it stopped.`)) return;
   try {
-    const r = await fetch('/api/ai/char-retag/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({limit})});
+    const r = await apiPost('/api/ai/char-retag/', {limit});
     if (!r.ok) { toast('could not start', 'err'); return; }
     closeSettings();
     toast('re-tagging characters in the background…');
@@ -527,7 +527,7 @@ async function startMultiRetag() {
     if (typeof pollTasks !== 'undefined') pollTasks(true);
   } catch(e) { toast('could not start', 'err'); }
 }
-function closeSettings() { document.getElementById('settings-modal').classList.remove('open'); }
+function closeSettings() { closeModal('settings-modal'); }
 
 function _bkSize(n) { return n == null ? '?' : n >= 1073741824 ? (n/1073741824).toFixed(1)+' GB' : (n/1048576).toFixed(n >= 10485760 ? 0 : 1)+' MB'; }
 function _bkWhen(ts) { return ts ? new Date(ts*1000).toLocaleString([], {dateStyle:'medium', timeStyle:'short'}) : 'never'; }
@@ -578,7 +578,7 @@ async function saveBackupConfig() {
     path: document.getElementById('bk-path').value,
   };
   try {
-    const r = await fetch('/api/backup/config/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+    const r = await apiPost('/api/backup/config/', body);
     const d = await r.json();
     if (!r.ok) { toast(d.error || 'could not save', 'err'); return; }
     toast('backup settings saved');
@@ -588,7 +588,7 @@ async function saveBackupConfig() {
 
 async function runBackupNow() {
   try {
-    const r = await fetch('/api/backup/run/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+    const r = await apiPost('/api/backup/run/');
     if (!r.ok) { toast('could not start backup', 'err'); return; }
     toast('backing up…');
     if (typeof pollTasks !== 'undefined') pollTasks(true);
@@ -606,7 +606,7 @@ function _afterRestoreStarted() {
 async function restoreBackup(name) {
   if (!confirm(`Restore the database from\n${name}\n\nThis REPLACES the current tags/ratings/folders/posts with the ones in that file (media files on disk are untouched). A safety copy of the current database is saved first as pre-restore.sqlite3.\n\nContinue?`)) return;
   try {
-    const r = await fetch('/api/backup/restore/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify({name})});
+    const r = await apiPost('/api/backup/restore/', {name});
     const d = await r.json();
     if (!r.ok) { toast(d.error || 'restore failed', 'err'); return; }
     _afterRestoreStarted();
@@ -621,7 +621,7 @@ async function uploadRestore(input) {
   const fd = new FormData(); fd.append('file', f);
   toast('uploading…');
   try {
-    const r = await fetch('/api/backup/upload/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}, body: fd});
+    const r = await apiPost('/api/backup/upload/', fd);
     const d = await r.json();
     if (!r.ok) { toast(d.error || 'restore failed', 'err'); return; }
     _afterRestoreStarted();

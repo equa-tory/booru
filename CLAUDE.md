@@ -73,6 +73,11 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 - Double-tap zoom (paged `attachZoom` and scroll `attachScrollZoom`) uses `makeDoubleTap()`: only a real tap (one finger, <12 px, <300 ms) can be half of a double-tap, otherwise a scroll started right after zooming in zoomed back out.
 - The AI tag result carries `model` (`wd14`/`pixai`/`custom`) and `learned`; My model = default tags + only taught tags, so it can look identical to the default on posts without them (the toast and settings panel say which tagger ran).
 
+## Shared helpers — use these, don't retype them
+- Frontend (`base.html`, available on every page): `apiPost(url, body?)` (CSRF + JSON/FormData, returns the fetch promise — never hand-write `fetch(..., {headers:{'X-CSRFToken':getCsrf()}})`), `openModal(id)`/`closeModal(id)` (the `open` class on a backdrop), `attachDragDismiss(el, closeFn, {scroller, dist, enabled})` (drag a sheet/panel down to close; upload modal, tag sheet, more menu and the post info panel all use it), `withTagToggled(qs, name, neg)` (the + / − tag button URL for the gallery and the post page), `toast`.
+- Backend (`views.py`): `_json_body(request)` (always a dict) and `_err(message, status=400)` (`{ok: false, error}`) for API views.
+- Sidebar tag counts for a filtered search come from the post↔tag table (`Post.tags.through`), not `Tag.annotate(Count('posts'))` (3x faster: `?tag=1girl` 2.4 s → 1.0 s).
+
 ## Multi-image tagging, media Range, back-to-post
 - `apply_ai_tags(post)` with no `cover` tags up to `AI_MAX_IMAGES_PER_POST` (24, evenly spaced incl. first/last; one post has 6,000+ images) items of a multi-image post and `_merge_ai_results` sums them (tags ranked by how many items carry them, general cap 80, characters cap 20, only the strictest rating kept). A single image goes through unchanged. `Post.ai_multi` marks "all items tagged"; settings → AI tagging → "re-tag all multi-image posts" (`/api/ai/multi-retag/`, Task `ai_multi`, exclusive/cancellable/resumable, adds tags only). An explicit `cover` argument still tags just that image.
 - `/media/` is served by `views.media_serve` (not Django's `static()`): HTTP Range (206/416, `Accept-Ranges`, `If-Range`) — Chromium cannot seek or stream videos without it. Plain GETs use `FileResponse`.

@@ -249,7 +249,7 @@ function renderLanding() {
 let _dupePollTimer = null;
 async function startDupeScan() {
   try {
-    const r = await fetch('/api/dupes/scan/', {method:'POST', headers:{'X-CSRFToken':getCsrf()}});
+    const r = await apiPost('/api/dupes/scan/');
     const d = await r.json();
     document.getElementById('dupes-status').textContent = 'scanning…';
     document.getElementById('dupes-mode-picker').style.display = 'none';
@@ -561,10 +561,7 @@ async function applyDecisions() {
       if (d.fallback === 'ignore') {
         for (let i = 0; i < g.posts.length; i++) {
           for (let j = i + 1; j < g.posts.length; j++) {
-            await fetch('/api/not-dupe/', {
-              method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-              body: JSON.stringify({a: g.posts[i].post_id, b: g.posts[j].post_id, undo: false})
-            });
+            await apiPost('/api/not-dupe/', {a: g.posts[i].post_id, b: g.posts[j].post_id, undo: false});
           }
         }
         summary.ignore++;
@@ -579,19 +576,13 @@ async function applyDecisions() {
           // 'leave' -> nothing to do
         });
         if (mergeIds.length) {
-          const r = await (await fetch('/api/merge/', {
-            method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-            body: JSON.stringify({target: keeperId, sources: mergeIds})
-          })).json();
+          const r = await (await apiPost('/api/merge/', {target: keeperId, sources: mergeIds})).json();
           if (r.ok) summary.merge++; else summary.failed++;
         }
         if (deleteIds.length) {
           let allOk = true;
           for (const id of deleteIds) {
-            const r = await (await fetch(`/api/post/${id}/delete/`, {
-              method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-              body: JSON.stringify({delete_file: true})
-            })).json();
+            const r = await (await apiPost(`/api/post/${id}/delete/`, {delete_file: true})).json();
             if (!r.ok) allOk = false;
           }
           allOk ? summary.delete++ : summary.failed++;

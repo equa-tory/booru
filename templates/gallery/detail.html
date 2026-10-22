@@ -1066,10 +1066,7 @@ function toggleViewMode() {
   applyViewMode(newMode);
   if (!IS_MULTI) return; // single-post mode is local-only, doesn't touch the shared default
   // persist across devices
-  fetch('/api/pref/set/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({key:'viewMode', value:newMode})
-  }).catch(()=>{});
+  apiPost('/api/pref/set/', {key:'viewMode', value:newMode}).catch(()=>{});
 }
 function isMobileDetail() { return window.innerWidth <= 640; }
 
@@ -1620,10 +1617,7 @@ async function filmSplitSelected() {
   if (!filmSelected.size) { toast('select items first','err'); return; }
   if (filmSelected.size === IMAGES.length) { toast('leave at least one image in this post','err'); return; }
   if (!confirm(`Split ${filmSelected.size} selected item(s) out into ONE new post?`)) return;
-  const r = await fetch('/api/images/split-to-one/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({ids: [...filmSelected].map(Number)})
-  });
+  const r = await apiPost('/api/images/split-to-one/', {ids: [...filmSelected].map(Number)});
   const d = await r.json();
   if (d.ok) { toast(`split ${d.count} item(s) into post #${d.new_post_id}`); location.reload(); }
   else toast(d.error||'error','err');
@@ -1633,10 +1627,7 @@ async function filmSplitSeparate() {
   if (!filmSelected.size) { toast('select items first','err'); return; }
   if (filmSelected.size === IMAGES.length) { toast('leave at least one image in this post','err'); return; }
   if (!confirm(`Split ${filmSelected.size} selected item(s) out — each into its OWN new post?`)) return;
-  const r = await fetch('/api/images/split-to-separate/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({ids: [...filmSelected].map(Number)})
-  });
+  const r = await apiPost('/api/images/split-to-separate/', {ids: [...filmSelected].map(Number)});
   const d = await r.json();
   if (d.ok) { toast(`split ${d.count} item(s) into ${d.count} new post(s)`); location.reload(); }
   else toast(d.error||'error','err');
@@ -1648,7 +1639,7 @@ async function filmDeleteSelected(alsoFile) {
   startProgress();
   let done = 0;
   for (const id of filmSelected) {
-    await fetch(`/api/image/${id}/delete/`, {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({delete_file:alsoFile})});
+    await apiPost(`/api/image/${id}/delete/`, {delete_file:alsoFile});
     done++; setProgress(Math.round(done / filmSelected.size * 100));
   }
   doneProgress();
@@ -1681,10 +1672,7 @@ async function doReorder(fromIdx, toIdx) {
   const moved = IMAGES.splice(fromIdx, 1)[0];
   IMAGES.splice(toIdx, 0, moved);
   const orderedIds = IMAGES.map(img => img.id);
-  await fetch(`/api/post/${POST_ID}/reorder/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({order: orderedIds})
-  });
+  await apiPost(`/api/post/${POST_ID}/reorder/`, {order: orderedIds});
   const strip = document.getElementById('filmstrip');
   const items = [...strip.querySelectorAll('.filmstrip-item')];
   const el = items.splice(fromIdx, 1)[0];
@@ -1879,12 +1867,7 @@ function hideDetailSug() { const el = document.getElementById('detail-search-sug
 // Tap the '+' on a post tag: add it to the CURRENT search (preserving sort/
 // rating/fav/folder filters) and navigate there immediately.
 function addTagToSearch(name, neg) {
-  const want = neg ? '-' + name : name, opp = neg ? name : '-' + name;
-  const p = new URLSearchParams(SEARCH_QS);
-  const tags = p.getAll('tag').filter(t => t !== opp);     // + and - swap instead of stacking
-  if (!tags.includes(want)) tags.push(want);
-  p.delete('tag'); tags.forEach(t => p.append('tag', t));
-  p.delete('page');
+  const p = withTagToggled(SEARCH_QS, name, neg);
   if (typeof pushRecentSearch !== 'undefined') pushRecentSearch(p.getAll('tag').join(' '));
   if (typeof startProgress !== 'undefined') startProgress();
   window.location.href = '/?' + p.toString();
@@ -2174,34 +2157,16 @@ function toggleInfoPanel(force) {
   document.getElementById('info-panel').classList.toggle('open', infoPanelOpen);
   document.querySelectorAll('.mob-info-btn').forEach(b => b.textContent = infoPanelOpen ? 'x' : 'i');
 }
-// drag handle to close
-(function() {
-  const handle = document.getElementById('info-handle');
-  if (!handle) return;
-  let startY=0, dragging=false;
-  handle.addEventListener('touchstart', e=>{startY=e.touches[0].clientY;dragging=true;},{passive:true});
-  handle.addEventListener('touchmove',  e=>{if(dragging&&e.touches[0].clientY-startY>30){toggleInfoPanel(false);dragging=false;}},{passive:true});
-  handle.addEventListener('click', ()=>toggleInfoPanel(false));
-})();
-// drag DOWN anywhere on the panel — only when its content is scrolled to the
-// top — dismisses it (same feel as swiping a post down to go back).
+// drag handle to close; drag DOWN anywhere on the panel — only when its content
+// is scrolled to the top — dismisses it (same feel as swiping a post down to go back).
 (function() {
   const panel = document.getElementById('info-panel');
-  if (!panel) return;
-  let startY=0, atTop=false, tracking=false;
-  panel.addEventListener('touchstart', e=>{
-    if (e.touches.length !== 1) { tracking=false; return; }
-    startY = e.touches[0].clientY;
-    atTop  = panel.scrollTop <= 0;
-    tracking = true;
-  }, {passive:true});
-  panel.addEventListener('touchmove', e=>{
-    if (!tracking || e.touches.length !== 1) return;
-    if (panel.scrollTop > 0) { atTop = false; return; }
-    const dy = e.touches[0].clientY - startY;
-    if (atTop && dy > 70 && infoPanelOpen) { toggleInfoPanel(false); tracking = false; }
-  }, {passive:true});
-  panel.addEventListener('touchend', ()=>{ tracking=false; }, {passive:true});
+  const handle = document.getElementById('info-handle');
+  if (handle) {
+    attachDragDismiss(handle, () => toggleInfoPanel(false), {scroller: null, dist: 30});
+    handle.addEventListener('click', () => toggleInfoPanel(false));
+  }
+  attachDragDismiss(panel, () => toggleInfoPanel(false), {enabled: () => infoPanelOpen});
 })();
 
 /* ── Rating ─────────────────────────────────────────────── */
@@ -2210,20 +2175,14 @@ let currentFav    = {{ post.fav|yesno:"true,false" }};
 
 async function setRating(n) {
   currentRating = (currentRating===n) ? 0 : n;
-  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({rating:currentRating, fav:currentFav})
-  })).json();
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:currentRating, fav:currentFav})).json();
   currentRating = d.rating;
   document.querySelectorAll('.star-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.v)<=currentRating));
   syncMobRatePop();
 }
 async function toggleFav() {
   currentFav = !currentFav;
-  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({rating:currentRating, fav:currentFav})
-  })).json();
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:currentRating, fav:currentFav})).json();
   currentFav = d.fav;
   document.getElementById('fav-btn')?.classList.toggle('active', currentFav);
   document.getElementById('mob-fav-btn')?.classList.toggle('fav-active', currentFav);
@@ -2240,10 +2199,7 @@ function mobRate(n) { setRating(n); }
 async function mobClear() {
   currentRating = 0;
   currentFav    = false;
-  const d = await (await fetch(`/api/post/${POST_ID}/rate/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({rating:0, fav:false})
-  })).json();
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:0, fav:false})).json();
   currentRating = d.rating;
   currentFav    = d.fav;
   document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
@@ -2255,10 +2211,7 @@ function mobFav()   { toggleFav(); }
 /* ── Delete post ─────────────────────────────────────────── */
 async function doDeletePost(alsoFiles) {
   if (!confirm(alsoFiles ? 'Delete ALL files of this post?' : 'Remove from library (keep files)?')) return;
-  await fetch(`/api/post/${POST_ID}/delete/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({delete_file:alsoFiles})
-  });
+  await apiPost(`/api/post/${POST_ID}/delete/`, {delete_file:alsoFiles});
   if (nextId) window.location.href = `/post/${nextId}/${navSuffix}`;
   else if (prevId) window.location.href = `/post/${prevId}/${navSuffix}`;
   else window.location.href = '/' + (tagSuffix ? tagSuffix : '');
@@ -2269,10 +2222,7 @@ async function deleteCurrentImage(alsoFile) {
   if (IMAGES.length<=1) { toast('use delete post to remove the last image','err'); return; }
   if (!confirm(alsoFile ? 'Delete file?' : 'Remove image from post?')) return;
   const img = IMAGES[currentImgIdx];
-  const r = await fetch(`/api/image/${img.id}/delete/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({delete_file:alsoFile})
-  });
+  const r = await apiPost(`/api/image/${img.id}/delete/`, {delete_file:alsoFile});
   if ((await r.json()).ok) { toast('removed'); location.reload(); }
 }
 async function splitCurrentImage() {
@@ -2293,10 +2243,7 @@ async function mergeInto() {
   if (!targetId || isNaN(targetId)) { toast('enter a valid post ID','err'); return; }
   if (!confirm(`Merge this post (#${POST_ID}) into post #${targetId}?\nThis post will be deleted after merge.`)) return;
   startProgress();
-  const r = await fetch('/api/merge/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({target: targetId, sources: [POST_ID]})
-  });
+  const r = await apiPost('/api/merge/', {target: targetId, sources: [POST_ID]});
   const d = await r.json();
   doneProgress();
   if (d.ok) { toast(`merged into post #${d.post_id}`); window.location.href = `/post/${d.post_id}/${navSuffix}`; }
@@ -2356,7 +2303,7 @@ async function loadNotDupes() {
     </div>`).join('');
 }
 async function removeNotDupe(otherId, btn) {
-  await fetch('/api/not-dupe/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({a:POST_ID,b:otherId,undo:true})});
+  await apiPost('/api/not-dupe/', {a:POST_ID,b:otherId,undo:true});
   btn.closest('div').remove();
   const list = document.getElementById('not-dupe-list');
   if (!list.children.length) document.getElementById('not-dupe-section').style.display='none';
@@ -2364,10 +2311,7 @@ async function removeNotDupe(otherId, btn) {
 
 /* ── Tagging ─────────────────────────────────────────────── */
 async function apiTag(action, tag, category) {
-  const d = await (await fetch(`/api/post/${POST_ID}/tag/`, {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({action, tag, category})
-  })).json();
+  const d = await (await apiPost(`/api/post/${POST_ID}/tag/`, {action, tag, category})).json();
   renderTags(d.tags);
   if (typeof renderPostQuickTags !== 'undefined') renderPostQuickTags();
 }
@@ -2502,7 +2446,7 @@ async function quickToggleFolder(id, isIn) {
 }
 function openQuickTagSheet() {
   document.body.style.overflow = 'hidden';
-  document.getElementById('quick-tag-backdrop').classList.add('open');
+  openModal('quick-tag-backdrop');
   document.getElementById('quick-tag-input').value = '';
   hideQuickTagSuggestions();
   // populate after opening — a slow/failed /api/folders/ or fav-tags fetch must
@@ -2511,7 +2455,7 @@ function openQuickTagSheet() {
   renderQuickFolderSheet().catch(() => {});
 }
 function closeQuickTagSheet() {
-  document.getElementById('quick-tag-backdrop').classList.remove('open');
+  closeModal('quick-tag-backdrop');
   hideQuickTagSuggestions();
   document.body.style.overflow = '';
 }
@@ -2606,7 +2550,7 @@ document.addEventListener('click', e => {
 async function aiTag() {
   const btn=document.getElementById('ai-btn'); btn.disabled=true; btn.textContent='tagging...';
   startProgress();
-  const d=await(await fetch(`/api/post/${POST_ID}/ai-tag/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}})).json();
+  const d=await(await apiPost(`/api/post/${POST_ID}/ai-tag/`)).json();
   doneProgress();
   btn.disabled=false; btn.textContent='ai auto-tag';
   if(d.ok){
@@ -2623,7 +2567,7 @@ async function tagCharacters() {
   const btn=document.getElementById('chars-btn'); btn.disabled=true; btn.textContent='tagging...';
   startProgress();
   try {
-    const r=await fetch(`/api/post/${POST_ID}/tag-characters/`,{method:'POST',headers:{'X-CSRFToken':getCsrf()}});
+    const r=await apiPost(`/api/post/${POST_ID}/tag-characters/`);
     const d=await r.json();
     doneProgress();
     if(d.ok){toast(d.characters.length ? `characters: ${d.characters.join(', ')}` : 'no characters recognised');location.reload();}
@@ -2665,9 +2609,7 @@ async function regenThumb() {
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   startProgress();
   try {
-    const d = await (await fetch(`/api/photo/${img.id}/regen-thumb/`,
-      {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-       body: JSON.stringify({pct})})).json();
+    const d = await (await apiPost(`/api/photo/${img.id}/regen-thumb/`, {pct})).json();
     doneProgress();
     if (d.ok) {
       toast(img.is_video ? `thumbnail set to ${pct}%` : 'thumbnail regenerated');
@@ -2682,10 +2624,7 @@ function saveGifFps() {
   const v = parseFloat(document.getElementById('gif-fps').value);
   if (!v || v <= 0) return;
   try {
-    fetch('/api/pref/set/', {
-      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({key:'gifFps', value:v})
-    }).catch(()=>{});
+    apiPost('/api/pref/set/', {key:'gifFps', value:v}).catch(()=>{});
   } catch(e) {}
 }
 // adopt the cross-device default fps, if one was ever saved
@@ -2703,10 +2642,7 @@ async function postToGif() {
   const btn = document.getElementById('gif-btn');
   if (btn) { btn.disabled = true; btn.textContent = '\u2026'; }
   try {
-    await fetch(`/api/post/${POST_ID}/to-gif/`, {
-      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({fps})
-    });
+    await apiPost(`/api/post/${POST_ID}/to-gif/`, {fps});
     toast('building gif in the background\u2026');
     if (typeof pollTasks !== 'undefined') pollTasks(true);
   } catch(e) { toast('could not start gif build','err'); }
@@ -2972,7 +2908,7 @@ function openAiEditFor(photoId, preset) {
   const den = aeEl('aiedit-den'); delete den.dataset.touched;
   if (preset && preset.den) { den.value = preset.den; den.dataset.touched = '1'; aeEl('aiedit-den-val').textContent = (+preset.den).toFixed(2); }
   document.body.style.overflow = 'hidden';
-  aeEl('aiedit-backdrop').classList.add('open');
+  openModal('aiedit-backdrop');
   aiEditLoadStatus();
   if (preset && preset.loras && preset.loras.length) aiLoraRestore(preset.loras);
   else aiLoraDetect(true);                  // characters in the picture → suggestions right away
@@ -3062,7 +2998,7 @@ function aiEditBody() {
   return b;
 }
 async function aiEditPost(url, body) {
-  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()}, body: JSON.stringify(body)});
+  const r = await apiPost(url, body);
   let d = {}; try { d = await r.json(); } catch (e) {}
   return {status: r.status, d};
 }

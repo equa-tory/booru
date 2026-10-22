@@ -377,7 +377,7 @@ body.select-mode .scroll-fabs { display:none; }
       <button class="btn" onclick="bulkVideoThumb()">&#9654; vid thumb&nbsp;%</button>
       <button class="btn" onclick="bulkRegenThumb()" title="re-render the cover thumbnail of the selected picture/gif/pdf posts">&#8635; pic thumbs</button>
     </div>
-    <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-rate-modal').classList.remove('open')">cancel</button></div>
+    <div style="text-align:right;"><button class="btn" onclick="closeModal('bulk-rate-modal')">cancel</button></div>
   </div>
 </div>
 
@@ -393,7 +393,7 @@ body.select-mode .scroll-fabs { display:none; }
       <button class="btn" onclick="bulkMerge()">&#9135; queue group</button>
       <button class="btn primary" onclick="finalizeMergeQueue()" id="merge-go-btn">&#8694; merge now</button>
     </div>
-    <div style="text-align:right;"><button class="btn" onclick="document.getElementById('bulk-merge-modal').classList.remove('open')">close</button></div>
+    <div style="text-align:right;"><button class="btn" onclick="closeModal('bulk-merge-modal')">close</button></div>
   </div>
 </div>
 
@@ -420,7 +420,7 @@ body.select-mode .scroll-fabs { display:none; }
       <label style="display:flex;align-items:center;gap:.5rem;font-size:.82rem;cursor:pointer;" id="teach-tagrow"><input type="checkbox" id="teach-also" checked style="accent-color:var(--accent);width:16px;height:16px;"> also tag these posts now</label>
     </div>
     <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem;">
-      <button class="btn" onclick="document.getElementById('teach-modal').classList.remove('open')">cancel</button>
+      <button class="btn" onclick="closeModal('teach-modal')">cancel</button>
       <button class="btn primary" onclick="doTeach()">save examples</button>
     </div>
   </div>
@@ -742,12 +742,7 @@ function tagLinkGo(e, a) {
   return false;
 }
 function addTagToSearch(name, neg) {
-  const want = neg ? '-' + name : name, opp = neg ? name : '-' + name;
-  const p = new URLSearchParams(window.location.search);
-  const tags = p.getAll('tag').filter(t => t !== opp);
-  if (!tags.includes(want)) tags.push(want);
-  p.delete('tag'); p.delete('page');
-  tags.forEach(t => p.append('tag', t));
+  const p = withTagToggled(window.location.search, name, neg);
   if (typeof startProgress !== 'undefined') startProgress();
   window.location.href = '/?' + p.toString();
 }
@@ -920,7 +915,7 @@ document.addEventListener('click', e => {
 
 // ── Tag fav ───────────────────────────────────────────────────
 async function toggleTagFav(name, btn) {
-  const r = await fetch(`/api/tag/${encodeURIComponent(name)}/fav/`, {method:'POST',headers:{'X-CSRFToken':getCsrf()}});
+  const r = await apiPost(`/api/tag/${encodeURIComponent(name)}/fav/`);
   const d = await r.json();
   btn.classList.toggle('active', d.fav);
   toast(d.fav ? `♥ ${name} pinned` : `${name} unpinned`);
@@ -1102,7 +1097,7 @@ function openBulkTag(action) {
   document.getElementById('bulk-tag-input').value = '';
   hideBulkSuggestions();
   renderRecentBulkTags();
-  document.getElementById('bulk-modal').classList.add('open');
+  openModal('bulk-modal');
   setTimeout(() => document.getElementById('bulk-tag-input').focus(), 100);
 }
 // Switches the modal between "add tag" and "remove tag" without closing it —
@@ -1113,12 +1108,12 @@ function setBulkTagAction(action) {
   document.getElementById('bulk-tag-mode-add').classList.toggle('active', action==='add');
   document.getElementById('bulk-tag-mode-remove').classList.toggle('active', action==='remove');
 }
-function closeBulkModal() { document.getElementById('bulk-modal').classList.remove('open'); hideBulkSuggestions(); }
+function closeBulkModal() { closeModal('bulk-modal'); hideBulkSuggestions(); }
 async function doBulkTag() {
   const tag = document.getElementById('bulk-tag-input').value.trim();
   const cat = document.getElementById('bulk-tag-cat').value;
   if (!tag) return;
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:bulkTagAction+'_tag',tag,category:cat})});
+  await apiPost('/api/bulk/', {ids:[...selectedIds],action:bulkTagAction+'_tag',tag,category:cat});
   if (bulkTagAction === 'add') pushRecentTag(tag, cat);
   closeBulkModal(); toast(`${bulkTagAction==='add'?'added':'removed'} "${tag}" on ${selectedIds.size} posts`);
   finishBulkAction();
@@ -1185,18 +1180,18 @@ function onBulkTagKey(e) {
 }
 function openBulkRate() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
-  document.getElementById('bulk-rate-modal').classList.add('open');
+  openModal('bulk-rate-modal');
 }
 async function doBulkRate(rating) {
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'rate',rating})});
-  document.getElementById('bulk-rate-modal').classList.remove('open');
+  await apiPost('/api/bulk/', {ids:[...selectedIds],action:'rate',rating});
+  closeModal('bulk-rate-modal');
   toast(`rated ${selectedIds.size} posts`);
   finishBulkAction();
 }
 async function bulkFav(fav) {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'fav',fav})});
-  document.getElementById('bulk-rate-modal').classList.remove('open');
+  await apiPost('/api/bulk/', {ids:[...selectedIds],action:'fav',fav});
+  closeModal('bulk-rate-modal');
   toast(`${fav?'favorited':'unfavorited'} ${selectedIds.size} posts`);
   finishBulkAction();
 }
@@ -1208,7 +1203,7 @@ async function bulkFav(fav) {
 function bulkMerge() {
   if (selectedIds.size < 2) { toast('select at least 2 posts to merge','err'); return; }
   mergeQueue.push([...selectedIds].map(Number));
-  document.getElementById('bulk-merge-modal').classList.remove('open');
+  closeModal('bulk-merge-modal');
   // clear current selection visually, keep building next group
   document.querySelectorAll('.photo-card.selected').forEach(c => c.classList.remove('selected'));
   selectedIds.clear(); lastClickedIdx = null;
@@ -1218,13 +1213,13 @@ function bulkMerge() {
 
 function openBulkMerge() {
   if (!selectedIds.size && !mergeQueue.length) { toast('select at least 2 posts to merge','err'); return; }
-  document.getElementById('bulk-merge-modal').classList.add('open');
+  openModal('bulk-merge-modal');
 }
 
 async function finalizeMergeQueue() {
   // include any still-selected group
   if (selectedIds.size >= 2) mergeQueue.push([...selectedIds].map(Number));
-  document.getElementById('bulk-merge-modal').classList.remove('open');
+  closeModal('bulk-merge-modal');
   if (!mergeQueue.length) return;
   if (!confirm(`Merge ${mergeQueue.length} group(s) in the background?\nEach group's first post becomes the target. You can keep using (or close) the site while it runs.`)) {
     mergeQueue = []; return;
@@ -1232,10 +1227,7 @@ async function finalizeMergeQueue() {
   const groups = mergeQueue.filter(g => g.length >= 2);
   mergeQueue = [];
   try {
-    await fetch('/api/merge-bg/', {
-      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({groups})
-    });
+    await apiPost('/api/merge-bg/', {groups});
     toast(`merging ${groups.length} group(s) in the background…`);
     if (typeof pollTasks !== 'undefined') pollTasks(true);
     // leave select mode; the task panel shows progress
@@ -1251,12 +1243,9 @@ async function bulkVideoThumb() {
   const pct = Math.max(0, Math.min(100, parseFloat(ans) || 0));
   localStorage.setItem('videoThumbPct', String(pct));
   startProgress();
-  const d = await (await fetch('/api/bulk-video-thumb/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({ids:[...selectedIds], pct})
-  })).json();
+  const d = await (await apiPost('/api/bulk-video-thumb/', {ids:[...selectedIds], pct})).json();
   doneProgress();
-  document.getElementById('bulk-rate-modal').classList.remove('open');
+  closeModal('bulk-rate-modal');
   toast(`updated ${d.updated||0} video thumbnail(s) to ${pct}%`);
   finishBulkAction(!!d.updated);
 }
@@ -1273,7 +1262,7 @@ async function openTeach() {
   document.getElementById('teach-hint').textContent =
     `${selectedIds.size} selected post(s). Mark posts that show the thing you want it to learn (use 10+, ideally 30+, varied examples) — and posts that wrongly got the tag as "don't". ` +
     (d.ready ? 'Then press "train" for it in Settings → My model.' : 'You still need to clone the default model (Settings → AI models / My model) before training.');
-  document.getElementById('teach-modal').classList.add('open');
+  openModal('teach-modal');
   document.getElementById('teach-name').focus();
 }
 function teachNameChanged() {
@@ -1286,12 +1275,11 @@ async function doTeach() {
   const label = parseInt(document.querySelector('input[name="teach-label"]:checked').value, 10);
   startProgress();
   try {
-    const r = await fetch('/api/custom/examples/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({ids:[...selectedIds], concept:name, label, category: document.getElementById('teach-cat').value, also_tag: document.getElementById('teach-also').checked})});
+    const r = await apiPost('/api/custom/examples/', {ids:[...selectedIds], concept:name, label, category: document.getElementById('teach-cat').value, also_tag: document.getElementById('teach-also').checked});
     const d = await r.json();
     doneProgress();
     if (!r.ok) { toast(d.error || 'could not save', 'err'); return; }
-    document.getElementById('teach-modal').classList.remove('open');
+    closeModal('teach-modal');
     toast(`“${d.concept}”: ${label > 0 ? '+' : '−'}${d.examples} example(s) saved · now ${d.pos} yes / ${d.neg} no` + (d.untagged ? ` · tag removed from ${d.untagged}` : ''));
     finishBulkAction(!!(d.tagged || d.untagged));
   } catch(e) { doneProgress(); toast('could not save', 'err'); }
@@ -1302,12 +1290,9 @@ async function bulkRegenThumb() {
   if (!confirm(`Re-render the cover thumbnail of the ${selectedIds.size} selected post(s)?\nPictures, gifs and pdfs only — video covers are skipped (use "vid thumb %").`)) return;
   startProgress();
   try {
-    const d = await (await fetch('/api/bulk-regen-thumb/', {
-      method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-      body: JSON.stringify({ids:[...selectedIds]})
-    })).json();
+    const d = await (await apiPost('/api/bulk-regen-thumb/', {ids:[...selectedIds]})).json();
     doneProgress();
-    document.getElementById('bulk-rate-modal').classList.remove('open');
+    closeModal('bulk-rate-modal');
     let msg = `regenerated ${d.updated||0} thumbnail(s)`;
     if (d.failed) msg += `, ${d.failed} failed (file missing?)`;
     if (d.skipped_videos) msg += `, ${d.skipped_videos} video(s) skipped`;
@@ -1320,7 +1305,7 @@ async function bulkDelete() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   const alsoFile = confirm(`Delete ${selectedIds.size} posts from disk too?\n\nOK = delete files\nCancel = DB only`);
   startProgress();
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'delete',delete_file:alsoFile})});
+  await apiPost('/api/bulk/', {ids:[...selectedIds],action:'delete',delete_file:alsoFile});
   doneProgress();
   toast(`deleted ${selectedIds.size} posts`);
   finishBulkAction();
@@ -1334,7 +1319,7 @@ async function bulkRemoveFromFolder() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   const folderId = new URLSearchParams(location.search).get('folder');
   if (!folderId) return;
-  await fetch('/api/bulk/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},body:JSON.stringify({ids:[...selectedIds],action:'remove_from_folder',folder_id:folderId})});
+  await apiPost('/api/bulk/', {ids:[...selectedIds],action:'remove_from_folder',folder_id:folderId});
   toast(`removed ${selectedIds.size} posts from folder`);
   finishBulkAction();
 }

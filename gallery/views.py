@@ -36,6 +36,20 @@ _LEN_RE = re.compile(r'^(?:length|len|duration):(>=|<=|>|<)?(\d+(?:\.\d+)?)([sm]
 _LEN_RANGE_RE = re.compile(r'^(?:length|len|duration):(\d+(?:\.\d+)?)([sm])?-(\d+(?:\.\d+)?)([sm])?$', re.I)
 
 
+def _err(message, status=400):
+    """JSON error response; `ok: False` is included so both `d.ok` and `d.error` checks work."""
+    return JsonResponse({'ok': False, 'error': message}, status=status)
+
+
+def _json_body(request):
+    """The JSON object in the request body ({} when empty, malformed or not an object)."""
+    try:
+        data = json.loads(request.body or '{}')
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
 def _is_length_term(t):
     t = t.lstrip('-')
     return bool(_LEN_RE.match(t) or _LEN_RANGE_RE.match(t))
@@ -428,13 +442,14 @@ def index(request):
     # Sidebar tags: a fair, random sample instead of "top N by category rank"
     # (which let ~850 character tags push every general/ai tag out of the list).
     if q_tags:
-        from django.db.models import Count
-        post_ids = posts.values_list('id', flat=True)
-        cand = (Tag.objects
-            .filter(posts__id__in=post_ids)
-            .annotate(filtered_count=Count('posts', distinct=True))
-            .filter(filtered_count__gt=0)
-            .values_list('id', 'category', 'fav', 'filtered_count'))
+        # count on the post<->tag table and look the categories up afterwards: the same
+        # numbers as annotating Tag with Count('posts', distinct=True), ~3x faster
+        counts = {r['tag_id']: r['n'] for r in
+                  Post.tags.through.objects.filter(post_id__in=posts.values_list('id', flat=True))
+                  .order_by().values('tag_id').annotate(n=Count('post_id'))}
+        meta = {i: (cat, fav) for i, cat, fav in
+                Tag.objects.filter(id__in=list(counts)).values_list('id', 'category', 'fav')}
+        cand = [(i, meta[i][0], meta[i][1], n) for i, n in counts.items() if i in meta]
     else:
         cand = Tag.objects.filter(count__gt=0).values_list('id', 'category', 'fav', 'count')
     cand = list(cand)
@@ -626,9 +641,9 @@ def net_path_api(request):
     """GET -> {saved, auto, effective}; POST {prefix} saves it ('' = automatic)."""
     if request.method == 'POST':
         try:
-            _set_pref('netPathPrefix', str(json.loads(request.body or '{}').get('prefix', '')).strip())
+            _set_pref('netPathPrefix', str(_json_body(request).get('prefix', '')).strip())
         except ValueError:
-            return JsonResponse({'error': 'bad json'}, status=400)
+            return _err('bad json')
     return JsonResponse({'saved': str(_pref('netPathPrefix', '') or ''), 'auto': _auto_net_prefix(request),
                          'effective': _net_prefix(request), 'example': _net_path(os.path.join(str(settings.MEDIA_ROOT), 'inbox', 'a', 'b.jpg'), request)})
 
@@ -1033,10 +1048,10 @@ def _merge_one_group(group):
 @require_POST
 def merge_bg(request):
     """Merge many groups in the background. body: {groups: [[target, src,…], …]}"""
-    data = json.loads(request.body)
+    data = _json_body(request)
     groups = [g for g in data.get('groups', []) if len(g) >= 2]
     if not groups:
-        return JsonResponse({'error': 'no groups'}, status=400)
+        return _err('no groups')
 
     def work(task):
         import time as _t
@@ -1141,9 +1156,9 @@ def post_to_gif_bg(request, pk):
     minutes, well past what a plain request should hold open."""
     post = get_object_or_404(Post, pk=pk)
     if post.image_count < 2:
-        return JsonResponse({'error': 'post needs at least 2 images'}, status=400)
+        return _err('post needs at least 2 images')
     try:
-        fps = float(json.loads(request.body or '{}').get('fps') or 2)
+        fps = float(_json_body(request).get('fps') or 2)
     except (ValueError, TypeError):
         fps = 2.0
 
@@ -1372,13 +1387,13 @@ def upload(request):
 @require_POST
 def tag_post(request, pk):
     post     = get_object_or_404(Post, pk=pk)
-    data     = json.loads(request.body)
+    data     = _json_body(request)
     action   = data.get('action', 'add')
     tag_name = data.get('tag', '').strip().lower().replace(' ', '_')
     category = data.get('category', 'general')
 
     if not tag_name:
-        return JsonResponse({'error': 'empty tag'}, status=400)
+        return _err('empty tag')
 
     if action == 'add':
         add_tags_to_post(post, [tag_name], category)
@@ -1397,7 +1412,7 @@ def tag_post(request, pk):
    # @require_POST
    # def tag_post(request, pk):
    #     post     = get_object_or_404(Post, pk=pk)
-   #     data     = json.loads(request.body)
+   #     data     = _json_body(request)
    #     action   = data.get('action', 'add')
    #     tag_name = data.get('tag', '').strip().lower().replace(' ', '_')
    #     category = data.get('category', 'general')
@@ -1423,7 +1438,7 @@ def tag_post(request, pk):
 @require_POST
 def rate_post(request, pk):
     post   = get_object_or_404(Post, pk=pk)
-    data   = json.loads(request.body)
+    data   = _json_body(request)
     rating = data.get('rating', None)
     fav    = data.get('fav', None)
     fields = []
@@ -1448,7 +1463,7 @@ def rate_post(request, pk):
 @require_POST
 def delete_post_view(request, pk):
     post      = get_object_or_404(Post, pk=pk)
-    also_file = json.loads(request.body).get('delete_file', False)
+    also_file = _json_body(request).get('delete_file', False)
     delete_post(post, also_files=also_file)
     return JsonResponse({'ok': True})
 
@@ -1459,19 +1474,19 @@ def ai_tag_post(request, pk):
     try:
         res = apply_ai_tags(post)
         if res is None:
-            return JsonResponse({'error': 'no images', 'ok': False}, status=400)
+            return _err('no images')
         return JsonResponse({'tags': res['general'] + res['character'] + [n for n, _p in res.get('learned', [])],
                              'characters': res['character'], 'learned': [n for n, _p in res.get('learned', [])],
                              'model': res.get('model', 'wd14'), 'ok': True})
     except Exception as e:
-        return JsonResponse({'error': str(e), 'ok': False}, status=500)
+        return _err(str(e), 500)
 
 
 # ── Bulk actions (operate on posts) ───────────────────────────
 
 @require_POST
 def bulk_action(request):
-    data   = json.loads(request.body)
+    data   = _json_body(request)
     ids    = data.get('ids', [])
     action = data.get('action', '')
     posts  = Post.objects.filter(id__in=ids)
@@ -1480,7 +1495,7 @@ def bulk_action(request):
         tag_name = data.get('tag', '').strip().lower().replace(' ', '_')
         category = data.get('category', 'general')
         if not tag_name:
-            return JsonResponse({'error': 'empty tag'}, status=400)
+            return _err('empty tag')
         for post in posts:
             add_tags_to_post(post, [tag_name], category)
         return JsonResponse({'ok': True})
@@ -1514,7 +1529,7 @@ def bulk_action(request):
         try:
             folder = Folder.objects.get(pk=data.get('folder_id'), is_smart=False)
         except Folder.DoesNotExist:
-            return JsonResponse({'error': 'folder not found'}, status=404)
+            return _err('folder not found', 404)
         folder.posts.add(*posts)
         return JsonResponse({'ok': True})
 
@@ -1522,27 +1537,27 @@ def bulk_action(request):
         try:
             folder = Folder.objects.get(pk=data.get('folder_id'), is_smart=False)
         except Folder.DoesNotExist:
-            return JsonResponse({'error': 'folder not found'}, status=404)
+            return _err('folder not found', 404)
         folder.posts.remove(*posts)
         return JsonResponse({'ok': True})
 
-    return JsonResponse({'error': 'unknown action'}, status=400)
+    return _err('unknown action')
 
 
 @require_POST
 def folder_create(request):
-    data      = json.loads(request.body)
+    data      = _json_body(request)
     name      = data.get('name', '').strip()
     is_smart  = bool(data.get('is_smart', False))
     query     = data.get('query', '').strip() if is_smart else ''
     parent_id = data.get('parent_id')
     if not name:
-        return JsonResponse({'error': 'name required'}, status=400)
+        return _err('name required')
     parent = None
     if parent_id:
         parent = Folder.objects.filter(pk=parent_id).first()
         if not parent:
-            return JsonResponse({'error': 'parent folder not found'}, status=404)
+            return _err('parent folder not found', 404)
     folder = Folder.objects.create(name=name, is_smart=is_smart, query=query, parent=parent)
     return JsonResponse({'id': folder.id, 'name': folder.name, 'is_smart': folder.is_smart,
                           'query': folder.query, 'parent_id': folder.parent_id})
@@ -1558,10 +1573,10 @@ def folder_delete(request, pk):
 
 @require_POST
 def folder_rename(request, pk):
-    data = json.loads(request.body)
+    data = _json_body(request)
     name = data.get('name', '').strip()
     if not name:
-        return JsonResponse({'error': 'name required'}, status=400)
+        return _err('name required')
     folder = get_object_or_404(Folder, pk=pk)
     folder.name = name
     folder.save(update_fields=['name'])
@@ -1571,7 +1586,7 @@ def folder_rename(request, pk):
 @require_POST
 def folder_set_subfolders(request, pk):
     """Toggle whether opening this folder also shows its descendant folders' posts."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     folder = get_object_or_404(Folder, pk=pk)
     folder.include_subfolders = bool(data.get('include_subfolders'))
     folder.save(update_fields=['include_subfolders'])
@@ -1922,7 +1937,7 @@ def delete_photo_view(request, pk):
     """Delete a single image from a post (not the whole post)."""
     from .models import Photo as P
     photo     = get_object_or_404(P, pk=pk)
-    also_file = json.loads(request.body).get('delete_file', False)
+    also_file = _json_body(request).get('delete_file', False)
     post      = photo.post
     if also_file and os.path.exists(photo.file_path):
         try: os.remove(photo.file_path)
@@ -1952,7 +1967,7 @@ def random_post(request):
     posts, q_tags, _, __, ___ = _build_post_qs(request)
     ids = list(posts.values_list('id', flat=True))
     if not ids:
-        return JsonResponse({'error': 'no posts'}, status=404)
+        return _err('no posts', 404)
     pk = random.choice(ids)
     # Carry the FULL filter set (tags, rating, fav, sort, ...) into the post
     # page's query string, not just tags — otherwise a second "random" press
@@ -1972,11 +1987,11 @@ def merge_posts(request):
     """Merge one or more posts into a target post, then move all files into
     a single folder under inbox/_/<first_file_name>/."""
     from .utils import move_post_to_folder
-    data      = json.loads(request.body)
+    data      = _json_body(request)
     target_id = data.get('target')
     source_ids = [i for i in data.get('sources', []) if i != target_id]
     if not target_id or not source_ids:
-        return JsonResponse({'error': 'need target and sources'}, status=400)
+        return _err('need target and sources')
     target = get_object_or_404(Post, pk=target_id)
     max_order = target.images.count()
     merged = 0
@@ -2152,7 +2167,7 @@ def split_image(request, pk):
     photo = get_object_or_404(Photo, pk=pk)
     post  = photo.post
     if not post or post.images.count() <= 1:
-        return JsonResponse({'error': 'cannot split last image'}, status=400)
+        return _err('cannot split last image')
     new_post = Post.objects.create(title=photo.filename)
     photo.post  = new_post
     photo.order = 0
@@ -2170,14 +2185,14 @@ def split_images_to_one(request):
     """Move several selected images out of their post into a SINGLE new post
     (keeps them grouped together rather than scattering them into one post
     each)."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     ids  = [int(i) for i in data.get('ids', [])]
     if not ids:
-        return JsonResponse({'error': 'no images selected'}, status=400)
+        return _err('no images selected')
 
     photos = list(Photo.objects.filter(pk__in=ids).select_related('post'))
     if not photos:
-        return JsonResponse({'error': 'images not found'}, status=404)
+        return _err('images not found', 404)
 
     # Source post = the post the selection currently lives in. Don't allow
     # emptying a post completely (that would orphan it) — leave at least one.
@@ -2210,14 +2225,14 @@ def split_images_to_separate(request):
     """Move several selected images out of their post, each into its OWN new
     post (one post per image), as opposed to split-to-one which groups them.
     Leaves at least one image in the source post."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     ids  = [int(i) for i in data.get('ids', [])]
     if not ids:
-        return JsonResponse({'error': 'no images selected'}, status=400)
+        return _err('no images selected')
 
     photos = list(Photo.objects.filter(pk__in=ids).select_related('post'))
     if not photos:
-        return JsonResponse({'error': 'images not found'}, status=404)
+        return _err('images not found', 404)
 
     source = photos[0].post
     if source:
@@ -2247,7 +2262,7 @@ def split_images_to_separate(request):
 def reorder_images(request, pk):
     """Reorder images within a post."""
     post    = get_object_or_404(Post, pk=pk)
-    data    = json.loads(request.body)
+    data    = _json_body(request)
     ordered = data.get('order', [])  # list of photo IDs in new order
     for i, photo_id in enumerate(ordered):
         Photo.objects.filter(pk=photo_id, post=post).update(order=i)
@@ -2256,7 +2271,7 @@ def reorder_images(request, pk):
 
 def mark_not_dupe(request):
     """Mark two posts as not duplicates of each other."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     id_a = data.get('a')
     id_b = data.get('b')
     undo = data.get('undo', False)
@@ -2269,7 +2284,7 @@ def mark_not_dupe(request):
             post_a.not_dupes.add(post_b)
         return JsonResponse({'ok': True, 'ignored': not undo})
     except Post.DoesNotExist:
-        return JsonResponse({'error': 'post not found'}, status=404)
+        return _err('post not found', 404)
 
 
 @require_POST
@@ -2277,9 +2292,9 @@ def delete_image_from_post(request, pk):
     """Delete a single image from a multi-image post."""
     photo     = get_object_or_404(Photo, pk=pk)
     post      = photo.post
-    also_file = json.loads(request.body).get('delete_file', False)
+    also_file = _json_body(request).get('delete_file', False)
     if post and post.image_count <= 1:
-        return JsonResponse({'error': 'cannot delete last image — delete the post instead'}, status=400)
+        return _err('cannot delete last image — delete the post instead')
     if also_file and os.path.exists(photo.file_path):
         try: os.remove(photo.file_path)
         except OSError: pass
@@ -2347,7 +2362,7 @@ def regen_thumb(request, pk):
     For videos, an optional `pct` (0-100) picks which frame to grab."""
     photo = get_object_or_404(Photo, pk=pk)
     try:
-        pct = float(json.loads(request.body or '{}').get('pct', 0))
+        pct = float(_json_body(request).get('pct', 0))
     except Exception:
         pct = 0
     ok, err = _regen_photo_thumb(photo, pct)
@@ -2362,7 +2377,7 @@ def bulk_regen_thumb(request):
     """Regenerate the COVER thumbnail of each selected post whose cover is a
     picture (image / gif / pdf). Video covers are left to bulk_video_thumb,
     which also picks the frame (pct)."""
-    ids = json.loads(request.body or '{}').get('ids', [])
+    ids = _json_body(request).get('ids', [])
     updated = failed = skipped_videos = 0
     for post in Post.objects.filter(id__in=ids).prefetch_related('images'):
         cover = post.cover
@@ -2382,7 +2397,7 @@ def bulk_regen_thumb(request):
 def bulk_video_thumb(request):
     """Regenerate the COVER thumbnail of each selected post at a given video
     percentage. Only affects posts whose cover is a video."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     ids = data.get('ids', [])
     try:
         pct = float(data.get('pct', 0))
@@ -2442,12 +2457,12 @@ def tag_manage(request):
     """Edit a tag globally: rename (merge if target exists), delete, or change
     its category. The tag name is passed in the body to avoid URL-encoding
     issues with special characters."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     action = data.get('action')
     name   = (data.get('name') or '').strip()
     tag = Tag.objects.filter(name=name).first()
     if not tag:
-        return JsonResponse({'ok': False, 'error': 'tag not found'}, status=404)
+        return _err('tag not found', 404)
 
     if action == 'delete':
         tag.delete()      # M2M links cascade automatically
@@ -2456,7 +2471,7 @@ def tag_manage(request):
     if action == 'category':
         cat = data.get('category', 'general')
         if cat not in {'general', 'character', 'artist', 'meta', 'ai'}:
-            return JsonResponse({'ok': False, 'error': 'bad category'}, status=400)
+            return _err('bad category')
         tag.category = cat
         tag.save(update_fields=['category'])
         return JsonResponse({'ok': True})
@@ -2464,7 +2479,7 @@ def tag_manage(request):
     if action == 'rename':
         new_name = (data.get('new_name') or '').strip().lower().replace(' ', '_')
         if not new_name:
-            return JsonResponse({'ok': False, 'error': 'empty name'}, status=400)
+            return _err('empty name')
         if new_name == tag.name:
             return JsonResponse({'ok': True, 'merged': False, 'name': new_name})
         existing = Tag.objects.filter(name=new_name).first()
@@ -2479,7 +2494,7 @@ def tag_manage(request):
         tag.save(update_fields=['name'])
         return JsonResponse({'ok': True, 'merged': False, 'name': new_name})
 
-    return JsonResponse({'ok': False, 'error': 'bad action'}, status=400)
+    return _err('bad action')
 
 
 # ── Validate which post ids still exist (for the recent strip) ──
@@ -2518,14 +2533,14 @@ def _set_pref(key, value):
 
 @require_POST
 def set_pref(request):
-    data = json.loads(request.body)
+    data = _json_body(request)
     key, value = data.get('key'), data.get('value')
     if not key:
-        return JsonResponse({'error': 'no key'}, status=400)
+        return _err('no key')
     try:
         _set_pref(key, value)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return _err(str(e), 500)
     return JsonResponse({'ok': True})
 
 
@@ -2568,17 +2583,17 @@ def quick_links_api(request):
     links = _quick_links()
     if request.method == 'POST':
         try:
-            data = json.loads(request.body or '{}')
+            data = _json_body(request)
         except ValueError:
-            return JsonResponse({'error': 'bad json'}, status=400)
+            return _err('bad json')
         if 'remove' in data:
             try:
                 links.pop(int(data['remove']))
             except (ValueError, IndexError, TypeError):
-                return JsonResponse({'error': 'no such link'}, status=400)
+                return _err('no such link')
         added = parse_quick_links(data.get('add', ''))
         if data.get('add') and not added:
-            return JsonResponse({'error': 'no http(s) links found in that text'}, status=400)
+            return _err('no http(s) links found in that text')
         have = {l['url'] for l in links}
         links += [l for l in added if l['url'] not in have and not have.add(l['url'])]
         links = links[:QUICK_LINKS_MAX]
@@ -2638,13 +2653,13 @@ def post_tag_characters(request, pk):
     """Run the second (PixAI) character model on one post."""
     post = get_object_or_404(Post, pk=pk)
     if not char_tagger.model_ready():
-        return JsonResponse({'ok': False, 'error': 'character model not downloaded yet — settings → AI tagging'}, status=409)
+        return _err('character model not downloaded yet — settings → AI tagging', 409)
     try:
         names = apply_character_model(post)
     except Exception as e:
-        return JsonResponse({'ok': False, 'error': str(e)}, status=500)
+        return _err(str(e), 500)
     if names is None:
-        return JsonResponse({'ok': False, 'error': 'no images'}, status=400)
+        return _err('no images')
     return JsonResponse({'ok': True, 'characters': names})
 
 
@@ -2690,7 +2705,7 @@ def char_retag_start(request):
     is marked char_model='pixai', so the next run continues where this one
     stopped. Adds tags only — nothing is removed."""
     try:
-        limit = max(0, int(json.loads(request.body or '{}').get('limit') or 0))
+        limit = max(0, int(_json_body(request).get('limit') or 0))
     except (TypeError, ValueError):
         limit = 0
 
@@ -2759,9 +2774,9 @@ def custom_info(request):
 @require_POST
 def custom_clone(request):
     if custom_model.is_ready():
-        return JsonResponse({'error': 'already cloned — delete it first to re-clone'}, status=409)
+        return _err('already cloned — delete it first to re-clone', 409)
     if not ai_models.is_ready('wd14'):
-        return JsonResponse({'error': 'download the default model first'}, status=409)
+        return _err('download the default model first', 409)
 
     def work(task):
         def say(msg):
@@ -2783,23 +2798,23 @@ def custom_examples(request):
     """Teach by example. body: {ids:[post ids], concept, label: 1|-1, category?, also_tag?}
     +1: these posts show the concept (optionally also tag them now).
     -1: they do NOT (the tag is removed from them — how wrong auto-tags get corrected)."""
-    data = json.loads(request.body or '{}')
+    data = _json_body(request)
     name = _normalize_concept_name(data.get('concept'))
     label = 1 if int(data.get('label', 1)) > 0 else -1
     ids = [int(i) for i in data.get('ids', []) if str(i).isdigit()]
     category = data.get('category') or 'ai'
     if not _CONCEPT_NAME_RE.match(name):
-        return JsonResponse({'error': 'name: 1-100 chars of a-z 0-9 _ ( ) . : \' ! + & -'}, status=400)
+        return _err('name: 1-100 chars of a-z 0-9 _ ( ) . : \' ! + & -')
     if category not in CONCEPT_CATEGORIES:
-        return JsonResponse({'error': 'bad category'}, status=400)
+        return _err('bad category')
     if not ids:
-        return JsonResponse({'error': 'no posts selected'}, status=400)
+        return _err('no posts selected')
     try:
         default_names = {n.strip().lower().replace(' ', '_') for n in _wd14_tags()[0]}
     except RuntimeError:
         default_names = set()
     if name in default_names:
-        return JsonResponse({'error': f'"{name}" is already a tag the default model knows — pick a different name'}, status=409)
+        return _err(f'"{name}" is already a tag the default model knows — pick a different name', 409)
 
     concept, created = CustomConcept.objects.get_or_create(name=name, defaults={'category': category})
     posts = list(Post.objects.filter(pk__in=ids))
@@ -2830,7 +2845,7 @@ def custom_examples(request):
 def custom_train(request, pk):
     concept = get_object_or_404(CustomConcept, pk=pk)
     if not custom_model.is_ready():
-        return JsonResponse({'error': 'clone the default model first'}, status=409)
+        return _err('clone the default model first', 409)
 
     def work(task):
         c = CustomConcept.objects.get(pk=pk)
@@ -2852,7 +2867,7 @@ def custom_train(request, pk):
 def custom_scan(request):
     """Index the whole library with my model (features cached; resumable)."""
     if not custom_model.is_ready():
-        return JsonResponse({'error': 'clone the default model first'}, status=409)
+        return _err('clone the default model first', 409)
 
     def work(task):
         total_posts = Post.objects.count()
@@ -2887,7 +2902,7 @@ def custom_candidates(request, pk):
 def custom_apply(request, pk):
     concept = get_object_or_404(CustomConcept, pk=pk)
     if not concept.trained_at:
-        return JsonResponse({'error': 'train it first'}, status=409)
+        return _err('train it first', 409)
 
     def work(task):
         def prog(done, total):
@@ -2908,7 +2923,7 @@ def custom_undo(request, pk):
 @require_POST
 def custom_concept_update(request, pk):
     c = get_object_or_404(CustomConcept, pk=pk)
-    data = json.loads(request.body or '{}')
+    data = _json_body(request)
     if 'threshold' in data:
         c.threshold = min(0.999, max(0.05, float(data['threshold'])))
     if 'enabled' in data:
@@ -2951,7 +2966,7 @@ def ai_models_info(request):
 @require_POST
 def ai_model_download(request, key):
     if key not in ai_models.HF_KEYS:
-        return JsonResponse({'error': 'unknown or not downloadable model'}, status=400)
+        return _err('unknown or not downloadable model')
     info = ai_models.MODELS[key]
 
     def work(task):
@@ -2974,11 +2989,11 @@ def ai_model_download(request, key):
 def ai_model_delete(request, key):
     from . import ai_runtime
     if key not in ai_models.KEYS:
-        return JsonResponse({'error': 'unknown model'}, status=404)
+        return _err('unknown model', 404)
     if Task.objects.filter(status='running', kind__in=AI_TASK_KINDS + ['model_download']).exists():
-        return JsonResponse({'error': 'wait for (or stop) the running AI tasks first'}, status=409)
+        return _err('wait for (or stop) the running AI tasks first', 409)
     if _main_model() == key:
-        return JsonResponse({'error': 'it is the selected main tagger — switch to another one first'}, status=409)
+        return _err('it is the selected main tagger — switch to another one first', 409)
     ai_runtime.forget(key)
     ai_runtime.request_unload_all()          # other workers may hold sessions on the files
     freed = ai_models.delete(key)
@@ -2989,11 +3004,11 @@ def ai_model_delete(request, key):
 
 @require_POST
 def ai_main_set(request):
-    key = json.loads(request.body or '{}').get('model')
+    key = _json_body(request).get('model')
     if key not in ('wd14', 'pixai', 'custom'):
-        return JsonResponse({'error': 'unknown model'}, status=400)
+        return _err('unknown model')
     if not ai_models.is_ready(key):
-        return JsonResponse({'error': 'that model is not on disk yet — download/clone it first'}, status=409)
+        return _err('that model is not on disk yet — download/clone it first', 409)
     _set_pref('aiMainModel', key)
     return JsonResponse({'ok': True, 'main': key})
 
@@ -3026,7 +3041,7 @@ def ai_restart_workers(request):
     except OSError:
         cmd = ''
     if 'gunicorn' not in cmd:
-        return JsonResponse({'error': 'not running under gunicorn'}, status=409)
+        return _err('not running under gunicorn', 409)
     threading.Timer(1.0, lambda: os.kill(ppid, signal.SIGHUP)).start()
     return JsonResponse({'ok': True})
 
@@ -3074,9 +3089,9 @@ def backup_info(request):
 @require_POST
 def backup_config_save(request):
     try:
-        cfg = _backup.save_config(json.loads(request.body or '{}'))
+        cfg = _backup.save_config(_json_body(request))
     except ValueError as e:
-        return JsonResponse({'error': str(e)}, status=400)
+        return _err(str(e))
     return JsonResponse({'ok': True, 'config': cfg})
 
 
@@ -3087,11 +3102,11 @@ def backup_run(request):
 
 def _start_restore(path, label):
     if Task.objects.filter(status='running').exists():
-        return JsonResponse({'error': 'wait for (or stop) the running tasks first'}, status=409)
+        return _err('wait for (or stop) the running tasks first', 409)
     try:
         _backup.validate_backup(path)
     except ValueError as e:
-        return JsonResponse({'error': str(e)}, status=400)
+        return _err(str(e))
 
     def work(task):
         _backup.restore_from(path, task)
@@ -3104,9 +3119,9 @@ def _start_restore(path, label):
 @require_POST
 def backup_restore(request):
     """body: {name} — a file currently listed in the backup folder."""
-    name = (json.loads(request.body or '{}').get('name') or '')
+    name = (_json_body(request).get('name') or '')
     if name != os.path.basename(name) or name not in {b['name'] for b in _backup.list_backups()}:
-        return JsonResponse({'error': 'no such backup'}, status=404)
+        return _err('no such backup', 404)
     return _start_restore(os.path.join(_backup.get_config()['path'], name), name)
 
 
@@ -3116,9 +3131,9 @@ def backup_upload_restore(request):
     backup folder (as uploaded-<time>.sqlite3) and then restored."""
     f = request.FILES.get('file')
     if not f:
-        return JsonResponse({'error': 'no file'}, status=400)
+        return _err('no file')
     if Task.objects.filter(status='running').exists():
-        return JsonResponse({'error': 'wait for (or stop) the running tasks first'}, status=409)
+        return _err('wait for (or stop) the running tasks first', 409)
     d = _backup.get_config()['path']
     try:
         os.makedirs(d, exist_ok=True)
@@ -3127,7 +3142,7 @@ def backup_upload_restore(request):
             for chunk in f.chunks():
                 out.write(chunk)
     except OSError as e:
-        return JsonResponse({'error': f'cannot save upload: {e.strerror or e}'}, status=500)
+        return _err(f'cannot save upload: {e.strerror or e}', 500)
     resp = _start_restore(dest, f.name)
     if resp.status_code != 200:
         try: os.remove(dest)
@@ -3141,10 +3156,10 @@ def recent_add(request):
     Because this is a read-modify-write on the server (not a client push of the
     full local array), multiple devices can call it simultaneously without one
     overwriting the other's data — each POST just adds one entry at the front."""
-    data = json.loads(request.body)
+    data = _json_body(request)
     entry = {k: data[k] for k in ('id', 'thumb', 'url', 't') if k in data}
     if not entry.get('id'):
-        return JsonResponse({'error': 'no id'}, status=400)
+        return _err('no id')
     entry['t'] = entry.get('t') or int(__import__('time').time() * 1000)
     def push(recents):
         recents = recents if isinstance(recents, list) else []
@@ -3156,7 +3171,7 @@ def recent_add(request):
     try:
         recents = prefs.update('recentPosts', push, default=[])
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return _err(str(e), 500)
     return JsonResponse({'ok': True, 'recents': recents})
 
 
@@ -3316,11 +3331,11 @@ def _editable_photo(body):
     try:
         photo = Photo.objects.select_related('post').get(pk=int(body.get('photo_id')))
     except (TypeError, ValueError, Photo.DoesNotExist):
-        return None, JsonResponse({'ok': False, 'error': 'unknown image'}, status=404)
+        return None, _err('unknown image', 404)
     if photo.is_video or photo.is_pdf or photo.is_gif:
-        return None, JsonResponse({'ok': False, 'error': 'only still images can be edited (not video, PDF or GIF)'}, status=400)
+        return None, _err('only still images can be edited (not video, PDF or GIF)')
     if not os.path.isfile(photo.file_path):
-        return None, JsonResponse({'ok': False, 'error': 'the file is missing on disk'}, status=404)
+        return None, _err('the file is missing on disk', 404)
     return photo, None
 
 
@@ -3341,14 +3356,6 @@ def _edit_current_tags(photo):
     return names
 
 
-def _json_body(request):
-    try:
-        data = json.loads(request.body or '{}')
-        return data if isinstance(data, dict) else {}
-    except ValueError:
-        return {}
-
-
 def comfy_status(request):
     return JsonResponse(comfy.status())
 
@@ -3365,7 +3372,7 @@ def comfy_prompt(request):
     body = _json_body(request)
     text = str(body.get('request') or '').strip()
     if not text:
-        return JsonResponse({'ok': False, 'error': 'type what should change'}, status=400)
+        return _err('type what should change')
     photo, err = _editable_photo(body)
     if err:
         return err
@@ -3462,9 +3469,9 @@ def comfy_edit(request):
     pos_in = str(body.get('positive') or '').strip()
     neg_in = body.get('negative')
     if not text and not pos_in:
-        return JsonResponse({'ok': False, 'error': 'type what should change'}, status=400)
+        return _err('type what should change')
     if not _comfy_enabled():
-        return JsonResponse({'ok': False, 'error': 'AI edit is switched off in settings'}, status=400)
+        return _err('AI edit is switched off in settings')
     busy = Task.objects.filter(kind='comfy_edit', status='running').first()
     if busy:
         return JsonResponse({'ok': False, 'busy': True, 'task_id': busy.id,
@@ -3485,7 +3492,7 @@ def comfy_edit(request):
     try:
         loras = comfy.resolve_loras(body.get('loras') or [], comfy.lora_catalog(cfg)) if body.get('loras') else []
     except comfy.ComfyError as e:
-        return JsonResponse({'ok': False, 'error': str(e)}, status=400)
+        return _err(str(e))
     photo_id = photo.id
 
     def work(task):

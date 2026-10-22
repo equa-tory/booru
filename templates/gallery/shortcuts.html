@@ -120,10 +120,7 @@ document.addEventListener('keydown', e => {
 }, true);
 
 function saveBindings() {
-  fetch('/api/pref/set/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({key:'keyBindings', value:CUR})
-  }).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS, CUR); toast('saved'); });
+  apiPost('/api/pref/set/', {key:'keyBindings', value:CUR}).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS, CUR); toast('saved'); });
 }
 function clearOne(id) {
   CUR[id] = '';
@@ -133,10 +130,7 @@ function clearOne(id) {
 function resetBindings() {
   if (!confirm('Reset all shortcuts to defaults?')) return;
   CUR = Object.assign({}, DEFAULT_BINDINGS);
-  fetch('/api/pref/set/', {
-    method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':getCsrf()},
-    body: JSON.stringify({key:'keyBindings', value:{}})
-  }).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS); renderGroups(); toast('reset'); });
+  apiPost('/api/pref/set/', {key:'keyBindings', value:{}}).then(()=>{ window.BINDINGS = Object.assign({}, DEFAULT_BINDINGS); renderGroups(); toast('reset'); });
 }
 renderGroups();
 </script>
