@@ -8,8 +8,9 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
+from django.db import transaction
 from django.db.models import Q, Case, When, IntegerField, FloatField, F, Count, Max, Value, OuterRef, Subquery
-from django.db.models.functions import Mod, Coalesce
+from django.db.models.functions import Coalesce, Greatest, Least, Mod
 from django.conf import settings
 
 from .models import (Post, Photo, Tag, Task, Folder, CustomConcept, CustomExample,
@@ -34,6 +35,34 @@ _PAGES_RE = re.compile(r'^pages:(>=|<=|>|<)?(\d+)$')
 # video length (minutes unless the number ends in s): length:>5  length:<=2  length:1.5  length:2-5  length:>30s
 _LEN_RE = re.compile(r'^(?:length|len|duration):(>=|<=|>|<)?(\d+(?:\.\d+)?)([sm])?$', re.I)
 _LEN_RANGE_RE = re.compile(r'^(?:length|len|duration):(\d+(?:\.\d+)?)([sm])?-(\d+(?:\.\d+)?)([sm])?$', re.I)
+
+
+# rating is a signed score (like +1 / dislike -1, 0 = neutral): rating:>=2  rating:-1  rating:<0  rating:-2..3  rating:liked
+_RATING_RE = re.compile(r'^(?:rating|score):(>=|<=|>|<|=)?([+-]?\d+)$', re.I)
+_RATING_RANGE_RE = re.compile(r'^(?:rating|score):([+-]?\d+)\.\.([+-]?\d+)$', re.I)
+_RATING_WORDS = {'liked': Q(rating__gt=0), 'disliked': Q(rating__lt=0), 'neutral': Q(rating=0)}
+RATING_LIMIT = 99     # a post's score is kept within +-RATING_LIMIT
+
+
+def _signed_int(s):
+    """'-2' / '+3' / '4' -> int, anything else -> None."""
+    s = str(s).strip()
+    return int(s) if re.fullmatch(r'[+-]?\d+', s) else None
+
+
+def _rating_q(term):
+    """Q over Post.rating for a rating:/score: term, or None when it isn't one."""
+    m = _RATING_RANGE_RE.match(term)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        return Q(rating__gte=min(a, b), rating__lte=max(a, b))
+    m = _RATING_RE.match(term)
+    if m:
+        n = int(m.group(2))
+        return {'>': Q(rating__gt=n), '>=': Q(rating__gte=n), '<': Q(rating__lt=n),
+                '<=': Q(rating__lte=n)}.get(m.group(1), Q(rating=n))
+    m = re.match(r'^(?:rating|score):(\w+)$', term, re.I)
+    return _RATING_WORDS.get(m.group(1).lower()) if m else None
 
 
 def _err(message, status=400):
@@ -148,6 +177,9 @@ def _term_to_q(term):
     lq = _length_q(term)                               # video-length filter
     if lq is not None:
         return lq, False
+    rq = _rating_q(term)                               # rating / score filter
+    if rq is not None:
+        return rq, False
     m = _PAGES_RE.match(term)                          # image-count filter
     if m:
         op, n = m.group(1), int(m.group(2))
@@ -235,6 +267,7 @@ def _build_post_qs(request):
     q_tags     = request.GET.getlist('tag')
     min_rating = request.GET.get('min_rating', '')
     exact_rating = request.GET.get('rating', '')  # exact rating filter
+    max_rating = request.GET.get('max_rating', '')
     fav_only   = request.GET.get('fav', '')
     multi_only  = request.GET.get('multi_only', '')
     single_only = request.GET.get('single_only', '')
@@ -271,10 +304,14 @@ def _build_post_qs(request):
         if ands or ors or nots:
             posts = posts.distinct()
 
-    if min_rating.isdigit():
+    # URL filters of the sidebar buttons (the same thing as rating:>=N / <=N / N in the search box)
+    if _signed_int(min_rating) is not None:
         posts = posts.filter(rating__gte=int(min_rating))
 
-    if exact_rating.isdigit():
+    if _signed_int(max_rating) is not None:
+        posts = posts.filter(rating__lte=int(max_rating))
+
+    if _signed_int(exact_rating) is not None:
         posts = posts.filter(rating=int(exact_rating))
 
     if fav_only == '1':
@@ -313,6 +350,8 @@ def _build_post_qs(request):
         posts = posts.order_by('added_at')
     elif sort_by == 'rating':
         posts = posts.order_by('-rating', '-added_at')
+    elif sort_by == 'rating_low':
+        posts = posts.order_by('rating', '-added_at')
     elif sort_by == 'fav':
         posts = posts.order_by('-fav', '-added_at')
     elif sort_by == 'rated_time':
@@ -486,6 +525,7 @@ def index(request):
         'nav_qs': nav_qs,
         'min_rating': request.GET.get('min_rating', ''),
         'exact_rating': request.GET.get('rating', ''),
+        'max_rating': request.GET.get('max_rating', ''),
         'fav_only':   request.GET.get('fav', ''),
         'filtering_active': bool(q_tags),
         'scroll_mode': scroll_mode,
@@ -498,7 +538,7 @@ def index(request):
         'active_folder_obj': (Folder.objects.filter(pk=int(request.GET['folder'])).first()
                               if request.GET.get('folder', '').isdigit() else None),
         'single_only': request.GET.get('single_only',''),
-        'sort_options': [('new','newest'),('old','oldest'),('rating','rating'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
+        'sort_options': [('new','newest'),('old','oldest'),('rating','highest rated'),('rating_low','lowest rated'),('fav','fav first'),('rated_time','recently rated'),('faved_time','recently liked'),('random','random')],
         'folders': Folder.objects.all(),
         'active_folder': request.GET.get('folder', ''),
         'current_query': p.urlencode(),  # current filters, minus page — used by "save as smart folder"
@@ -572,7 +612,7 @@ def post_detail(request, pk):
 
     # Full search query string (tags + filters + sort) for neighbor navigation
     search_params = []
-    for key in ('tag', 'sort', 'min_rating', 'rating', 'fav',
+    for key in ('tag', 'sort', 'min_rating', 'max_rating', 'rating', 'fav',
                 'multi_only', 'single_only', 'folder', 'seed', 'ids', 'proc'):
         for val in request.GET.getlist(key):
             search_params.append(f'{key}={val}')
@@ -1435,20 +1475,33 @@ def tag_post(request, pk):
    #     return JsonResponse({'tags': tags})
 
 
+def _clamp_rating(n):
+    return max(-RATING_LIMIT, min(RATING_LIMIT, int(n)))
+
+
 @require_POST
 def rate_post(request, pk):
+    """{delta: +1|-1} moves the score by that much (atomic: two open tabs can't overwrite each
+    other); {rating: n} sets it (0 = reset); {fav: bool} is the separate favourite flag."""
     post   = get_object_or_404(Post, pk=pk)
     data   = _json_body(request)
-    rating = data.get('rating', None)
     fav    = data.get('fav', None)
     fields = []
-    if rating is not None:
-        new_rating = max(0, min(5, int(rating)))
-        if new_rating != post.rating:
-            post.rated_at = timezone.now()
-            fields.append('rated_at')
-        post.rating = new_rating
-        fields.append('rating')
+    try:
+        delta = int(data['delta']) if data.get('delta') is not None else None
+        rating = int(data['rating']) if data.get('rating') is not None else None
+    except (TypeError, ValueError):
+        return _err('rating and delta must be whole numbers')
+    if delta is not None:
+        # re-read under the write lock so concurrent clicks add up
+        with transaction.atomic():
+            cur = Post.objects.select_for_update().get(pk=pk).rating
+            post.rating = _clamp_rating(cur + delta)
+    elif rating is not None:
+        post.rating = _clamp_rating(rating)
+    if delta is not None or rating is not None:
+        post.rated_at = timezone.now()
+        fields += ['rating', 'rated_at']
     if fav is not None:
         new_fav = bool(fav)
         if new_fav and not post.fav:
@@ -1512,7 +1565,12 @@ def bulk_action(request):
         return JsonResponse({'ok': True})
 
     if action == 'rate':
-        posts.update(rating=max(0, min(5, int(data.get('rating', 0)))))
+        now = timezone.now()
+        if data.get('delta') is not None:
+            d = max(-RATING_LIMIT, min(RATING_LIMIT, int(data['delta'])))
+            posts.update(rating=Greatest(Value(-RATING_LIMIT), Least(Value(RATING_LIMIT), F('rating') + d)), rated_at=now)
+        else:
+            posts.update(rating=_clamp_rating(data.get('rating', 0)), rated_at=now)
         return JsonResponse({'ok': True})
 
     if action == 'fav':

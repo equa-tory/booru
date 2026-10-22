@@ -87,6 +87,7 @@ body.select-mode main { padding-bottom: calc(var(--sel-bar-h, 0px) + 1rem); }
 body.select-mode .photo-card .sel-check { display: flex; }
 body.select-mode .photo-card.selected .sel-check { background: var(--accent); border-color: var(--accent); }
 body.select-mode .photo-card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card-rating.neg { color: #f87272; }
 .card-rating { position: absolute; top: .35rem; right: .35rem; z-index: 2; font-size: .65rem; background: rgba(0,0,0,.6); border-radius: 3px; padding: 1px 3px; color: #ffd580; line-height: 1.2; display: none; }
 .photo-card[data-rating]:not([data-rating="0"]) .card-rating { display: block; }
 .card-fav { position: absolute; top: .35rem; right: .35rem; z-index: 2; font-size: .75rem; color: #f87272; display: none; }
@@ -203,20 +204,20 @@ body.select-mode .scroll-fabs { display:none; }
       <button class="fav-filter-btn {% if fav_only == '1' %}active{% endif %}" onclick="toggleFav(this)">&#9829; favs</button>
       <button class="fav-filter-btn {% if multi_only == '1' %}active{% endif %}" onclick="toggleMultiOnly(this)">&#9783; multi</button>
       <button class="fav-filter-btn {% if single_only == '1' %}active{% endif %}" onclick="toggleSingleOnly(this)">&#9632; single</button>
-      <button class="fav-filter-btn {% if exact_rating == '0' %}active{% endif %}" data-stars="0" onclick="setExactRating(this)" title="posts with no rating">&#9734; unrated</button>
+      <button class="fav-filter-btn {% if exact_rating == '0' %}active{% endif %}" data-stars="0" onclick="setExactRating(this)" title="score exactly 0 (never rated, or likes and dislikes cancel out)">0 neutral</button>
     </div>
     <div class="star-filter">
-      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">at least:</span>
-      {% for n in "12345" %}
-      <button class="star-filter-btn {% if min_rating == n %}active{% endif %}" data-stars="{{ n }}" onclick="setRatingFilter(this)">{{ n }}&#9733;+</button>
+      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">score at least:</span>
+      {% for n in "123" %}
+      <button class="star-filter-btn {% if min_rating == n %}active{% endif %}" data-stars="{{ n }}" onclick="setRatingFilter(this)">&#128077; +{{ n }}</button>
       {% endfor %}
     </div>
     <div class="star-filter" style="margin-top:.3rem;">
-      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">exactly:</span>
-      {% for n in "12345" %}
-      <button class="star-filter-btn {% if exact_rating == n %}active{% endif %}" data-stars="{{ n }}" onclick="setExactRating(this)">{{ n }}&#9733;</button>
-      {% endfor %}
-      {% if min_rating or exact_rating %}<button class="star-filter-btn" onclick="clearRatingFilter()">clear</button>{% endif %}
+      <span style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);width:100%;">score at most:</span>
+      <button class="star-filter-btn {% if max_rating == '-1' %}active{% endif %}" data-stars="-1" onclick="setMaxRating(this)">&#128078; -1</button>
+      <button class="star-filter-btn {% if max_rating == '-2' %}active{% endif %}" data-stars="-2" onclick="setMaxRating(this)">&#128078; -2</button>
+      <button class="star-filter-btn {% if max_rating == '-3' %}active{% endif %}" data-stars="-3" onclick="setMaxRating(this)">&#128078; -3</button>
+      {% if min_rating or max_rating or exact_rating %}<button class="star-filter-btn" onclick="clearRatingFilter()">clear</button>{% endif %}
     </div>
   </div>
 
@@ -255,7 +256,7 @@ body.select-mode .scroll-fabs { display:none; }
 
 {% block content %}
 <div id="recent-strip" class="recent-strip" style="display:none;"></div>
-{% if q_tags or fav_only or min_rating or exact_rating or multi_only or single_only or proc or active_folder_obj %}
+{% if q_tags or fav_only or min_rating or max_rating or exact_rating or multi_only or single_only or proc or active_folder_obj %}
 <div class="active-tags">
   {% if active_folder_obj %}<span class="active-tag" style="border-color:var(--accent);" title="you are inside this folder; searches, filters and sorting apply to it">&#128193; {{ active_folder_obj.name }}{% if active_folder_obj.include_subfolders %} +sub{% endif %} <span class="remove" onclick="removeFilter('folder')">x</span></span>{% endif %}
   {% if vlen_pending %}<span class="active-tag" style="border-color:#22d3ee;" title="video lengths are being measured in the background; reload in a moment for the full result">&#9201; measuring {{ vlen_pending }} video lengths…</span>{% endif %}
@@ -263,8 +264,9 @@ body.select-mode .scroll-fabs { display:none; }
   {% if multi_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9783; multi <span class="remove" onclick="removeFilter('multi_only')">x</span></span>{% endif %}
   {% if single_only == '1' %}<span class="active-tag" style="border-color:var(--accent);">&#9632; single <span class="remove" onclick="removeFilter('single_only')">x</span></span>{% endif %}
   {% if proc %}<span class="active-tag" style="border-color:#22d3ee;">{% if proc == 'none' %}not AI-tagged &amp; not PixAI-checked{% elif proc == 'noai' %}not AI-tagged{% else %}not PixAI-checked{% endif %} <span class="remove" onclick="removeFilter('proc')">x</span></span>{% endif %}
-  {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{{ min_rating }}&#9733;+ <span class="remove" onclick="removeFilter('min_rating')">x</span></span>{% endif %}
-  {% if exact_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">{% if exact_rating == '0' %}&#9734; unrated{% else %}{{ exact_rating }}&#9733;{% endif %} <span class="remove" onclick="removeFilter('rating')">x</span></span>{% endif %}
+  {% if min_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">&#128077; &ge; +{{ min_rating }} <span class="remove" onclick="removeFilter('min_rating')">x</span></span>{% endif %}
+  {% if max_rating %}<span class="active-tag" style="border-color:#f87272;background:rgba(248,114,114,.12);">&#128078; &le; {{ max_rating }} <span class="remove" onclick="removeFilter('max_rating')">x</span></span>{% endif %}
+  {% if exact_rating %}<span class="active-tag" style="border-color:#ffd580;background:rgba(255,213,128,.12);">score = {{ exact_rating }} <span class="remove" onclick="removeFilter('rating')">x</span></span>{% endif %}
   <span id="tag-pills"></span>
   <a href="/{% if active_folder_obj %}?folder={{ active_folder_obj.pk }}{% endif %}" class="btn" style="padding:.15rem .5rem;font-size:.75rem;" title="{% if active_folder_obj %}clear the search and filters (stays in this folder){% else %}clear the search and filters{% endif %}">clear all</a>
 </div>
@@ -368,8 +370,9 @@ body.select-mode .scroll-fabs { display:none; }
     <div class="modal-handle"></div>
     <h3>rate selected</h3>
     <div style="display:flex;gap:.5rem;justify-content:center;margin:.8rem 0;">
-      {% for n in "12345" %}<button class="btn" style="font-size:1.2rem;padding:.4rem .7rem;" onclick="doBulkRate({{ n }})">{{ n }}&#9733;</button>{% endfor %}
-      <button class="btn" onclick="doBulkRate(0)">clear</button>
+      <button class="btn" style="font-size:1.2rem;padding:.4rem .9rem;" onclick="doBulkRate({delta: -1})" title="lower every selected post's score by 1">&#128078; -1</button>
+      <button class="btn" style="font-size:1.2rem;padding:.4rem .9rem;" onclick="doBulkRate({delta: 1})" title="raise every selected post's score by 1">&#128077; +1</button>
+      <button class="btn" onclick="doBulkRate({rating: 0})" title="set the score of every selected post to 0">reset to 0</button>
     </div>
     <div style="display:flex;gap:.4rem;justify-content:center;margin:.8rem 0;">
       <button class="btn" onclick="bulkFav(true)">&#9829; fav</button>
@@ -612,7 +615,7 @@ function makeCard(post) {
         + `<span class="d-folder ${fl.length ? 'on' : 'off'}">${fl.length ? '&#128193; ' + esc(fl[0]) + (fl.length > 1 ? ' +' + (fl.length - 1) : '') : 'no folder'}</span></div>`;
   if (post.img_count > 1) html += `<div style="position:absolute;top:.35rem;left:.35rem;background:rgba(0,0,0,.65);border-radius:3px;padding:1px 4px;font-size:.65rem;font-family:var(--mono);color:#fff;z-index:2;">${post.img_count}</div>`;
   if (post.is_video) html += `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:2;"><div style="background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff;">&#9654;</div></div>`;
-  if (post.rating) html += `<div class="card-rating">${post.rating}&#9733;</div>`;
+  if (post.rating) html += `<div class="card-rating ${post.rating < 0 ? 'neg' : ''}">${post.rating > 0 ? '+' : ''}${post.rating}</div>`;
   if (post.fav) html += `<div class="card-fav">&#9829;</div>`;
   a.innerHTML = html;
   return a;
@@ -697,21 +700,17 @@ function setSortTags(mode) {
   p.delete('page');
   window.location.href = '/?' + p.toString();
 }
-function setRatingFilter(btn) {
+// score filters (the same as rating:>=N / rating:<=N / rating:N in the search box):
+// "at least" and "at most" can be combined, "exactly" replaces both
+function _goRating(set, drop) {
   const p = new URLSearchParams(window.location.search);
-  p.set('min_rating', btn.dataset.stars); p.delete('rating'); p.delete('page');
+  drop.forEach(k => p.delete(k)); Object.entries(set).forEach(([k, v]) => p.set(k, v)); p.delete('page');
   window.location.href = '/?' + p.toString();
 }
-function setExactRating(btn) {
-  const p = new URLSearchParams(window.location.search);
-  p.set('rating', btn.dataset.stars); p.delete('min_rating'); p.delete('page');
-  window.location.href = '/?' + p.toString();
-}
-function clearRatingFilter() {
-  const p = new URLSearchParams(window.location.search);
-  p.delete('min_rating'); p.delete('rating'); p.delete('page');
-  window.location.href = '/?' + p.toString();
-}
+const setRatingFilter = btn => _goRating({min_rating: btn.dataset.stars}, ['rating']);
+const setMaxRating    = btn => _goRating({max_rating: btn.dataset.stars}, ['rating']);
+const setExactRating  = btn => _goRating({rating: btn.dataset.stars}, ['min_rating', 'max_rating']);
+const clearRatingFilter = () => _goRating({}, ['min_rating', 'max_rating', 'rating']);
 function toggleFav(btn) {
   const p = new URLSearchParams(window.location.search);
   if (p.get('fav') === '1') p.delete('fav'); else p.set('fav', '1');
@@ -1182,8 +1181,8 @@ function openBulkRate() {
   if (!selectedIds.size) { toast('select posts first','err'); return; }
   openModal('bulk-rate-modal');
 }
-async function doBulkRate(rating) {
-  await apiPost('/api/bulk/', {ids:[...selectedIds],action:'rate',rating});
+async function doBulkRate(change) {   // {delta: ±1} or {rating: n}
+  await apiPost('/api/bulk/', {ids:[...selectedIds], action:'rate', ...change});
   closeModal('bulk-rate-modal');
   toast(`rated ${selectedIds.size} posts`);
   finishBulkAction();

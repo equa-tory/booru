@@ -2686,3 +2686,96 @@ class SearchClearButtonTests(TestCase):
         with mock.patch.object(backup, 'get_config', return_value={'path': d, 'enabled': True, 'max_backups': 1, 'interval_hours': 48}):
             self.client.post('/api/quick-links/', json.dumps({'add': 'https://z.io'}), content_type='application/json')
             self.assertIn('https://z.io', open(os.path.join(d, backup.SETTINGS_LATEST)).read())
+
+
+class SignedRatingTests(TestCase):
+    """Rating is a signed score: 👍 +1 / 👎 -1 (server-side step), searchable as rating:..."""
+
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        self.posts = {}
+        for i, score in enumerate([-3, -2, -1, 0, 0, 1, 2, 5]):
+            p = Post.objects.create(rating=score)
+            Photo.objects.create(post=p, order=0, rel_path=f'r{i}.png')
+            self.posts.setdefault(score, []).append(p.id)
+
+    def ids(self, qs):
+        return sorted(p['id'] for p in self.client.get('/api/posts/?' + qs).json()['posts'])
+
+    def want(self, *scores):
+        return sorted(i for s in scores for i in self.posts[s])
+
+    def test_search_syntax(self):
+        cases = {
+            'tag=rating:>=2': (2, 5), 'tag=rating:>2': (5,), 'tag=rating:<0': (-3, -2, -1),
+            'tag=rating:<=-2': (-3, -2), 'tag=rating:0': (0,), 'tag=rating:-1': (-1,),
+            'tag=rating:%2B1': (1,), 'tag=rating:-2..1': (-2, -1, 0, 1), 'tag=rating:1..-2': (-2, -1, 0, 1),
+            'tag=score:liked': (1, 2, 5), 'tag=rating:disliked': (-3, -2, -1), 'tag=rating:neutral': (0,),
+            'tag=-rating:<0': (0, 1, 2, 5),
+        }
+        for qs, scores in cases.items():
+            self.assertEqual(self.ids(qs), self.want(*scores), qs)
+
+    def test_url_filters_and_sorts(self):
+        self.assertEqual(self.ids('min_rating=1'), self.want(1, 2, 5))
+        self.assertEqual(self.ids('max_rating=-1'), self.want(-3, -2, -1))
+        self.assertEqual(self.ids('min_rating=-2&max_rating=0'), self.want(-2, -1, 0))
+        self.assertEqual(self.ids('rating=0'), self.want(0))
+        self.assertEqual(self.ids('rating=-2'), self.want(-2))
+        order = [p['rating'] for p in self.client.get('/api/posts/?sort=rating').json()['posts']]
+        self.assertEqual(order, sorted(order, reverse=True))
+        order = [p['rating'] for p in self.client.get('/api/posts/?sort=rating_low').json()['posts']]
+        self.assertEqual(order, sorted(order))
+
+    def rate(self, pk, **body):
+        return self.client.post(f'/api/post/{pk}/rate/', json.dumps(body), content_type='application/json')
+
+    def test_rate_steps_clamps_and_keeps_fav_separate(self):
+        pk = self.posts[0][0]
+        self.assertEqual(self.rate(pk, delta=1).json()['rating'], 1)
+        self.assertEqual(self.rate(pk, delta=1).json()['rating'], 2)
+        self.assertEqual(self.rate(pk, delta=-1).json()['rating'], 1)
+        self.assertEqual(self.rate(pk, delta=-1).json()['rating'], 0)
+        self.assertEqual(self.rate(pk, delta=-1).json()['rating'], -1)   # below zero is allowed
+        Post.objects.filter(pk=pk).update(rating=views.RATING_LIMIT)
+        self.assertEqual(self.rate(pk, delta=1).json()['rating'], views.RATING_LIMIT)
+        d = self.rate(pk, fav=True).json()                               # ♥ does not touch the score
+        self.assertEqual((d['rating'], d['fav']), (views.RATING_LIMIT, True))
+        self.assertEqual(self.rate(pk, rating=0).json()['rating'], 0)
+        self.assertTrue(Post.objects.get(pk=pk).fav)
+        self.assertIsNotNone(Post.objects.get(pk=pk).rated_at)
+        self.assertEqual(self.rate(pk, delta='x').status_code, 400)
+
+    def test_bulk_step_and_reset(self):
+        ids = self.posts[1] + self.posts[2]
+        self.client.post('/api/bulk/', json.dumps({'ids': ids, 'action': 'rate', 'delta': -1}), content_type='application/json')
+        self.assertEqual(sorted(Post.objects.filter(id__in=ids).values_list('rating', flat=True)), [0, 1])
+        self.client.post('/api/bulk/', json.dumps({'ids': ids, 'action': 'rate', 'rating': 0}), content_type='application/json')
+        self.assertEqual(set(Post.objects.filter(id__in=ids).values_list('rating', flat=True)), {0})
+
+    def test_migration_converts_stars_and_smart_folders(self):
+        import importlib
+        from django.apps import apps
+        from .models import Folder
+        mig = importlib.import_module('gallery.migrations.0022_rating_signed_score')
+        Post.objects.all().delete()
+        for stars in (0, 1, 2, 3, 4, 5):
+            Post.objects.create(rating=stars)
+        f1 = Folder.objects.create(name='good', is_smart=True, query='min_rating=4&sort=new')
+        f2 = Folder.objects.create(name='meh', is_smart=True, query='tag=x&rating=2')
+        mig.forwards(apps, None)
+        self.assertEqual(sorted(Post.objects.values_list('rating', flat=True)), [-2, -1, 0, 0, 1, 2])
+        f1.refresh_from_db(); f2.refresh_from_db()
+        self.assertEqual((f1.query, f2.query), ('min_rating=1&sort=new', 'tag=x&rating=-1'))
+        mig.backwards(apps, None)
+        self.assertEqual(sorted(Post.objects.values_list('rating', flat=True)), [0, 0, 1, 2, 4, 5])
+
+    def test_pages_render_the_new_controls(self):
+        pk = self.posts[-1][0]
+        html = self.client.get(f'/post/{pk}/').content.decode()
+        self.assertIn('rateStep(1)', html)
+        self.assertIn('rateStep(-1)', html)
+        self.assertNotIn('setRating(', html)
+        self.assertIn('class="score-val neg"', html)
+        self.assertIn('>-1</button>', html)
+        self.assertIn('rating:', self.client.get('/').content.decode())    # cheat sheet entry

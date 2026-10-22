@@ -36,6 +36,7 @@ class Post(models.Model):
     source_post  = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='derived_posts')
     source_photo = models.ForeignKey('Photo', null=True, blank=True, on_delete=models.SET_NULL, related_name='derived_posts')
     gen_info     = models.JSONField(null=True, blank=True, default=None)
+    # signed score: each 👍 adds 1, each 👎 takes 1 (0 = neutral/unrated, clamped to +-99); was 0-5 stars before migration 0022
     rating     = models.SmallIntegerField(default=0, db_index=True)
     fav        = models.BooleanField(default=False, db_index=True)
     rated_at   = models.DateTimeField(null=True, blank=True, db_index=True)

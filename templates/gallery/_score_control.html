@@ -1,0 +1,6 @@
+{# 👎 score 👍 — the post's signed rating. Include once per place; every copy is kept in sync by syncScore(). #}
+<span class="score-ctl">
+  <button type="button" class="score-btn" onclick="rateStep(-1)" title="dislike (-1)" aria-label="dislike">&#128078;</button>
+  <button type="button" class="score-val {% if post.rating > 0 %}pos{% elif post.rating < 0 %}neg{% endif %}" onclick="rateReset()" title="score (tap to reset to 0)">{% if post.rating > 0 %}+{% endif %}{{ post.rating }}</button>
+  <button type="button" class="score-btn" onclick="rateStep(1)" title="like (+1)" aria-label="like">&#128077;</button>
+</span>

@@ -492,9 +492,9 @@ input[type=range].size-slider::-moz-range-thumb {
         <button class="fav-filter-btn" id="mob-multi-filter" onclick="toggleMultiOnly(this)">&#9783; multi</button>
         <button class="fav-filter-btn" id="mob-single-filter" onclick="toggleSingleOnly(this)">&#9632; single</button>
       </div>
-      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.2rem 0;">at least:</div>
+      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.2rem 0;">score at least:</div>
       <div style="display:flex;gap:.3rem;flex-wrap:wrap;" id="mob-star-filters"></div>
-      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.4rem 0 .2rem;">exactly:</div>
+      <div style="font-family:var(--mono);font-size:.62rem;color:var(--text-dim);margin:.4rem 0 .2rem;">score at most:</div>
       <div style="display:flex;gap:.3rem;flex-wrap:wrap;align-items:center;" id="mob-exact-filters"></div>
     </div>
     <!-- Folders -->
@@ -621,6 +621,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <div><code class="cheat-code">file:cat</code> — posts whose <b>file name</b> contains “cat”.</div>
       <div><code class="cheat-code">folder:trip</code> — posts whose <b>folder</b> path contains “trip”.</div>
       <div><code class="cheat-code">length:&gt;5</code> — <b>videos</b> longer than 5 minutes. Also <code class="cheat-code">length:&lt;2</code>, <code class="cheat-code">length:&gt;=1.5</code>, <code class="cheat-code">length:&lt;=10</code>, <code class="cheat-code">length:3</code> (3:00&ndash;3:59), a range <code class="cheat-code">length:2-5</code>, or seconds <code class="cheat-code">length:&lt;30s</code>. <code class="cheat-code">len:</code> works too.</div>
+      <div><code class="cheat-code">rating:&gt;=2</code> — posts scored +2 or more (&#128077; adds 1, &#128078; takes 1; &#9829; is the separate favourite flag). Also <code class="cheat-code">rating:&gt;0</code>, <code class="cheat-code">rating:&lt;0</code>, <code class="cheat-code">rating:-1</code> (exactly), a range <code class="cheat-code">rating:-2..3</code>, or the words <code class="cheat-code">rating:liked</code> / <code class="cheat-code">disliked</code> / <code class="cheat-code">neutral</code>. <code class="cheat-code">score:</code> works too, and <code class="cheat-code">-rating:&lt;0</code> excludes.</div>
       <div><code class="cheat-code">pages:3</code> — posts with exactly 3 images. Also <code class="cheat-code">pages:&gt;15</code>, <code class="cheat-code">pages:&lt;12</code>, <code class="cheat-code">pages:&gt;=15</code>, <code class="cheat-code">pages:&lt;=12</code>.</div>
       <div style="color:var(--text-dim);font-size:.76rem;border-top:1px solid var(--border);padding-top:.5rem;">Combine freely, e.g.&nbsp; <code class="cheat-code">1girl ( red_hair ~ blue_hair ) -monochrome file:2024</code></div>
     </div>
@@ -1703,7 +1704,7 @@ function searchTokenAt(value, caret) {
   if (!raw || raw === '(' || raw === ')' || raw === '~') return null;
   const prefix = raw[0] === '-' ? '-' : '';
   const query = raw.slice(prefix.length);
-  if (!query || /^(file|folder|length|len|duration|pages):/i.test(query) || /[*~]/.test(query) || /^[<>=]/.test(query)) return null;
+  if (!query || /^(file|folder|length|len|duration|pages|rating|score):/i.test(query) || /[*~]/.test(query) || /^[<>=]/.test(query)) return null;
   const others = (value.slice(0, start) + ' ' + value.slice(end)).split(/\s+/)
     .filter(t => t && t !== '(' && t !== ')' && t !== '~').map(t => t.replace(/^-/, '').toLowerCase());
   return {start, end, prefix, query, others};
@@ -1769,7 +1770,7 @@ function openMobMenu() {
   // gallery page from the server's sort_options) so PC + phone never drift.
   const sorts = (window.SORT_OPTIONS && window.SORT_OPTIONS.length)
     ? window.SORT_OPTIONS
-    : [['new','newest'],['old','oldest'],['rating','rating'],['fav','favs'],['random','random']];
+    : [['new','newest'],['old','oldest'],['rating','highest rated'],['rating_low','lowest rated'],['fav','favs'],['random','random']];
   const sortEl = document.getElementById('mob-sort-btns');
   if (sortEl) {
     const cur = p.get('sort') || 'new';
@@ -1777,21 +1778,18 @@ function openMobMenu() {
       `<button class="mode-btn ${cur===v?'active':''}" onclick="setSort('${v}');closeMobMenu()">${l}</button>`
     ).join('');
   }
-  // star filters (at least)
+  // score filters — kept in sync with the desktop sidebar
   const starEl = document.getElementById('mob-star-filters');
-  const curStar = p.get('min_rating') || '';
-  if (starEl) starEl.innerHTML = [1,2,3,4,5].map(n =>
-    `<button class="star-filter-btn ${curStar==n?'active':''}" data-stars="${n}" onclick="setRatingFilter(this);closeMobMenu()">${n}&#9733;+</button>`
-  ).join('');
-  // exact-rating filters (exactly) — kept in sync with the desktop sidebar
+  const curMin = p.get('min_rating') || '', curMax = p.get('max_rating') || '', curExact = p.get('rating') || '';
+  if (starEl) starEl.innerHTML = [1,2,3].map(n =>
+    `<button class="star-filter-btn ${curMin==n?'active':''}" data-stars="${n}" onclick="setRatingFilter(this);closeMobMenu()">&#128077; +${n}</button>`
+  ).join('') + `<button class="star-filter-btn ${curExact==='0'?'active':''}" data-stars="0" onclick="setExactRating(this);closeMobMenu()">0 neutral</button>`;
   const exactEl = document.getElementById('mob-exact-filters');
-  const curExact = p.get('rating') || '';
   if (exactEl) {
-    let h = `<button class="star-filter-btn ${curExact==='0'?'active':''}" data-stars="0" onclick="setExactRating(this);closeMobMenu()">&#9734; unrated</button>`;
-    h += [1,2,3,4,5].map(n =>
-      `<button class="star-filter-btn ${curExact==n?'active':''}" data-stars="${n}" onclick="setExactRating(this);closeMobMenu()">${n}&#9733;</button>`
+    let h = [-1,-2,-3].map(n =>
+      `<button class="star-filter-btn ${curMax==n?'active':''}" data-stars="${n}" onclick="setMaxRating(this);closeMobMenu()">&#128078; ${n}</button>`
     ).join('');
-    if (curStar || curExact) h += `<button class="star-filter-btn" onclick="clearRatingFilter();closeMobMenu()">clear</button>`;
+    if (curMin || curMax || curExact) h += `<button class="star-filter-btn" onclick="clearRatingFilter();closeMobMenu()">clear</button>`;
     exactEl.innerHTML = h;
   }
   // full-size preview toggle (gallery only)

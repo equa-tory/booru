@@ -283,7 +283,8 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
   .mini-row-top { gap:.7rem; padding:0 .4rem; justify-content:center; }
   .mini-row-bottom { gap:.35rem; padding:.2rem 0; }
   .mini-stars { display:flex; }
-  .mini-bar .mob-rate-star { font-size:1.7rem; padding:.2rem .25rem; }
+  .mini-bar .score-btn { font-size:1.6rem; padding:.2rem .3rem; }
+  .mini-bar .score-val { font-size:1.2rem; }
   .mini-bar .mob-rate-fav { font-size:1.25rem; background:none; border:none; padding:0 .3rem; flex:none; height:100%; }
   /* Row 2: secondary actions — equal-width, wide tap targets */
   .mini-icon {
@@ -372,9 +373,12 @@ body.minimal-ui #merge-block { display:none !important; }
 .meta-val { color:var(--text); font-family:var(--mono); font-size:.75rem; max-width:165px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .star-row { display:flex; gap:.25rem; align-items:center; }
-.star-btn { font-size:2.3rem; background:none; border:none; cursor:pointer; color:var(--text-dim); padding:0; line-height:1; -webkit-tap-highlight-color:transparent; }
-.star-btn.active { color:#ffd580; }
-.star-btn:active { color:#ffd580; }
+.score-ctl { display:inline-flex; align-items:center; gap:.2rem; }
+.score-btn { font-size:1.9rem; background:none; border:none; cursor:pointer; padding:.1rem .25rem; line-height:1; filter:grayscale(1) opacity(.55); -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+.score-btn:hover, .score-btn:active { filter:none; }
+.score-val { min-width:2.6ch; text-align:center; font-family:var(--mono); font-size:1.15rem; background:none; border:none; color:var(--text-dim); cursor:pointer; padding:.1rem .15rem; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+.score-val.pos { color:#ffd580; }
+.score-val.neg { color:#f87272; }
 .fav-btn { font-size:2.3rem; background:none; border:none; cursor:pointer; color:var(--text-dim); padding:.1rem .3rem; line-height:1; -webkit-tap-highlight-color:transparent; margin-left:.3rem; }
 .fav-btn.active { color:#f87272; }
 
@@ -432,12 +436,9 @@ body.minimal-ui #merge-block { display:none !important; }
 .mob-rate-pop { display:none; flex-direction:column; gap:.5rem; background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:.6rem .7rem; box-shadow:0 4px 24px rgba(0,0,0,.55); position:fixed; left:1rem; bottom:calc(var(--mobile-nav-h) + var(--safe-bottom) + .6rem); z-index:118; width:max-content; transition:opacity .2s; }
 @media (max-width:640px) { .mob-rate-pop { display:flex; } }
 .mob-rate-stars { display:flex; gap:.1rem; }
-.mob-rate-star { font-size:1.8rem; background:none; border:none; color:var(--text-dim); cursor:pointer; padding:.05rem; line-height:1; -webkit-tap-highlight-color:transparent; }
-.mob-rate-star.active { color:#ffd580; }
 .mob-rate-row2 { display:flex; gap:.4rem; align-items:center; }
 .mob-rate-fav { font-size:1.4rem; background:var(--bg3); border:1px solid var(--border); border-radius:10px; color:var(--text-dim); cursor:pointer; padding:.25rem 0; -webkit-tap-highlight-color:transparent; flex:1; }
 .mob-rate-fav.active { color:#f87272; border-color:#f87272; }
-.mob-rate-clear { font-family:var(--mono); font-size:.75rem; background:var(--bg3); border:1px solid var(--border); border-radius:10px; color:var(--text-dim); cursor:pointer; padding:.35rem .7rem; -webkit-tap-highlight-color:transparent; }
 
 /* Resize slider in info panel */
 .slider-row { display:flex; align-items:center; gap:.5rem; }
@@ -620,11 +621,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="info-section">
       <div class="info-label">rating</div>
       <div class="star-row">
-        {% for n in "12345" %}
-        <button class="star-btn {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="setRating({{ n }})">&#9733;</button>
-        {% endfor %}
-        <button class="fav-btn {% if post.fav %}active{% endif %}" id="fav-btn" onclick="toggleFav()">&#9829;</button>
-        {% if post.rating %}<button class="btn" style="font-size:.7rem;padding:.1rem .4rem;margin-left:.3rem;" onclick="setRating(0)">clear</button>{% endif %}
+        {% include "gallery/_score_control.html" %}
+        <button class="fav-btn {% if post.fav %}active{% endif %}" id="fav-btn" onclick="toggleFav()" title="favourite">&#9829;</button>
       </div>
     </div>
 
@@ -755,14 +753,9 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 
 <!-- Mobile floating buttons -->
 <div class="mob-rate-pop" id="mob-rate-pop">
-  <div class="mob-rate-stars" id="mob-rate-stars">
-    {% for n in "12345" %}
-    <button class="mob-rate-star {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
-    {% endfor %}
-  </div>
+  <div class="mob-rate-stars" id="mob-rate-stars">{% include "gallery/_score_control.html" %}</div>
   <div class="mob-rate-row2">
-    <button class="mob-rate-fav {% if post.fav %}active{% endif %}" id="mob-rate-fav" onclick="mobFav()">&#9829;</button>
-    <button class="mob-rate-clear" onclick="mobClear()">clear</button>
+    <button class="mob-rate-fav {% if post.fav %}active{% endif %}" id="mob-rate-fav" onclick="toggleFav()" title="favourite">&#9829;</button>
   </div>
 </div>
 <div class="mob-float-btns">
@@ -782,12 +775,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 </div>
 <div class="mini-bar mobile-only" id="mini-bar">
   <div class="mini-row mini-row-top">
-    <div class="mini-stars">
-      {% for n in "12345" %}
-      <button class="mob-rate-star {% if post.rating >= n|add:0 %}active{% endif %}" data-v="{{ n }}" onclick="mobRate({{ n }})">&#9733;</button>
-      {% endfor %}
-    </div>
-    <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="mobFav()">&#9829;</button>
+    <div class="mini-stars">{% include "gallery/_score_control.html" %}</div>
+    <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="toggleFav()" title="favourite">&#9829;</button>
     <button class="mini-mode" id="mini-mode-btn" onclick="toggleViewMode()" aria-label="scroll / paged mode" title="switch scroll / paged mode">&#9783;</button>
   </div>
   <div class="mini-row mini-row-bottom">
@@ -1899,7 +1888,9 @@ document.addEventListener('keydown', e => {
   if (k === bk('detail_back'))  { if (infoPanelOpen) toggleInfoPanel(false); else goBack(); return; }
   if (k === bk('toggle_info'))  { toggleInfoPanel(); return; }
   if (k === bk('toggle_view'))  { toggleViewMode(); return; }
-  if (k >= '0' && k <= '5')     { setRating(parseInt(k)); return; }   // 0 clears
+  if (k === '+' || k === '=')   { rateStep(1); return; }               // like
+  if (k === '-' || k === '_')   { rateStep(-1); return; }              // dislike
+  if (k === '0')                { rateReset(); return; }
   if (k === bk('fav'))          { toggleFav(); return; }
   if (k === bk('ai_tag'))       { e.preventDefault(); aiTag(); return; }
   if (k === bk('find_similar')) { e.preventDefault(); findSimilar(); return; }
@@ -2169,44 +2160,37 @@ function toggleInfoPanel(force) {
   attachDragDismiss(panel, () => toggleInfoPanel(false), {enabled: () => infoPanelOpen});
 })();
 
-/* ── Rating ─────────────────────────────────────────────── */
+/* ── Rating: a signed score (👍 +1 / 👎 -1); ♥ is the separate favourite flag ── */
 let currentRating = {{ post.rating }};
 let currentFav    = {{ post.fav|yesno:"true,false" }};
 
-async function setRating(n) {
-  currentRating = (currentRating===n) ? 0 : n;
-  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:currentRating, fav:currentFav})).json();
-  currentRating = d.rating;
-  document.querySelectorAll('.star-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.v)<=currentRating));
-  syncMobRatePop();
+const fmtScore = n => n > 0 ? '+' + n : String(n);
+function syncScore() {
+  document.querySelectorAll('.score-val').forEach(b => {
+    b.textContent = fmtScore(currentRating);
+    b.classList.toggle('pos', currentRating > 0);
+    b.classList.toggle('neg', currentRating < 0);
+  });
+  document.querySelectorAll('.fav-btn').forEach(b => b.classList.toggle('active', currentFav));
+  document.querySelectorAll('.mob-rate-fav').forEach(b => b.classList.toggle('active', currentFav));
+  document.getElementById('mob-fav-btn')?.classList.toggle('fav-active', currentFav);
+}
+// the server adds the step itself, so quick taps and a second open tab can't overwrite each other
+async function rateStep(delta) {
+  currentRating += delta; syncScore();                       // instant feedback; the answer below is authoritative
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {delta})).json();
+  currentRating = d.rating; syncScore();
+}
+async function rateReset() {
+  if (!currentRating) return;
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating: 0})).json();
+  currentRating = d.rating; syncScore();
 }
 async function toggleFav() {
-  currentFav = !currentFav;
-  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:currentRating, fav:currentFav})).json();
-  currentFav = d.fav;
-  document.getElementById('fav-btn')?.classList.toggle('active', currentFav);
-  document.getElementById('mob-fav-btn')?.classList.toggle('fav-active', currentFav);
-  syncMobRatePop();
+  currentFav = !currentFav; syncScore();
+  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {fav: currentFav})).json();
+  currentFav = d.fav; syncScore();
 }
-
-/* ── Mobile rating/like menu (always visible, bottom-left) ──── */
-function syncMobRatePop() {
-  document.querySelectorAll('.mob-rate-star').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.v) <= currentRating));
-  document.querySelectorAll('.mob-rate-fav').forEach(b => b.classList.toggle('active', currentFav));
-}
-function mobRate(n) { setRating(n); }
-async function mobClear() {
-  currentRating = 0;
-  currentFav    = false;
-  const d = await (await apiPost(`/api/post/${POST_ID}/rate/`, {rating:0, fav:false})).json();
-  currentRating = d.rating;
-  currentFav    = d.fav;
-  document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('fav-btn')?.classList.remove('active');
-  syncMobRatePop();
-}
-function mobFav()   { toggleFav(); }
 
 /* ── Delete post ─────────────────────────────────────────── */
 async function doDeletePost(alsoFiles) {
