@@ -214,6 +214,34 @@ class BackupTests(TestCase):
         self.assertIn('sess-NOW', keys)                          # still logged in
         self.assertEqual(self._rows(os.path.join(self.dir, backup.SNAPSHOT_NAME)), 4)   # safety copy
 
+    def test_backup_writes_plain_json_copy_of_settings(self):
+        prefs.set('quickLinks', [{'label': 'a', 'url': 'https://a.io'}])
+        prefs.set('recentSearches', ['x'])
+        backup.run_backup()
+        latest = json.load(open(os.path.join(self.dir, backup.SETTINGS_LATEST)))
+        self.assertEqual(latest['quickLinks'][0]['url'], 'https://a.io')
+        self.assertNotIn('recentSearches', latest)               # history churn stays out
+        self.assertTrue([n for n in os.listdir(self.dir) if n.startswith('settings-2')])
+        for i in range(backup.SETTINGS_KEEP + 3):                # dated copies are rotated
+            open(os.path.join(self.dir, f'settings-2000010{i:02d}-000000.json'), 'w').write('{}')
+        backup.export_settings(dated=True)
+        dated = [n for n in os.listdir(self.dir) if n.startswith('settings-2')]
+        self.assertEqual(len(dated), backup.SETTINGS_KEEP)
+
+    def test_restore_keeps_quick_links_added_after_the_snapshot(self):
+        prefs.set('quickLinks', [{'label': 'old', 'url': 'https://old.io'}])
+        name = backup.run_backup()
+        con = sqlite3.connect(self.db); con.execute("INSERT INTO gallery_post (v) VALUES ('later')"); con.commit(); con.close()
+        newer = [{'label': 'old', 'url': 'https://old.io'}, {'label': 'new', 'url': 'https://new.io'}]
+        prefs.set('quickLinks', newer)
+        backup.restore_from(os.path.join(self.dir, name))        # the temp DB has no Setting rows: prefs stay as they were
+        backup.merge_quick_links(newer)
+        urls = [l['url'] for l in prefs.get('quickLinks')]
+        self.assertEqual(urls, ['https://old.io', 'https://new.io'])
+        prefs.set('quickLinks', [{'label': 'old', 'url': 'https://old.io'}])      # what an older snapshot would hold
+        backup.merge_quick_links(newer)
+        self.assertEqual([l['url'] for l in prefs.get('quickLinks')], ['https://old.io', 'https://new.io'])
+
     def test_validate_rejects_garbage(self):
         bad = os.path.join(self.tmp, 'bad.sqlite3')
         with open(bad, 'wb') as f:
@@ -2642,3 +2670,19 @@ console.log(JSON.stringify(sc.calls));"""
         self.assertEqual((top['behavior'], bottom['behavior']), ('instant', 'instant'))
         self.assertEqual(top['top'], 292)                    # first item (offset 300) minus 8
         self.assertEqual(bottom['top'], 9000 + 1000 - 800 + 8)   # last item's bottom at the viewport bottom
+
+
+class SearchClearButtonTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def test_every_search_box_gets_a_clear_button(self):
+        html = self.client.get('/').content.decode()
+        self.assertIn("['tag-search', 'detail-search', 'sheet-search'].forEach(attachSearchClear)", html)
+        self.assertIn('class="search-go-btn"', html)
+
+    def test_quick_link_change_writes_settings_copy(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with mock.patch.object(backup, 'get_config', return_value={'path': d, 'enabled': True, 'max_backups': 1, 'interval_hours': 48}):
+            self.client.post('/api/quick-links/', json.dumps({'add': 'https://z.io'}), content_type='application/json')
+            self.assertIn('https://z.io', open(os.path.join(d, backup.SETTINGS_LATEST)).read())

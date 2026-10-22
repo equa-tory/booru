@@ -408,6 +408,13 @@ input[type=range].size-slider::-moz-range-thumb {
 
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator { display: inline; }
+.search-clear {
+  position: absolute; transform: translateY(-50%); z-index: 2; display: none;
+  width: 1.3rem; height: 1.3rem; padding: 0; border: none; border-radius: 50%;
+  background: var(--bg3); color: var(--text-dim); font-size: .95rem; line-height: 1.3rem; text-align: center;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.search-clear:hover { color: var(--text-bright); }
 </style>
 {% block extra_head %}{% endblock %}
 </head>
@@ -637,6 +644,50 @@ function withTagToggled(qs, name, neg) {
   tags.forEach(t => p.append('tag', t));
   return p;
 }
+/* ✕ inside a search box: empties the text (no search, no reload). It sits just left of the
+   lens button (or the box's right edge) and only shows while there is text. */
+function attachSearchClear(id) {
+  const inp = document.getElementById(id);
+  if (!inp || inp.dataset.clearX) return;
+  inp.dataset.clearX = '1';
+  const host = inp.parentElement;
+  if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+  const x = document.createElement('button');
+  x.type = 'button'; x.className = 'search-clear'; x.title = 'clear'; x.setAttribute('aria-label', 'clear the search box');
+  x.textContent = '\u00d7';
+  host.appendChild(x);
+  const padBase = parseFloat(getComputedStyle(inp).paddingRight) || 0;
+  const sync = () => {
+    const show = inp.value !== '';
+    x.style.display = show ? 'block' : 'none';
+    inp.style.paddingRight = (padBase + (show ? 24 : 0)) + 'px';
+    if (!show) return;
+    const lens = host.querySelector('button[title="search"]');
+    const edge = Math.min(inp.offsetLeft + inp.offsetWidth, lens && lens.offsetWidth ? lens.offsetLeft : Infinity);
+    x.style.right = Math.max(0, host.clientWidth - edge + 6) + 'px';
+    x.style.top = (inp.offsetTop + inp.offsetHeight / 2) + 'px';
+  };
+  x.addEventListener('mousedown', e => e.preventDefault());   // keep the focus (and the keyboard) in the box
+  x.addEventListener('click', () => {
+    inp.value = '';
+    inp.dispatchEvent(new Event('input', {bubbles: true}));   // suggestions / tag filter react as if typed
+    sync(); inp.focus();
+  });
+  ['input', 'focus', 'change', 'keyup'].forEach(ev => inp.addEventListener(ev, sync));
+  window.addEventListener('resize', sync);
+  window.addEventListener('pageshow', sync);
+  // programmatic writes (picking a suggestion, a recent-search chip…) update the ✕ too
+  const nativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  Object.defineProperty(inp, 'value', {
+    configurable: true,
+    get() { return nativeValue.get.call(this); },
+    set(v) { nativeValue.set.call(this, v); sync(); },
+  });
+  sync();
+}
+document.addEventListener('DOMContentLoaded', () =>
+  ['tag-search', 'detail-search', 'sheet-search'].forEach(attachSearchClear));
+
 /* POST with the CSRF header. body: undefined = none, FormData = as is, anything else = JSON.
    Returns the fetch promise (Response), so callers keep `.json()` / `.ok` / `.catch()`. */
 function apiPost(url, body, extra) {

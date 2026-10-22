@@ -184,6 +184,51 @@ def _prune(d, keep):
             os.remove(os.path.join(d, b['name']))
 
 
+# Settings are also copied as plain JSON next to the snapshots: tiny, human-readable,
+# and a restore of an old .sqlite3 can never take the newer copies away.
+SETTINGS_LATEST = 'settings-latest.json'
+SETTINGS_KEEP = 10                         # dated settings-YYYYmmdd-HHMMSS.json copies kept
+_VOLATILE_PREFS = ('recentPosts', 'recentSearches', 'recentTags')   # churn on every page view
+
+
+def export_settings(d=None, dated=False):
+    """Write all prefs (minus the recent-* history) to <backup folder>/settings-latest.json,
+    and with `dated` also to a timestamped copy (the newest SETTINGS_KEEP are kept).
+    Best effort: never raises. Returns the latest file's path or None."""
+    try:
+        d = d or get_config()['path']
+        os.makedirs(d, exist_ok=True)
+        data = {k: v for k, v in prefs.all().items() if k not in _VOLATILE_PREFS}
+        payload = json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True)
+        targets = [SETTINGS_LATEST]
+        if dated:
+            targets.append(f'settings-{time.strftime("%Y%m%d-%H%M%S", time.gmtime())}.json')
+        for name in targets:
+            tmp = os.path.join(d, name + '.tmp')
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(payload)
+            os.replace(tmp, os.path.join(d, name))
+        old = sorted(n for n in os.listdir(d) if n.startswith('settings-2') and n.endswith('.json'))
+        for n in old[:-SETTINGS_KEEP]:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(d, n))
+        return os.path.join(d, SETTINGS_LATEST)
+    except Exception as e:
+        print(f'backup: could not write the settings copy: {e}')
+        return None
+
+
+def merge_quick_links(before):
+    """After a restore: put back quick links the restored snapshot doesn't know about."""
+    if not isinstance(before, list):
+        return
+    def fn(cur):
+        cur = cur if isinstance(cur, list) else []
+        have = {l.get('url') for l in cur if isinstance(l, dict)}
+        return cur + [l for l in before if isinstance(l, dict) and l.get('url') and l['url'] not in have]
+    prefs.update('quickLinks', fn, [])
+
+
 def run_backup(task=None):
     """Take a snapshot into the backup folder, then rotate. Returns the file name."""
     cfg = get_config()
@@ -204,6 +249,7 @@ def run_backup(task=None):
         finally:
             live.close()
         _prune(d, cfg['max_backups'])
+    export_settings(d, dated=True)
     if task is not None:
         task.message = f'saved {name}'; task.save(update_fields=['message'])
     return name
@@ -240,6 +286,7 @@ def restore_from(path, task=None):
     from gallery.models import Task
 
     validate_backup(path)
+    links_now = prefs.get('quickLinks')   # a restore must not take newer quick links away
     cfg_now = get_config()          # the snapshot carries OLD settings (incl. this very config): re-apply it afterwards
     d = cfg_now['path']
     os.makedirs(d, exist_ok=True)
@@ -282,6 +329,10 @@ def restore_from(path, task=None):
         prefs.set('backup', {k: cfg_now[k] for k in ('enabled', 'max_backups', 'interval_hours', 'path')})
     except Exception as e:
         print(f'restore: could not re-apply backup settings: {e}')
+    try:
+        merge_quick_links(links_now)
+    except Exception as e:
+        print(f'restore: could not re-apply quick links: {e}')
     if keep:
         started = keep.pop('started_at')
         Task.objects.update_or_create(pk=keep.pop('pk'), defaults=dict(keep, status='running'))

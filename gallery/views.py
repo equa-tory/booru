@@ -2598,6 +2598,7 @@ def quick_links_api(request):
         links += [l for l in added if l['url'] not in have and not have.add(l['url'])]
         links = links[:QUICK_LINKS_MAX]
         _set_pref('quickLinks', links)
+        _backup.export_settings()      # plain-JSON copy next to the DB backups
     return JsonResponse({'links': links})
 
 
