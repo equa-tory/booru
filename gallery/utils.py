@@ -471,6 +471,85 @@ def create_post_from_files(paths, title='', recount=True):
     return post
 
 
+_MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+_DAY_RE = re.compile(r'^\d{2}$')
+
+
+def is_month_bucket(path):
+    """inbox/_/YYYY-MM — a tidy bucket holding DD/<post folder> dirs, not a post itself."""
+    if not _MONTH_RE.match(os.path.basename(path)) or not os.path.isdir(path):
+        return False
+    kids = os.listdir(path)
+    return bool(kids) and all(_DAY_RE.match(k) and os.path.isdir(os.path.join(path, k)) for k in kids)
+
+
+def multi_post_folders(multi_dir):
+    """[(folder name, path)] of every multi-image post folder under inbox/_/: the direct
+    children, plus the ones tidied into _/YYYY-MM/DD/<folder>/."""
+    out = []
+    for name in sorted(os.listdir(multi_dir), key=natural_key):
+        path = os.path.join(multi_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if is_month_bucket(path):
+            for day in sorted(os.listdir(path)):
+                dpath = os.path.join(path, day)
+                for sub in sorted(os.listdir(dpath), key=natural_key):
+                    if os.path.isdir(os.path.join(dpath, sub)):
+                        out.append((sub, os.path.join(dpath, sub)))
+        else:
+            out.append((name, path))
+    return out
+
+
+def tidy_multi_folders():
+    """Move every multi-image post folder inbox/_/<name>/ into inbox/_/YYYY-MM/DD/<name>/
+    (the same day buckets single files get), dated by the folder's first file. Only folders
+    the library already knows are moved (scan first); stored paths are updated and
+    thumbnails stay valid. Returns the number of folders moved."""
+    import datetime as _dt
+    from gallery.models import Photo
+    multi_root = os.path.normpath(os.path.join(settings.MEDIA_ROOT, 'inbox', '_'))
+    groups = {}                                   # folder name -> its photos
+    for photo in Photo.objects.filter(rel_path__contains=os.sep + '_' + os.sep):
+        fp = os.path.normpath(photo.file_path)
+        if not fp.startswith(multi_root + os.sep):
+            continue
+        parts = fp[len(multi_root) + 1:].split(os.sep)
+        if len(parts) < 2 or is_month_bucket(os.path.join(multi_root, parts[0])):
+            continue                              # a loose file in _/ , or already in a date bucket
+        groups.setdefault(parts[0], []).append((photo, parts[1:]))
+    moved = 0
+    for name, items in groups.items():
+        src = os.path.join(multi_root, name)
+        if not os.path.isdir(src):
+            continue
+        files = sorted((f for f in os.listdir(src) if os.path.isfile(os.path.join(src, f))), key=natural_key)
+        ref = os.path.join(src, files[0]) if files else os.path.normpath(items[0][0].file_path)
+        try:
+            d = _dt.datetime.fromtimestamp(os.path.getmtime(ref))
+        except OSError:
+            continue
+        bucket = os.path.join(multi_root, d.strftime('%Y-%m'), d.strftime('%d'))
+        dest = os.path.join(bucket, name)
+        n = 1
+        while os.path.exists(dest):               # same name already used that day
+            dest = os.path.join(bucket, f'{name}_{n}')
+            n += 1
+        try:
+            os.makedirs(bucket, exist_ok=True)
+            os.rename(src, dest)
+        except OSError as e:
+            print(f'tidy_multi_folders: {src} -> {dest}: {e}')
+            continue
+        for photo, rest in items:
+            photo.file_path = os.path.join(dest, *rest)
+        Photo.objects.bulk_update([p for p, _ in items], ['rel_path'])
+        moved += 1
+    return moved
+
+
+
 def scan_inbox():
     from gallery.models import Photo
     inbox     = os.path.join(settings.MEDIA_ROOT, 'inbox')
@@ -495,10 +574,7 @@ def scan_inbox():
     extend_post = []
 
     if os.path.isdir(multi_dir):
-        for folder_name in sorted(os.listdir(multi_dir), key=natural_key):
-            folder_path = os.path.join(multi_dir, folder_name)
-            if not os.path.isdir(folder_path):
-                continue
+        for folder_name, folder_path in multi_post_folders(multi_dir):
             new_files = []
             for root, _, fnames in os.walk(folder_path):
                 for f in sorted(fnames, key=natural_key):

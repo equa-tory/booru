@@ -18,7 +18,8 @@ from .models import (Post, Photo, Tag, Task, Folder, CustomConcept, CustomExampl
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
-                    make_gif_from_post, recount_tags, TaskCancelled, check_cancel)
+                    make_gif_from_post, recount_tags, tidy_multi_folders,
+                    TaskCancelled, check_cancel)
 from . import char_tagger, ai_models, custom_model, prefs, comfy
 
 
@@ -2166,7 +2167,7 @@ def organize_singles(request):
             moved += 1
         except OSError as e:
             print(f"organize_singles error post {post.pk}: {e}")
-    return JsonResponse({'ok': True, 'moved': moved})
+    return JsonResponse({'ok': True, 'moved': moved, 'folders': tidy_multi_folders()})
 
 
 @require_POST
@@ -2216,7 +2217,7 @@ def organize_singles_deep(request):
             moved += 1
         except OSError as e:
             print(f'organize_singles_deep error post {post.pk}: {e}')
-    return JsonResponse({'ok': True, 'moved': moved})
+    return JsonResponse({'ok': True, 'moved': moved, 'folders': tidy_multi_folders()})
 
 
 @require_POST

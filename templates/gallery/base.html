@@ -429,7 +429,7 @@ input[type=range].size-slider::-moz-range-thumb {
     <button class="btn" id="ai-all-btn" onclick="aiTagAll()">✦ ai tag all</button>
     <button class="btn header-desktop" onclick="goRandom()">&#9684; random</button>
     <a class="btn header-desktop" href="/tags/edit/">&#9998; tags</a>
-    <button class="btn header-desktop" onclick="organizeSingles()" title="move loose root files into month folders (faster to browse on disk)">&#128193; tidy files</button>
+    <button class="btn header-desktop" onclick="organizeSingles()" title="move loose root files and multi-image post folders into month/day folders (faster to browse on disk)">&#128193; tidy files</button>
     <!-- "fix folders" kept available but hidden from the top bar (run from
          console or re-enable here if needed). Hidden on phone too (no mobile
          menu entry exists for it). -->
@@ -1274,12 +1274,12 @@ function goRandom() {
 }
 
 async function organizeSingles() {
-  if (!confirm('Tidy loose single files in the inbox root into month/day folders (inbox/YYYY-MM/DD/)?\n\nThis moves files on disk and updates their paths. Multi-image posts are left alone. Safe to run anytime.')) return;
+  if (!confirm('Tidy the inbox into month/day folders?\n\nLoose single files go to inbox/YYYY-MM/DD/, multi-image post folders to inbox/_/YYYY-MM/DD/<folder>/. This moves files on disk and updates their paths. Safe to run anytime.')) return;
   startProgress();
   try {
     const d = await (await apiPost('/api/organize-singles/')).json();
     doneProgress();
-    toast(`tidied ${d.moved||0} file(s) into month/day folders`);
+    toast(`tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s) into month/day folders`);
   } catch(e) { doneProgress(); toast('error tidying files','err'); }
 }
 
@@ -1289,7 +1289,7 @@ async function organizeSinglesDeep() {
   try {
     const d = await (await apiPost('/api/organize-singles-deep/')).json();
     doneProgress();
-    toast(`re-tidied ${d.moved||0} file(s)`);
+    toast(`re-tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s)`);
   } catch(e) { doneProgress(); toast('error','err'); }
 }
 

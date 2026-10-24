@@ -116,6 +116,33 @@ class ScanTests(TestCase):
             cpf.assert_not_called()
         self.assertEqual(Post.objects.count(), 3)
 
+    def test_tidy_moves_multi_folders_into_date_buckets_and_scan_still_works(self):
+        import datetime as _dt
+        self._scan()
+        src = os.path.join(self.root, 'inbox', '_', 'set1')
+        stamp = _dt.datetime(2025, 3, 7, 12).timestamp()
+        for f in os.listdir(src):
+            os.utime(os.path.join(src, f), (stamp, stamp))
+        self.assertEqual(views.tidy_multi_folders(), 1)
+        new = os.path.join(self.root, 'inbox', '_', '2025-03', '07', 'set1')
+        self.assertTrue(os.path.isfile(os.path.join(new, '1.gif')))
+        self.assertFalse(os.path.exists(src))
+        self.assertEqual(sorted(p.file_path for p in Photo.objects.filter(post__images__rel_path__contains='set1').distinct()),
+                         [os.path.join(new, '1.gif'), os.path.join(new, '2.gif')])
+        self.assertEqual(views.tidy_multi_folders(), 0)         # idempotent
+        # a re-scan sees the dated folder as the SAME post (no bogus "2025-03" post) and extends it
+        Image.new('RGB', (40, 30), (9, 9, 9)).save(os.path.join(new, '3.gif'))
+        self._scan()
+        self.assertEqual(Post.objects.count(), 3)
+        self.assertEqual(Photo.objects.filter(rel_path__contains='set1').count(), 3)
+        # same folder name on the same day gets a suffix instead of merging
+        os.makedirs(os.path.join(self.root, 'inbox', '_', 'set1'))
+        Image.new('RGB', (40, 30), (50, 50, 50)).save(os.path.join(self.root, 'inbox', '_', 'set1', 'x.gif'))
+        os.utime(os.path.join(self.root, 'inbox', '_', 'set1', 'x.gif'), (stamp, stamp))
+        self._scan()
+        self.assertEqual(views.tidy_multi_folders(), 1)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, 'inbox', '_', '2025-03', '07', 'set1_1')))
+
     def test_scan_prunes_deleted_files_and_empty_posts(self):
         self._scan()
         os.remove(os.path.join(self.root, 'inbox', 'a.gif'))
