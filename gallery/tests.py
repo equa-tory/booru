@@ -123,13 +123,13 @@ class ScanTests(TestCase):
         stamp = _dt.datetime(2025, 3, 7, 12).timestamp()
         for f in os.listdir(src):
             os.utime(os.path.join(src, f), (stamp, stamp))
-        self.assertEqual(views.tidy_multi_folders(), 1)
+        self.assertEqual(views.tidy_multi_folders(), (1, 0))
         new = os.path.join(self.root, 'inbox', '_', '2025-03', '07', 'set1')
         self.assertTrue(os.path.isfile(os.path.join(new, '1.gif')))
         self.assertFalse(os.path.exists(src))
         self.assertEqual(sorted(p.file_path for p in Photo.objects.filter(post__images__rel_path__contains='set1').distinct()),
                          [os.path.join(new, '1.gif'), os.path.join(new, '2.gif')])
-        self.assertEqual(views.tidy_multi_folders(), 0)         # idempotent
+        self.assertEqual(views.tidy_multi_folders(), (0, 0))    # idempotent
         # a re-scan sees the dated folder as the SAME post (no bogus "2025-03" post) and extends it
         Image.new('RGB', (40, 30), (9, 9, 9)).save(os.path.join(new, '3.gif'))
         self._scan()
@@ -140,8 +140,17 @@ class ScanTests(TestCase):
         Image.new('RGB', (40, 30), (50, 50, 50)).save(os.path.join(self.root, 'inbox', '_', 'set1', 'x.gif'))
         os.utime(os.path.join(self.root, 'inbox', '_', 'set1', 'x.gif'), (stamp, stamp))
         self._scan()
-        self.assertEqual(views.tidy_multi_folders(), 1)
+        self.assertEqual(views.tidy_multi_folders(), (1, 0))
         self.assertTrue(os.path.isdir(os.path.join(self.root, 'inbox', '_', '2025-03', '07', 'set1_1')))
+        # empty leftovers go, folders with any file (even non-media) and the buckets stay
+        multi = os.path.join(self.root, 'inbox', '_')
+        os.makedirs(os.path.join(multi, 'empty', 'deeper'))
+        os.makedirs(os.path.join(multi, 'junk', 'sub'))
+        open(os.path.join(multi, 'junk', 'sub', 'a.txt'), 'w').write('x')
+        self.assertEqual(views.tidy_multi_folders(), (0, 1))
+        self.assertFalse(os.path.exists(os.path.join(multi, 'empty')))
+        self.assertTrue(os.path.isfile(os.path.join(multi, 'junk', 'sub', 'a.txt')))
+        self.assertTrue(os.path.isdir(os.path.join(multi, '2025-03', '07', 'set1')))
 
     def test_scan_prunes_deleted_files_and_empty_posts(self):
         self._scan()

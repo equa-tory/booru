@@ -19,7 +19,7 @@ Paths like `media/inbox/` below are relative to `settings.MEDIA_ROOT`, which may
 Two paths, both funnel through `gallery/utils.py::scan_inbox`:
 1. Drop files into `media/inbox/` (subfolders OK), then click "scan inbox" (POST `/api/scan-bg/`).
 2. Browser upload (POST `/api/upload/`) writes into `media/inbox/` then ingests.
-Convention: `media/inbox/_/<folder>/` = one multi-image Post; loose files in `media/inbox/` = one Post each. Optional per-month tidy folders `inbox/YYYY-MM/DD/`. The "tidy files" button (`organize_singles`, also "re-tidy all") buckets loose files into `inbox/YYYY-MM/DD/` AND multi-image folders into `inbox/_/YYYY-MM/DD/<folder>/` (`utils.tidy_multi_folders`, dated by the folder's first file, only folders already in the library); `scan_inbox` finds post folders both directly under `_` and inside such buckets (`multi_post_folders`, `is_month_bucket`), so never treat a direct child of `_` as automatically a post.
+Convention: `media/inbox/_/<folder>/` = one multi-image Post; loose files in `media/inbox/` = one Post each. Optional per-month tidy folders `inbox/YYYY-MM/DD/`. The "tidy files" button (`organize_singles`, also "re-tidy all") buckets loose files into `inbox/YYYY-MM/DD/` AND multi-image folders into `inbox/_/YYYY-MM/DD/<folder>/` (`utils.tidy_multi_folders`, dated by the folder's first file, only folders already in the library; empty leftover folders in `_` are removed, folders holding only non-media files stay); `scan_inbox` finds post folders both directly under `_` and inside such buckets (`multi_post_folders`, `is_month_bucket`), so never treat a direct child of `_` as automatically a post.
 
 ## Architecture
 - Single Django app `gallery`; project package `booru`.

@@ -1279,7 +1279,7 @@ async function organizeSingles() {
   try {
     const d = await (await apiPost('/api/organize-singles/')).json();
     doneProgress();
-    toast(`tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s) into month/day folders`);
+    toast(`tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s) into month/day folders` + (d.emptied ? `, removed ${d.emptied} empty folder(s)` : ''));
   } catch(e) { doneProgress(); toast('error tidying files','err'); }
 }
 
@@ -1289,7 +1289,7 @@ async function organizeSinglesDeep() {
   try {
     const d = await (await apiPost('/api/organize-singles-deep/')).json();
     doneProgress();
-    toast(`re-tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s)`);
+    toast(`re-tidied ${d.moved||0} file(s) and ${d.folders||0} multi-post folder(s)` + (d.emptied ? `, removed ${d.emptied} empty folder(s)` : ''));
   } catch(e) { doneProgress(); toast('error','err'); }
 }
 

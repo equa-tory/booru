@@ -502,11 +502,30 @@ def multi_post_folders(multi_dir):
     return out
 
 
+def prune_empty_multi_dirs(multi_root):
+    """rmdir the EMPTY folders left directly under inbox/_/ (e.g. after their files were merged
+    or moved away). A folder is removed only when it holds no file at any depth; anything
+    with content, and the date buckets, stay. Returns how many top-level folders went."""
+    removed = 0
+    for name in os.listdir(multi_root):
+        path = os.path.join(multi_root, name)
+        if not os.path.isdir(path) or is_month_bucket(path):
+            continue
+        for root, _dirs, _files in os.walk(path, topdown=False):
+            try:
+                os.rmdir(root)                    # fails (and is skipped) unless completely empty
+            except OSError:
+                pass
+        removed += not os.path.exists(path)
+    return removed
+
+
 def tidy_multi_folders():
     """Move every multi-image post folder inbox/_/<name>/ into inbox/_/YYYY-MM/DD/<name>/
     (the same day buckets single files get), dated by the folder's first file. Only folders
     the library already knows are moved (scan first); stored paths are updated and
-    thumbnails stay valid. Returns the number of folders moved."""
+    thumbnails stay valid. Empty leftover folders in inbox/_/ are removed too.
+    Returns (folders moved, empty folders removed)."""
     import datetime as _dt
     from gallery.models import Photo
     multi_root = os.path.normpath(os.path.join(settings.MEDIA_ROOT, 'inbox', '_'))
@@ -546,7 +565,7 @@ def tidy_multi_folders():
             photo.file_path = os.path.join(dest, *rest)
         Photo.objects.bulk_update([p for p, _ in items], ['rel_path'])
         moved += 1
-    return moved
+    return moved, (prune_empty_multi_dirs(multi_root) if os.path.isdir(multi_root) else 0)
 
 
 

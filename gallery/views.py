@@ -2167,7 +2167,8 @@ def organize_singles(request):
             moved += 1
         except OSError as e:
             print(f"organize_singles error post {post.pk}: {e}")
-    return JsonResponse({'ok': True, 'moved': moved, 'folders': tidy_multi_folders()})
+    folders, emptied = tidy_multi_folders()
+    return JsonResponse({'ok': True, 'moved': moved, 'folders': folders, 'emptied': emptied})
 
 
 @require_POST
@@ -2217,7 +2218,8 @@ def organize_singles_deep(request):
             moved += 1
         except OSError as e:
             print(f'organize_singles_deep error post {post.pk}: {e}')
-    return JsonResponse({'ok': True, 'moved': moved, 'folders': tidy_multi_folders()})
+    folders, emptied = tidy_multi_folders()
+    return JsonResponse({'ok': True, 'moved': moved, 'folders': folders, 'emptied': emptied})
 
 
 @require_POST
