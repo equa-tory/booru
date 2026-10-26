@@ -1090,7 +1090,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', video_len:'Measuring video lengths', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', video_len:'Measuring video lengths', wipe:'Wiping posts', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;
@@ -1126,6 +1126,7 @@ function checkWatchedTask(tasks) {
   const label = TASK_LABELS[t.kind] || t.kind;
   if (t.status === 'done') toast(label + ' done' + (m ? ' → post #' + m[1] + ' (open it from the task card)' : ''));
   else toast(label + ' ' + (t.status === 'error' ? 'failed: ' + (t.error || '').slice(0, 120) : 'stopped'), 'err');
+  if (t.kind === 'wipe' && t.status === 'done' && typeof reloadKeepingScroll === 'function') setTimeout(reloadKeepingScroll, 800);
 }
 async function pollTasks(force) {
   // when notifications are off OR fast mode is on, skip polling to cut traffic —

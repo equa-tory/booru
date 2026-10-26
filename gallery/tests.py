@@ -11,7 +11,7 @@ from django.utils import timezone
 from PIL import Image
 
 from . import prefs, views
-from .models import Photo, Post, Tag, Task
+from .models import Folder, Photo, Post, Tag, Task
 from .utils import (TaskCancelled, add_tags_to_post, check_cancel,
                     recount_tags)
 
@@ -2815,3 +2815,144 @@ class SignedRatingTests(TestCase):
         self.assertIn('class="score-val neg"', html)
         self.assertIn('>-1</button>', html)
         self.assertIn('rating:', self.client.get('/').content.decode())    # cheat sheet entry
+
+
+class WipeAndSplitTests(TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        o = override_settings(MEDIA_ROOT=self.root); o.enable(); self.addCleanup(o.disable)
+        os.makedirs(os.path.join(self.root, 'thumbs'))
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+
+    def make(self, rel, data=b'secret-bytes' * 1000, thumb=True):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, 'wb').write(data)
+        photo = Photo(rel_path=rel)
+        if thumb:
+            tp = os.path.join(self.root, 'thumbs', os.path.basename(rel) + '.jpg')
+            open(tp, 'wb').write(b'thumb' * 100)
+            photo.rel_thumb_path = os.path.relpath(tp, self.root)
+        return photo
+
+    def post_with(self, *rels, **kw):
+        post = Post.objects.create(**kw)
+        for i, rel in enumerate(rels):
+            ph = self.make(rel); ph.post = post; ph.order = i; ph.save()
+        return post
+
+    def test_wipe_file_zero_fills_then_deletes(self):
+        path = os.path.join(self.root, 'inbox', 'a.bin')
+        os.makedirs(os.path.dirname(path)); open(path, 'wb').write(b'\x01' * 5000)
+        seen = {}
+        orig = __import__('gallery.utils', fromlist=['x'])
+        real_remove = os.remove
+        def remove(p):
+            seen['size_at_remove'] = os.path.getsize(p)
+            real_remove(p)
+        with mock.patch.object(os, 'remove', remove):
+            self.assertEqual(orig.wipe_file(path), 'wiped')
+        self.assertEqual(seen['size_at_remove'], 0)
+        self.assertFalse(os.path.exists(path))
+        # the bytes written before the cut are zeros
+        open(path, 'wb').write(b'\x01' * 5000)
+        written = []
+        real_open = open
+        def spy_open(p, mode='r', *a, **k):
+            f = real_open(p, mode, *a, **k)
+            if str(p) == path and 'r+b' in mode:
+                w = f.write
+                f.write = lambda b: (written.append(bytes(b)), w(b))[1]
+            return f
+        with mock.patch('builtins.open', spy_open):
+            orig.wipe_file(path)
+        self.assertEqual(b''.join(written), b'\x00' * 5000)
+        self.assertEqual(orig.wipe_file(path), 'missing')
+
+    def test_wipe_refuses_outside_media_root_and_unlinks_hardlinks(self):
+        from . import utils
+        outside = tempfile.NamedTemporaryFile(delete=False); outside.write(b'keep me'); outside.close()
+        self.addCleanup(os.unlink, outside.name)
+        self.assertEqual(utils.wipe_file(outside.name), 'refused')
+        self.assertEqual(open(outside.name, 'rb').read(), b'keep me')
+        a = os.path.join(self.root, 'a.bin'); b = os.path.join(self.root, 'b.bin')
+        open(a, 'wb').write(b'data'); os.link(a, b)
+        self.assertEqual(utils.wipe_file(a), 'unlinked')           # the other name keeps its data
+        self.assertEqual(open(b, 'rb').read(), b'data')
+
+    def test_wipe_endpoint_erases_everything_but_shared_files(self):
+        tag = Tag.objects.create(name='solo', count=0)
+        p = self.post_with('inbox/_/set/1.png', 'inbox/_/set/2.png')
+        p.tags.add(tag); tag.update_count()
+        # another post's item that points at the same thumbnail file: that thumbnail must survive
+        other = Post.objects.create()
+        Photo.objects.create(post=other, rel_path='inbox/elsewhere.png', rel_thumb_path=p.images.order_by('order')[1].rel_thumb_path)
+        prefs.set('recentPosts', [{'id': p.id}, {'id': 999}])
+        folder = Folder.objects.create(name='f'); folder.posts.add(p)
+        files = [os.path.join(self.root, f) for f in ('inbox/_/set/1.png', 'inbox/_/set/2.png')]
+        thumbs = [os.path.join(self.root, 'thumbs', '1.png.jpg')]
+        shared_thumb = os.path.join(self.root, 'thumbs', '2.png.jpg')
+        with mock.patch.object(views, '_start_task', return_value=Task.objects.create(kind='wipe', status='done')) as st:
+            r = self.client.post('/api/wipe/', json.dumps({'ids': [p.id]}), content_type='application/json')
+            self.assertTrue(r.json()['ok'])
+            self.assertEqual(self.client.post('/api/wipe/', '{}', content_type='application/json').status_code, 400)
+        task = Task.objects.create(kind='wipe')
+        views._wipe_work(task, [p.id])                       # what the background thread runs
+        task.refresh_from_db()
+        self.assertIn('wiped 1 post(s)', task.message)
+        self.assertFalse(Post.objects.filter(pk=p.pk).exists())
+        for f in files + thumbs:
+            self.assertFalse(os.path.exists(f), f)
+        self.assertFalse(os.path.exists(os.path.join(self.root, 'inbox', '_', 'set')))      # empty folder removed
+        self.assertTrue(os.path.isfile(shared_thumb))                                       # still used by another post
+        self.assertFalse(Tag.objects.filter(name='solo').exists())
+        self.assertEqual(prefs.get('recentPosts'), [{'id': 999}])
+        self.assertEqual(folder.posts.count(), 0)
+
+    def test_wipe_keeps_the_post_when_a_file_cannot_be_wiped(self):
+        from . import utils
+        p = self.post_with('inbox/x.png')
+        with mock.patch.object(utils, 'wipe_file', side_effect=PermissionError('nope')):
+            res = utils.wipe_post(p)
+        self.assertTrue(res['failed'])
+        self.assertTrue(Post.objects.filter(pk=p.pk).exists())
+
+    def test_split_post_into_separate_posts_in_same_folders(self):
+        tag = Tag.objects.create(name='t1', count=0)
+        src = self.post_with('inbox/_/s/1.png', 'inbox/_/s/2.png', 'inbox/_/s/3.png', title='orig', rating=2, fav=True)
+        src.tags.add(tag); tag.update_count()
+        f_manual = Folder.objects.create(name='m'); f_manual.posts.add(src)
+        f_smart = Folder.objects.create(name='s', is_smart=True, query='tag=t1')
+        derived = Post.objects.create(source_post=src, source_photo=src.images.order_by('order')[1])
+        old_added = src.added_at
+        r = self.client.post(f'/api/post/{src.id}/split-all/')
+        d = r.json()
+        self.assertEqual(d['count'], 3)
+        self.assertFalse(Post.objects.filter(pk=src.pk).exists())
+        posts = [Post.objects.get(pk=i) for i in d['new_post_ids']]
+        self.assertEqual([p.images.count() for p in posts], [1, 1, 1])
+        self.assertEqual([p.images.get().filename for p in posts], ['1.png', '2.png', '3.png'])
+        for p in posts:
+            self.assertGreater(p.added_at, old_added)                       # added "now"
+            self.assertEqual(list(p.tags.values_list('name', flat=True)), ['t1'])
+            self.assertEqual(list(p.folders.values_list('id', flat=True)), [f_manual.id])
+            self.assertEqual((p.rating, p.fav), (2, True))
+        self.assertEqual(Tag.objects.get(name='t1').count, 3)
+        derived.refresh_from_db()
+        self.assertEqual(derived.source_post_id, posts[1].id)               # still points at the right item's post
+        self.assertEqual(self.client.post(f'/api/post/{posts[0].id}/split-all/').status_code, 400)   # one item: nothing to split
+
+    def test_bulk_split(self):
+        a = self.post_with('inbox/_/a/1.png', 'inbox/_/a/2.png')
+        b = self.post_with('inbox/solo.png')
+        r = self.client.post('/api/bulk/', json.dumps({'ids': [a.id, b.id], 'action': 'split_all'}), content_type='application/json').json()
+        self.assertEqual((r['split'], r['created']), (1, 2))
+        self.assertTrue(Post.objects.filter(pk=b.pk).exists())
+
+    def test_pages_have_the_buttons(self):
+        p = self.post_with('inbox/_/a/1.png', 'inbox/_/a/2.png')
+        html = self.client.get(f'/post/{p.id}/').content.decode()
+        self.assertIn('wipePost()', html); self.assertIn('splitPostAll()', html)
+        html = self.client.get('/').content.decode()
+        self.assertIn('bulkWipe()', html); self.assertIn('bulkSplit()', html)

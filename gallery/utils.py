@@ -751,6 +751,98 @@ def delete_post(post, also_files=False):
     T.objects.filter(count=0).delete()
 
 
+WIPE_CHUNK = 1 << 20
+
+
+def _inside_media_root(path):
+    root = os.path.realpath(settings.MEDIA_ROOT)
+    return os.path.realpath(path).startswith(root + os.sep)
+
+
+def wipe_file(path):
+    """Overwrite a file with zero bytes (same length, flushed to disk), cut it to 0 bytes,
+    then delete it. Returns 'wiped', 'missing', 'unlinked' (a symlink or hard link: only the
+    name was removed, because writing through it would zero the other name too) or 'refused'
+    (outside MEDIA_ROOT). Raises OSError when the file exists but can't be changed."""
+    if not path or not (os.path.lexists(path)):
+        return 'missing'
+    if not _inside_media_root(path):
+        return 'refused'
+    if os.path.islink(path) or os.stat(path).st_nlink > 1:
+        os.remove(path)
+        return 'unlinked'
+    with open(path, 'r+b') as f:
+        left = os.fstat(f.fileno()).st_size
+        zeros = bytes(min(WIPE_CHUNK, left)) if left else b''
+        while left > 0:
+            n = min(len(zeros), left)
+            f.write(zeros[:n])
+            left -= n
+        f.flush()
+        os.fsync(f.fileno())
+        f.truncate(0)
+        f.flush()
+        os.fsync(f.fileno())
+    os.remove(path)
+    return 'wiped'
+
+
+def _prune_empty_parents(path):
+    """rmdir the (now empty) folders above a removed file, never MEDIA_ROOT, inbox or inbox/_."""
+    keep = {os.path.realpath(p) for p in (
+        settings.MEDIA_ROOT, os.path.join(settings.MEDIA_ROOT, 'inbox'),
+        os.path.join(settings.MEDIA_ROOT, 'inbox', '_'))}
+    d = os.path.dirname(os.path.realpath(path))
+    root = os.path.realpath(settings.MEDIA_ROOT)
+    while d.startswith(root + os.sep) and d not in keep:
+        try:
+            os.rmdir(d)
+        except OSError:
+            break
+        d = os.path.dirname(d)
+
+
+def wipe_post(post):
+    """Permanently erase a post: every file and thumbnail is zero-filled and deleted, the empty
+    folders it leaves are removed, then the post row (items, tag links, folder membership) and
+    its entry in the recent-posts history go. A file shared with another post is left alone.
+    If any file cannot be wiped the post is KEPT (so it can be retried) and the names that
+    failed are reported. Returns {'files': n, 'bytes': n, 'failed': [names]}."""
+    from gallery import prefs
+    from gallery.models import Photo, Tag
+    photos = list(post.images.all())
+    stats = {'files': 0, 'bytes': 0, 'failed': []}
+    for photo in photos:
+        targets = []
+        if not Photo.objects.filter(rel_path=photo.rel_path).exclude(post=post).exists():
+            targets.append(photo.file_path)
+        if photo.rel_thumb_path and not Photo.objects.filter(rel_thumb_path=photo.rel_thumb_path).exclude(post=post).exists():
+            targets.append(photo.thumb_path)
+        for path in targets:
+            try:
+                size = os.path.getsize(path) if os.path.isfile(path) else 0
+                if wipe_file(path) in ('wiped', 'unlinked'):
+                    stats['files'] += 1
+                    stats['bytes'] += size
+                    _prune_empty_parents(path)
+            except OSError as e:
+                print(f'wipe_post {post.pk}: {path}: {e}')
+                stats['failed'].append(os.path.basename(path))
+    if stats['failed']:
+        return stats
+    tags = list(post.tags.all())
+    pid = post.pk
+    post.delete()
+    for tag in tags:
+        tag.update_count()
+    Tag.objects.filter(count=0).delete()
+    try:
+        prefs.update('recentPosts', lambda r: [x for x in (r if isinstance(r, list) else []) if x.get('id') != pid], default=[])
+    except Exception as e:
+        print(f'wipe_post {pid}: could not clear recent history: {e}')
+    return stats
+
+
 def _safe_folder_name(name):
     """Make a string safe for use as a folder name."""
     import re

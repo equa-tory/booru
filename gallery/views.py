@@ -18,7 +18,7 @@ from .models import (Post, Photo, Tag, Task, Folder, CustomConcept, CustomExampl
 from .utils import (scan_inbox, create_post_from_files, ingest_photo,
                     add_tags_to_post, delete_post, phash_distance, make_thumb,
                     make_video_thumb, retag_all_videos, sync_sound_tag,
-                    make_gif_from_post, recount_tags, tidy_multi_folders,
+                    make_gif_from_post, recount_tags, tidy_multi_folders, wipe_post,
                     TaskCancelled, check_cancel)
 from . import char_tagger, ai_models, custom_model, prefs, comfy
 
@@ -1522,6 +1522,90 @@ def delete_post_view(request, pk):
     return JsonResponse({'ok': True})
 
 
+def _wipe_work(task, ids):
+    """Permanently erase the posts (files zero-filled first, see utils.wipe_post). Stops between
+    posts when cancelled, never in the middle of one."""
+    posts = list(Post.objects.filter(id__in=ids))
+    task.total = len(posts); task.done = 0
+    task.save(update_fields=['total', 'done'])
+    files = freed = 0
+    kept = []
+    for i, post in enumerate(posts):
+        check_cancel(task)
+        pid = post.pk
+        task.message = f'wiping post #{pid} ({i + 1}/{len(posts)})…'
+        task.save(update_fields=['message'])
+        res = wipe_post(post)
+        files += res['files']; freed += res['bytes']
+        if res['failed']:
+            kept.append(pid)
+        task.done = i + 1
+        task.save(update_fields=['done'])
+    msg = f'wiped {len(posts) - len(kept)} post(s): {files} file(s), {freed / 1048576:.1f} MB overwritten with zeros and deleted'
+    if kept:
+        msg += f' · kept {len(kept)} that could not be fully wiped: #' + ', #'.join(map(str, kept[:10]))
+    task.message = msg[:300]
+    task.save(update_fields=['message'])
+
+
+@require_POST
+def wipe_posts(request):
+    """{ids: [post ids]} -> background task that overwrites every file of those posts with zero
+    bytes, deletes them and removes the posts completely. Not undoable."""
+    ids = [int(i) for i in _json_body(request).get('ids', []) if str(i).isdigit()]
+    if not ids:
+        return _err('no posts selected')
+    if Task.objects.filter(kind='wipe', status='running').exists():
+        return _err('a wipe is already running — wait for it to finish', 409)
+    task = _start_task('wipe', lambda t: _wipe_work(t, ids), total=len(ids),
+                       message='wiping…', exclusive=True)
+    return JsonResponse({'ok': True, 'task_id': task.id})
+
+
+def split_post_all(source):
+    """Break a post into one post per item. The new posts are brand new (added now, so they sit
+    at the top of the gallery), keep the source's tags and sit in the same manual folders; the
+    source post disappears (files stay where they are). Returns the new posts' ids in item order."""
+    from django.db import transaction
+    photos = list(source.images.order_by('order', 'id'))
+    if len(photos) < 2:
+        return []
+    tags = list(source.tags.all())
+    folders = list(source.folders.filter(is_smart=False))
+    copy = {f: getattr(source, f) for f in ('rating', 'fav', 'ai_tagged', 'char_tagged', 'char_model',
+                                            'source_post_id', 'source_photo_id', 'gen_info')}
+    TagLink, FolderLink = Post.tags.through, Folder.posts.through
+    new_ids = []
+    with transaction.atomic():
+        now = timezone.now()
+        for photo in photos:
+            p = Post.objects.create(title=photo.filename, **copy)
+            if copy['fav']:
+                Post.objects.filter(pk=p.pk).update(faved_at=now)
+            new_ids.append(p.pk)
+        for pid, photo in zip(new_ids, photos):
+            photo.post_id, photo.order = pid, 0
+        Photo.objects.bulk_update(photos, ['post', 'order'])
+        TagLink.objects.bulk_create([TagLink(post_id=pid, tag_id=t.pk) for pid in new_ids for t in tags], ignore_conflicts=True)
+        FolderLink.objects.bulk_create([FolderLink(post_id=pid, folder_id=f.pk) for pid in new_ids for f in folders], ignore_conflicts=True)
+        by_photo = dict(zip((p.pk for p in photos), new_ids))
+        for derived in Post.objects.filter(source_photo_id__in=by_photo):   # AI edits made from one of these items
+            Post.objects.filter(pk=derived.pk).update(source_post_id=by_photo[derived.source_photo_id])
+        source.delete()
+    for tag in tags:
+        tag.update_count()
+    return new_ids
+
+
+@require_POST
+def split_post_view(request, pk):
+    post = get_object_or_404(Post, pk=pk)
+    ids = split_post_all(post)
+    if not ids:
+        return _err('this post has only one item')
+    return JsonResponse({'ok': True, 'new_post_ids': ids, 'count': len(ids)})
+
+
 @require_POST
 def ai_tag_post(request, pk):
     post = get_object_or_404(Post, pk=pk)
@@ -1583,6 +1667,13 @@ def bulk_action(request):
         for post in posts:
             delete_post(post, also_files=also_file)
         return JsonResponse({'ok': True})
+
+    if action == 'split_all':
+        made = split = 0
+        for post in posts:
+            ids_new = split_post_all(post)
+            made += len(ids_new); split += bool(ids_new)
+        return JsonResponse({'ok': True, 'split': split, 'created': made})
 
     if action == 'add_to_folder':
         try:

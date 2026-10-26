@@ -674,6 +674,10 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
         <button class="btn danger" onclick="doDeletePost(false)" style="flex:1;justify-content:center;">remove from DB</button>
         <button class="btn danger" onclick="doDeletePost(true)" style="flex:1;justify-content:center;">&#128465; files</button>
       </div>
+      <div class="delete-row" style="margin-bottom:.5rem;">
+        {% if images|length > 1 %}<button class="btn" onclick="splitPostAll()" style="flex:1;justify-content:center;" title="turn every item into its own new post (added now, same tags, same folders) and remove this post">&#9986; split into {{ images|length }} posts</button>{% endif %}
+        <button class="btn danger" onclick="wipePost()" style="flex:1;justify-content:center;" title="overwrite every file of this post with zero bytes, delete it and remove the post completely — cannot be undone">&#9760; wipe</button>
+      </div>
 
       <!-- Merge -->
       <div id="merge-block">
@@ -2199,6 +2203,29 @@ async function doDeletePost(alsoFiles) {
   if (nextId) window.location.href = `/post/${nextId}/${navSuffix}`;
   else if (prevId) window.location.href = `/post/${prevId}/${navSuffix}`;
   else window.location.href = '/' + (tagSuffix ? tagSuffix : '');
+}
+
+/* Wipe: files overwritten with zeros, then deleted, post removed completely (background task) */
+async function wipePost() {
+  const word = prompt('PERMANENTLY wipe this post?\n\nEvery file and thumbnail is overwritten with zero bytes and deleted, and the post is removed from the library. This cannot be undone.\n\nType  wipe  to confirm:');
+  if ((word || '').trim().toLowerCase() !== 'wipe') return;
+  const r = await apiPost('/api/wipe/', {ids: [POST_ID]});
+  const d = await r.json();
+  if (!d.ok) { toast(d.error || 'could not start the wipe', 'err'); return; }
+  toast('wiping in the background…');
+  watchTask(d.task_id);
+  if (nextId) window.location.href = `/post/${nextId}/${navSuffix}`;
+  else if (prevId) window.location.href = `/post/${prevId}/${navSuffix}`;
+  else window.location.href = '/' + (tagSuffix ? tagSuffix : '');
+}
+
+/* Split the whole post: every item becomes its own post (new, same tags + folders) */
+async function splitPostAll() {
+  if (!confirm(`Split this post into ${IMAGES.length} separate posts?\n\nEach item becomes its own post, added now, with the same tags and in the same folders. This post disappears (the files stay where they are).`)) return;
+  const d = await (await apiPost(`/api/post/${POST_ID}/split-all/`)).json();
+  if (!d.ok) { toast(d.error || 'could not split', 'err'); return; }
+  toast(`split into ${d.count} posts`);
+  window.location.href = '/';
 }
 
 /* ── Delete / split single image ─────────────────────────── */

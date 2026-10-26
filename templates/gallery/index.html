@@ -334,7 +334,9 @@ body.select-mode .scroll-fabs { display:none; }
     <button class="sel-act" onclick="openTeach()" title="teach my model a new tag from the selected posts"><span class="sa-i">&#127891;</span><span>teach AI</span></button>
     <button class="sel-act" onclick="if(selectedIds.size){openFolderPicker([...selectedIds]);}else{toast('select posts first','err');}"><span class="sa-i">&#128193;</span><span>add to folder</span></button>
     {% if active_folder %}<button class="sel-act" onclick="bulkRemoveFromFolder()"><span class="sa-i">&#8722;</span><span>remove from folder</span></button>{% endif %}
+    <button class="sel-act" onclick="bulkSplit()" title="turn every item of each selected multi-item post into its own post (new, same tags + folders)"><span class="sa-i">&#9986;</span><span>split</span></button>
     <button class="sel-act danger" onclick="bulkDelete()"><span class="sa-i">&#128465;</span><span>delete</span></button>
+    <button class="sel-act danger" onclick="bulkWipe()" title="overwrite the files with zero bytes, delete them and remove the posts completely — cannot be undone"><span class="sa-i">&#9760;</span><span>wipe</span></button>
   </div>
 </div>
 
@@ -1308,6 +1310,27 @@ async function bulkDelete() {
   doneProgress();
   toast(`deleted ${selectedIds.size} posts`);
   finishBulkAction();
+}
+
+async function bulkSplit() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  if (!confirm(`Split every multi-item post among the ${selectedIds.size} selected into one post per item?\n\nThe new posts are added now with the same tags and folders; the original posts disappear (files stay where they are).`)) return;
+  startProgress();
+  const d = await (await apiPost('/api/bulk/', {ids:[...selectedIds],action:'split_all'})).json();
+  doneProgress();
+  toast(d.split ? `split ${d.split} post(s) into ${d.created} new posts` : 'nothing to split (single-item posts)', d.split ? '' : 'err');
+  if (d.split) finishBulkAction();
+}
+
+async function bulkWipe() {
+  if (!selectedIds.size) { toast('select posts first','err'); return; }
+  const word = prompt(`PERMANENTLY wipe ${selectedIds.size} post(s)?\n\nEvery file and thumbnail is overwritten with zero bytes and deleted, and the posts are removed from the library. This cannot be undone.\n\nType  wipe  to confirm:`);
+  if ((word || '').trim().toLowerCase() !== 'wipe') return;
+  const d = await (await apiPost('/api/wipe/', {ids:[...selectedIds]})).json();
+  if (!d.ok) { toast(d.error || 'could not start the wipe', 'err'); return; }
+  toast('wiping in the background — see the task card');
+  watchTask(d.task_id);              // the grid reloads when the wipe is done (see checkWatchedTask)
+  finishBulkAction(false);
 }
 
 // ── Folders ────────────────────────────────────────────────────
