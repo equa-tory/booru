@@ -883,13 +883,18 @@ def _start_task(kind, fn, total=0, message='', exclusive=False):
 
 TASK_STALE_CANCEL = timezone.timedelta(minutes=5)    # no progress this long → a stop request force-ends it
 TASK_STALE_SWEEP  = timezone.timedelta(minutes=30)   # no progress this long → assume the worker died
+COMFY_STALE_SWEEP = timezone.timedelta(minutes=3)    # ComfyUI jobs beat every ≤10 s (steps / "generating… Xs")
 
 
 def _sweep_stale_tasks():
     """A background thread dies with its gunicorn worker, leaving its Task row
     'running' forever (and undismissable). Mark long-silent ones as errored."""
-    Task.objects.filter(status='running', updated_at__lt=timezone.now() - TASK_STALE_SWEEP).update(
-        status='error', error='worker stopped responding (orphaned)', finished_at=timezone.now())
+    now = timezone.now()
+    Task.objects.filter(status='running', updated_at__lt=now - TASK_STALE_SWEEP).update(
+        status='error', error='worker stopped responding (orphaned)', finished_at=now)
+    # a web-server restart kills a running AI job's thread; free the "one at a time" lock quickly
+    Task.objects.filter(status='running', kind__in=COMFY_TASK_KINDS, updated_at__lt=now - COMFY_STALE_SWEEP).update(
+        status='error', error='the job stopped (the web server restarted?) — generate again', finished_at=now)
 
 
 def tasks_list(request):
@@ -3607,6 +3612,7 @@ def comfy_lora_preview(request):
 
 def _comfy_busy():
     """409 response when a ComfyUI job (edit or create) is running, else None."""
+    _sweep_stale_tasks()
     busy = Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running').first()
     if busy:
         return JsonResponse({'ok': False, 'busy': True, 'task_id': busy.id,
@@ -3747,6 +3753,7 @@ def comfy_edit(request):
                                   loras=[(l['name'], l['strength']) for l in loras])
         t_gen = _t.time() - gen_start
         t_save0 = _t.time()
+        check_cancel(task)                       # stopped while ComfyUI finished: no post
         task.done = 2; task.message = 'saving the new post…'
         task.save(update_fields=['done', 'message'])
 
@@ -3885,6 +3892,38 @@ def comfy_upload_source(request):
         with open(path, 'wb') as out:
             out.write(data)
     return JsonResponse({'ok': True, 'upload': rel, 'url': _media_url(rel), 'width': w, 'height': h})
+
+
+@require_POST
+def comfy_stop(request):
+    """■ stop on the create page: every running ComfyUI job is marked stopped AT ONCE (a new
+    one can start right away; the thread notices at its next check and never saves a post),
+    ComfyUI's queue is cleared and the running picture interrupted. `plan: true` = the AI was
+    still writing the prompt: Ollama drops its loaded models, which ends that request."""
+    body = _json_body(request)
+    cfg = comfy.config()
+    n = 0
+    for t in Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running'):
+        t.cancel_requested = True
+        t.status = 'cancelled'
+        t.message = (t.message + ' — stopped')[:300]
+        t.finished_at = timezone.now()
+        t.save()
+        n += 1
+    try:
+        with comfy._client(5.0) as c:
+            c.post(cfg['comfy_url'] + '/queue', json={'clear': True})
+            c.post(cfg['comfy_url'] + '/interrupt', json={})
+    except Exception:
+        pass
+    if body.get('plan'):
+        try:
+            with comfy._client(5.0) as c:
+                for m in c.get(cfg['ollama_url'] + '/api/ps').json().get('models', []):
+                    c.post(cfg['ollama_url'] + '/api/generate', json={'model': m['name'], 'keep_alive': 0})
+        except Exception:
+            pass
+    return JsonResponse({'ok': True, 'stopped': n})
 
 
 def comfy_gpu(request):
@@ -4074,6 +4113,7 @@ def comfy_create(request):
             task.done = (i + 1) * 100
             task.save(update_fields=['done'])
         t_gen = time.time() - t0
+        check_cancel(task)                       # stopped while the last picture finished: no post
         task.message = 'saving the new post…'
         task.save(update_fields=['message'])
         new = _save_generated(pngs, 'ai_create', f'create_{seed}', 'AI: ' + (text or pos_text), 'ai_create', {

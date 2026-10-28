@@ -3265,3 +3265,48 @@ class ComfyCreateTests(TestCase):
             self._post('/api/comfy/create/', {'positive': '1girl', 'count': 2})
         t = Task.objects.get(kind='comfy_create')
         self.assertEqual((t.done, t.total), (210, 210))
+
+    def test_stop_marks_running_jobs_and_interrupts_comfyui(self):
+        t = Task.objects.create(kind='comfy_create', status='running', message='picture: step 3/8')
+        other = Task.objects.create(kind='scan', status='running')
+        calls = []
+
+        def handler(req):
+            calls.append((req.url.path, json.loads(req.content or b'{}')))
+            return httpx.Response(200, json={'models': [{'name': 'm:4b'}]} if req.url.path == '/api/ps' else {})
+        with mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(handler))):
+            d = self._post('/api/comfy/stop/', {'plan': True}).json()
+        self.assertEqual(d['stopped'], 1)
+        t.refresh_from_db(); other.refresh_from_db()
+        self.assertEqual((t.status, t.cancel_requested), ('cancelled', True))
+        self.assertTrue(t.message.endswith('— stopped'))
+        self.assertEqual(other.status, 'running')                                # only ComfyUI jobs
+        paths = [c[0] for c in calls]
+        self.assertIn('/queue', paths); self.assertIn('/interrupt', paths)
+        self.assertIn(('/api/generate', {'model': 'm:4b', 'keep_alive': 0}), calls)   # the prompt writer is dropped
+        self.assertEqual(self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]}).status_code, 400)  # not 409: free again
+
+    def test_stopped_job_saves_no_post(self):
+        def fake_gen(*a, **kw):
+            Task.objects.filter(kind='comfy_create').update(cancel_requested=True)   # ■ stop while ComfyUI finishes
+            return _png((40, 60)), {}
+        with mock.patch.object(comfy, 'generate_txt2img', side_effect=fake_gen), \
+             mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            with self.assertRaises(TaskCancelled):
+                self._post('/api/comfy/create/', {'positive': '1girl'})
+        self.assertEqual(Post.objects.count(), 0)
+
+    def test_dead_comfy_job_frees_the_lock_after_3_minutes(self):
+        t = Task.objects.create(kind='comfy_create', status='running')
+        Task.objects.filter(pk=t.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=2))
+        self.assertEqual(self._post('/api/comfy/create/', {'positive': 'x'}).status_code, 409)     # still alive
+        Task.objects.filter(pk=t.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=4))
+        r = self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]})
+        self.assertEqual(r.status_code, 400)                                                       # lock freed
+        t.refresh_from_db()
+        self.assertEqual(t.status, 'error')
+        scan = Task.objects.create(kind='scan', status='running')
+        Task.objects.filter(pk=scan.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=4))
+        self.client.get('/api/tasks/')
+        scan.refresh_from_db(); self.assertEqual(scan.status, 'running')                            # others keep 30 min

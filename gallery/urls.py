@@ -58,6 +58,7 @@ urlpatterns = [
     path('api/comfy/create/', views.comfy_create, name='comfy_create'),
     path('api/comfy/upload-source/', views.comfy_upload_source, name='comfy_upload_source'),
     path('api/comfy/gpu/', views.comfy_gpu, name='comfy_gpu'),
+    path('api/comfy/stop/', views.comfy_stop, name='comfy_stop'),
     path('create/', views.create_page, name='create'),
     path('api/comfy/loras/', views.comfy_loras, name='comfy_loras'),
     path('api/comfy/loras/suggest/', views.comfy_lora_suggest, name='comfy_lora_suggest'),

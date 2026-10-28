@@ -92,6 +92,7 @@
       <div class="cr-actions">
         <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="let the AI write the prompt and pick LoRAs; edit them before generating">&#10024; plan</button>
         <button class="btn primary" id="cr-go-btn" onclick="crGo()" title="plan (if not done yet) and generate right away">&#9889; plan &amp; generate</button>
+        <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the form (description, prompt, LoRAs, source); settings stay">&#10005; clear</button>
       </div>
       <div class="cr-status" id="cr-status"></div>
     </div>
@@ -130,7 +131,11 @@
   <div class="cr-right">
     <div class="cr-card">
       <div class="cr-gauges" id="cr-gauges">GPU: …</div>
-      <div class="cr-bar"><div id="cr-bar"></div></div>
+      <div style="display:flex;align-items:center;gap:.5rem;">
+        <div class="cr-bar" style="flex:1;"><div id="cr-bar"></div></div>
+        <button class="btn" id="cr-stop" style="display:none;margin-top:.5rem;color:var(--danger,#e66);border-color:var(--danger,#e66);font-size:.72rem;padding:.2rem .6rem;"
+                onclick="crStop()" title="stop now: ComfyUI is interrupted, nothing is saved">&#9632; stop</button>
+      </div>
       <div class="cr-prog-msg" id="cr-prog">idle</div>
     </div>
     <div class="cr-card">
@@ -180,6 +185,7 @@ function crSetSource(s) {
   const u = new URL(location.href); u.searchParams.delete('photo');
   if (crSource && crSource.photo_id) u.searchParams.set('photo', crSource.photo_id);
   history.replaceState(null, '', u);
+  if (typeof crSaveDraft === 'function') crSaveDraft();
 }
 async function crUpload(file) {
   if (!file || !/^image\//.test(file.type)) { crStatus('that is not a picture', true); return; }
@@ -233,6 +239,7 @@ function crApplyPlan(d, lorasOnly) {
     + ((d.characters || []).length ? ' · characters: ' + d.characters.join(', ') : '')
     + ((d.forced || []).length ? ' · forced: ' + d.forced.join(', ') : '');
   crPlanned = true;
+  crSaveDraft();
 }
 async function crPlan() {
   const b = crBody(true);
@@ -241,14 +248,32 @@ async function crPlan() {
   const t0 = Date.now();
   const tick = setInterval(() => crStatus('the AI is writing the prompt… ' + Math.round((Date.now() - t0) / 1000) + ' s'), 1000);
   crStatus('the AI is writing the prompt…');
+  crPlanAbort = new AbortController(); crStopVisible();
   try {
-    const d = await crPost('/api/comfy/plan/', b);
+    const r = await fetch('/api/comfy/plan/', {method: 'POST', body: JSON.stringify(b), signal: crPlanAbort.signal,
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()}});
+    const d = await r.json();
     if (!d.ok) { crStatus('⚠ ' + (d.error || 'error'), true); return false; }
-    crApplyPlan(d);
+    crApplyPlan(d); crSaveDraft();
     crStatus(d.source === 'llm' ? 'planned — check the prompt and LoRAs, then generate' : '⚠ ' + d.note, d.source !== 'llm');
     return true;
-  } catch (e) { crStatus('⚠ request failed', true); return false; }
-  finally { clearInterval(tick); btn.disabled = false; }
+  } catch (e) { crStatus(e.name === 'AbortError' ? 'stopped' : '⚠ request failed', e.name !== 'AbortError'); return false; }
+  finally { clearInterval(tick); btn.disabled = false; crPlanAbort = null; crStopVisible(); }
+}
+/* ■ stop: the prompt request (if the AI is still writing it) and the running ComfyUI job */
+let crPlanAbort = null, crRunning = false;
+function crStopVisible() { crEl('cr-stop').style.display = (crPlanAbort || crRunning) ? '' : 'none'; }
+async function crStop() {
+  const planning = !!crPlanAbort;
+  if (crPlanAbort) crPlanAbort.abort();
+  crEl('cr-stop').disabled = true;
+  try {
+    const d = await crPost('/api/comfy/stop/', {plan: planning});
+    crEl('cr-prog').textContent = d.stopped ? 'stopped — nothing was saved' : (planning ? 'prompt writing stopped' : 'nothing was running');
+    crEl('cr-bar').style.width = '0%';
+    if (d.stopped) { clearInterval(crFollowT); crRunning = false; watchTask(null); pollTasks(true); }
+  } catch (e) { toast('stop failed', 'err'); }
+  finally { crEl('cr-stop').disabled = false; crStopVisible(); }
 }
 async function crRun() {
   const b = crBody(false);
@@ -284,6 +309,7 @@ async function crTick() {
     const d = await (await fetch('/api/tasks/')).json();
     const t = (d.tasks || []).find(x => x.id === crTaskId);
     if (!t) return;
+    crRunning = t.status === 'running'; crStopVisible();
     const pct = t.total ? Math.round(100 * t.done / t.total) : 0;
     crEl('cr-bar').style.width = (t.status === 'running' ? pct : 100) + '%';
     crEl('cr-prog').textContent = (t.status === 'running' ? pct + '% · ' : '') + (t.message || t.status);
@@ -293,7 +319,7 @@ async function crTick() {
     if (t.status === 'done' && m) {
       crStatus('done → post #' + m[1]);
       crAddRecent(+m[1]); crShow(+m[1]);
-    } else crStatus('⚠ ' + (t.message || t.status), true);
+    } else crStatus(t.status === 'cancelled' ? 'stopped — nothing was saved' : '⚠ ' + (t.error || t.message || t.status), t.status !== 'cancelled');
   } catch (e) {}
 }
 async function crResumeRunning() {         // page opened while a job runs: show its progress
@@ -374,6 +400,7 @@ async function crRestore(d, keepSource) {
   await crPick.restore(g.loras || []);
   crPlanned = !!g.positive;
   crEl('cr-note').textContent = '';
+  crSaveDraft();
   crStatus(`inputs of post #${d.id} restored — new seed unless you type one`);
 }
 function crRestoreShown() { if (crShown) { crRestore(crShown, false); window.scrollTo({top: 0, behavior: 'smooth'}); } }
@@ -385,6 +412,44 @@ function crUseShownAsSource() {
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
+/* everything on the form survives a reload (per browser); the prompt model is also saved on the server */
+const CR_DRAFT = 'createDraft';
+let crDraftT = null;
+function crSaveDraft() {
+  clearTimeout(crDraftT);
+  crDraftT = setTimeout(() => {
+    try {
+      localStorage.setItem(CR_DRAFT, JSON.stringify({
+        desc: crEl('cr-desc').value, pos: crEl('cr-pos').value, neg: crEl('cr-neg').value,
+        orient: crEl('cr-orient').value, seed: crEl('cr-seed').value, den: crEl('cr-den').value,
+        model: crEl('cr-model').value, planned: crPlanned, source: crSource,
+        loras: crPick.list.map(l => ({name: l.name, title: l.title, kind: l.kind, preview: l.preview, groups: l.groups,
+                                      strength: l.strength, sel: [...l.sel], why: l.why})),
+        note: crEl('cr-note').textContent}));
+    } catch (e) {}
+  }, 300);
+}
+function crLoadDraft(keepSource) {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(CR_DRAFT) || 'null'); } catch (e) {}
+  if (!d) return false;
+  crEl('cr-desc').value = d.desc || ''; crEl('cr-pos').value = d.pos || ''; crEl('cr-neg').value = d.neg || '';
+  if (d.orient) crEl('cr-orient').value = d.orient;
+  crEl('cr-seed').value = d.seed || '';
+  if (d.den) { crEl('cr-den').value = d.den; crEl('cr-den-val').textContent = (+d.den).toFixed(2); }
+  if (!keepSource && d.source) crSetSource(d.source);
+  crPick.list = [];
+  for (const l of d.loras || []) crPick.add(l, null, l.strength, l.sel, l.why);
+  crEl('cr-note').textContent = d.note || '';
+  crPlanned = !!d.planned && !!d.pos;
+  return true;
+}
+function crClearForm() {
+  ['cr-desc', 'cr-pos', 'cr-neg', 'cr-seed'].forEach(id => crEl(id).value = '');
+  crEl('cr-note').textContent = '';
+  crPick.clear(); crSetSource(null); crPlanned = false;
+  crSaveDraft(); crStatus('form cleared');
+}
 function crSaveUi() {
   try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value})); } catch (e) {}
 }
@@ -397,6 +462,12 @@ async function crInit() {
   } catch (e) {}
   ['cr-size', 'cr-count'].forEach(id => crEl(id).addEventListener('change', crSaveUi));
   crEl('cr-desc').addEventListener('input', () => { crPlanned = false; });
+  document.querySelector('.cr-left').addEventListener('input', crSaveDraft);
+  document.querySelector('.cr-left').addEventListener('change', crSaveDraft);
+  document.querySelector('.cr-left').addEventListener('click', () => setTimeout(crSaveDraft, 50));   // LoRA chips / ✕
+  crEl('cr-model').addEventListener('change', () => apiPost('/api/comfy/settings/', {ollama_model: crEl('cr-model').value}));
+  const q0 = new URLSearchParams(location.search);
+  if (!q0.get('from')) crLoadDraft(!!CR_INIT_SRC);       // ?from= (a picture's own inputs) wins over the draft
   if (CR_INIT_SRC) crSetSource(CR_INIT_SRC);
   crGauges(); setInterval(crGauges, 3000);
   crResumeRunning();
