@@ -541,6 +541,13 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
   cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pt(e); stroke(last, last); });
   cv.addEventListener('pointermove', e => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
   ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { last = null; }));
+  // scroll wheel over the picture = brush size (up = bigger)
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const b = crEl('cr-brush'), v = +b.value, step = Math.max(2, Math.round(v * 0.12));
+    b.value = Math.min(+b.max, Math.max(+b.min, v + (e.deltaY < 0 ? step : -step)));
+    crStatus('brush ' + b.value);
+  }, {passive: false});
 })();
 function crPainted() { return !!crSource && crEl('cr-painter').style.display !== 'none' && !crPaintEmpty(); }
 function crPaintEmpty() {
