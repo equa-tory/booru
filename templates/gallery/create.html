@@ -27,7 +27,7 @@
   .cr-status { font-family: var(--mono); font-size: .74rem; color: var(--text-dim); min-height: 1.2em; margin-top: .55rem; }
   .cr-status.err { color: var(--danger, #e66); }
   /* source drop zone */
-  .cr-drop { border: 1.5px dashed var(--border); border-radius: 8px; padding: .6rem; display: flex; gap: .7rem; align-items: center;
+  .cr-drop { border: 1.5px dashed var(--border); border-radius: 8px; padding: .5rem; display: flex; gap: .7rem; align-items: center; justify-content: center;
     cursor: pointer; min-height: 4.5rem; transition: border-color .15s, background .15s; }
   .cr-drop.over { border-color: var(--accent); background: var(--accent-dim, rgba(255,255,255,.04)); }
   .cr-drop img { width: 84px; height: 84px; object-fit: cover; border-radius: 6px; background: var(--bg3); flex: none; }
@@ -105,44 +105,36 @@
       <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a maid outfit (holding a tray), smiling in a cafe"
                 onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
 
-      <label class="ae-l">source image — optional (drop, paste or tap to choose; any file, a video gives its first frame)</label>
-      <div class="cr-drop" id="cr-drop" tabindex="0" onclick="if(!event.target.closest('.x')) crEl('cr-file').click()">
-        <img id="cr-src-img" alt="" style="display:none;">
-        <div class="txt" id="cr-src-txt">no source — a new picture is drawn from scratch</div>
-        <button type="button" class="x" id="cr-src-x" style="display:none;" onclick="crSetSource(null)" title="no source image">&#10005;</button>
-      </div>
-      <input type="file" id="cr-file" style="display:none;" onchange="if(this.files[0]) crUpload(this.files[0]); this.value='';">
-      <div id="cr-den-row" style="display:none;">
-        <label class="ae-l" for="cr-den">how much may change: <b id="cr-den-val">0.55</b> <span style="opacity:.7;">(low = add details, high = re-draw)</span></label>
-        <input type="range" id="cr-den" min="0.2" max="0.9" step="0.05" value="0.55" style="width:100%;" oninput="crEl('cr-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
-      </div>
-      <div id="cr-paint-row" style="display:none;">
-        <div class="cr-actions"><button class="btn" id="cr-paint-btn" onclick="crPaintToggle()"
-             title="paint over a part of the picture: remove it, or change it with your description — everything else stays exactly the same">&#128396; paint an area to remove or change</button></div>
-        <div id="cr-painter" style="display:none;">
+      <label class="ae-l">source picture — optional · paint on it to remove / change only that part</label>
+      <div class="cr-drop" id="cr-drop">
+        <div id="cr-src-empty" class="txt" style="text-align:center;padding:1rem .5rem;">no source — a new picture is drawn from scratch<br>
+          drop or paste a picture here (any file; a video gives its first frame), or
+          <button type="button" class="btn" style="font-size:.72rem;padding:.15rem .55rem;margin-top:.4rem;" onclick="crEl('cr-file').click()">&#128193; choose a file</button></div>
+        <div id="cr-painter" style="display:none;width:100%;">
           <div class="cr-paint-wrap"><img id="cr-paint-img" alt=""><canvas id="cr-paint-cv"></canvas><div id="cr-brush-ring"></div></div>
           <div class="cr-paint-tools">
-            brush <input type="range" id="cr-brush" min="4" max="160" value="36">
+            <button class="btn" onclick="crEl('cr-file').click()" title="load another picture (or drop / paste one on it)">&#128193;</button>
+            <button class="btn" onclick="crSetSource(null)" title="no source picture (draw from scratch)">&#10005;</button>
+            <input type="range" id="cr-brush" min="4" max="160" value="36" title="brush size (mouse wheel over the picture)">
             <button class="btn on" id="cr-brush-btn" onclick="crPaintErase(false)">brush</button>
             <button class="btn" id="cr-erase" onclick="crPaintErase(true)" title="eraser: un-paint">eraser</button>
             <button class="btn" onclick="crPaintClear()">clear</button>
             <span id="cr-paint-keys"></span>
           </div>
-          <div class="cr-sub" style="margin:.4rem 0 0;">Paint a bit past the edges (around a person: generously, with room for the hair). Only the painted part changes.<br>
-            <b>remove</b>: fills it from the surroundings (no prompt or model needed; a light's glow goes too).<br>
-            <b>change</b>: redraws it following the description (e.g. "change her into hatsune miku", "red dress"), with LoRAs / ⚡ fast like generate.
-            The generate buttons choose by the description: empty or "remove / delete / erase…" = remove, anything else = change.</div>
-          <div class="cr-actions">
-            <button class="btn" id="cr-remove-btn" onclick="crRemove()">&#129533; remove painted</button>
-            <button class="btn primary" id="cr-change-btn" onclick="crGo(true)" title="redraw only the painted area following the description">&#9998; change painted</button>
-          </div>
+          <div class="cr-sub" id="cr-src-txt" style="margin:.3rem 0 0;"></div>
         </div>
+      </div>
+      <input type="file" id="cr-file" style="display:none;" onchange="if(this.files[0]) crUpload(this.files[0]); this.value='';">
+      <div id="cr-den-row" style="display:none;">
+        <label class="ae-l" for="cr-den">how much may change: <b id="cr-den-val">0.55</b> <span style="opacity:.7;">(low = add details, high = re-draw)</span></label>
+        <input type="range" id="cr-den" min="0.2" max="1" step="0.05" value="0.55" style="width:100%;" oninput="crEl('cr-den-val').textContent=(+this.value).toFixed(2);this.dataset.touched='1'">
       </div>
 
       <div class="cr-actions">
-        <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="let the AI write the prompt and pick LoRAs; edit them before generating">&#10024; plan</button>
-        <button class="btn primary" id="cr-go-btn" onclick="crGo()" title="plan (if not done yet) and generate right away">&#9889; plan &amp; generate</button>
-        <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the form (description, prompt, LoRAs, source); settings stay">&#10005; clear</button>
+        <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="the AI writes the prompt and picks LoRAs (for the painted area only, if something is painted) — check them, then generate">&#10024; plan</button>
+        <button class="btn" id="cr-remove-btn" onclick="crRemove()" disabled title="paint over something on the source picture first; it is removed in one click (filled from its surroundings)">&#129533; remove painted</button>
+        <button class="btn primary" id="cr-run-btn" onclick="crGo()" title="plans first if needed (the painted area only, if something is painted), then makes the picture">&#9889; generate</button>
+        <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the form (description, prompt, LoRAs, source); settings stay">&#10005;</button>
       </div>
       <div class="cr-status" id="cr-status"></div>
     </div>
@@ -173,9 +165,6 @@
       <label class="ae-l" for="cr-neg">negative (added to the default negative)</label>
       <textarea id="cr-neg" rows="2"></textarea>
       <div class="cr-status" id="cr-note"></div>
-      <div class="cr-actions">
-        <button class="btn primary" id="cr-run-btn" onclick="crRun()">generate</button>
-      </div>
     </div>
   </div>
 
@@ -230,16 +219,14 @@ function crStatus(t, err) { const s = crEl('cr-status'); s.textContent = t || ''
 /* ── source image: a library item {photo_id} or a dropped file {upload}; null = from scratch ── */
 function crSetSource(s) {
   crSource = s && (s.photo_id || s.upload) ? s : null;
-  const img = crEl('cr-src-img');
-  img.style.display = crSource ? '' : 'none';
-  if (crSource) img.src = crSource.thumb || crSource.url;
-  crEl('cr-src-x').style.display = crSource ? '' : 'none';
+  crEl('cr-src-empty').style.display = crSource ? 'none' : '';
+  crEl('cr-painter').style.display = crSource ? '' : 'none';
   crEl('cr-den-row').style.display = crSource ? '' : 'none';
-  crEl('cr-paint-row').style.display = crSource ? '' : 'none';
-  crEl('cr-painter').style.display = 'none';
-  crPaintSrc = null;
-  crEl('cr-src-txt').textContent = !crSource ? 'no source — a new picture is drawn from scratch'
-    : (crSource.photo_id ? 'library picture #' + crSource.photo_id : 'dropped picture') + ' — it will be re-drawn with your description (tap to replace)';
+  crPainterLoad();
+  crEl('cr-src-txt').textContent = crSource ? (crSource.photo_id ? 'library picture #' + crSource.photo_id : 'dropped picture')
+    + ' · nothing painted = the whole picture is re-drawn with your description; painted = only that part' : '';
+  crPaintKeysLabel();
+  crButtons();
   const u = new URL(location.href); u.searchParams.delete('photo');
   if (crSource && crSource.photo_id) u.searchParams.set('photo', crSource.photo_id);
   history.replaceState(null, '', u);
@@ -357,13 +344,10 @@ async function crRun() {
 const CR_REMOVE_WORDS = /\b(remove|delete|erase|get rid|take (away|out)|clean up)\b|убер|убра|удал|стер|сотр/i;
 /* painted + empty description or "remove …" = LaMa removal; painted + any other text = redraw that area */
 function crWantsRemove() { const t = crEl('cr-desc').value.trim(); return !t || CR_REMOVE_WORDS.test(t); }
-async function crGo(change) {
-  if (crPainted() && !change && crWantsRemove()) return crRemove();
-  if (change && !crEl('cr-desc').value.trim() && !crEl('cr-pos').value.trim()) { crStatus('describe what the painted area should become', true); return; }
-  if (change && (!crPlanned || !crEl('cr-pos').value.trim())) {     // plan first, so prompt / LoRAs can be checked
-    if (await crPlan()) crStatus('planned for the painted area — check the prompt and LoRAs, then press "change painted" again');
-    return;
-  }
+/* the one generate button: painted + empty / "remove…" description = remove; otherwise plan if
+   there is no prompt yet (only the painted area, if painted) and make the picture */
+async function crGo() {
+  if (crPainted() && crWantsRemove() && !crEl('cr-pos').value.trim()) return crRemove();
   if (!crPlanned || !crEl('cr-pos').value.trim()) { if (!(await crPlan())) return; }
   crRun();
 }
@@ -547,26 +531,26 @@ function crClearForm() {
 }
 /* ── 🖌 remove: paint a mask over the source (canvas = the picture's size, max 1600 px) ── */
 let crPaintSrc = null, crErasing = false;
-function crPaintToggle() {
-  const p = crEl('cr-painter'), open = p.style.display === 'none';
-  p.style.display = open ? '' : 'none';
-  crPaintKeysLabel();
+function crPainterLoad() {               // the source picture under the paint canvas (a new one clears the paint)
+  if (!crSource || crPaintSrc === crSource.url) return;
+  crPaintSrc = crSource.url;
+  const img = crEl('cr-paint-img');
+  img.onload = () => {
+    const cv = crEl('cr-paint-cv'), k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+    crButtons();
+  };
+  img.src = crSource.url;
+}
+/* remove needs paint; "how much may change" follows: 0.75 for a painted area (keeps size + pose), 0.55 whole picture */
+function crButtons() {
+  const painted = crPainted();
+  crEl('cr-remove-btn').disabled = !painted;
   const den = crEl('cr-den');
-  den.max = open ? '1' : '0.9';
-  if (open && !den.dataset.touched) { den.value = 0.75; crEl('cr-den-val').textContent = '0.75'; }   // keeps size + pose, still a full change
-  if (open && crSource && crPaintSrc !== crSource.url) {
-    crPaintSrc = crSource.url;
-    const img = crEl('cr-paint-img');
-    img.onload = () => {
-      const cv = crEl('cr-paint-cv'), k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
-      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
-    };
-    img.src = crSource.url;
-  }
+  if (!den.dataset.touched) { den.value = painted ? 0.75 : 0.55; crEl('cr-den-val').textContent = (+den.value).toFixed(2); }
 }
 /* put a saved mask (white = painted) back on the canvas as paint */
 function crLoadMask(url) {
-  if (crEl('cr-painter').style.display === 'none') crPaintToggle();
   const img = crEl('cr-paint-img'), cv = crEl('cr-paint-cv');
   const draw = () => {
     const m = new Image();
@@ -577,6 +561,7 @@ function crLoadMask(url) {
       const d = ctx.getImageData(0, 0, cv.width, cv.height), p = d.data;
       for (let i = 0; i < p.length; i += 4) { const a = p[i] > 40 ? 255 : 0; p[i] = 255; p[i + 1] = 0; p[i + 2] = 0; p[i + 3] = a; }
       ctx.putImageData(d, 0, 0);
+      crButtons();
     };
     m.src = url;
   };
@@ -590,7 +575,7 @@ function crPaintErase(on) {
   crErasing = on === undefined ? !crErasing : on;
   crEl('cr-erase').classList.toggle('on', crErasing); crEl('cr-brush-btn').classList.toggle('on', !crErasing);
 }
-function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); }
+function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); crButtons(); }
 (function painter() {
   const cv = crEl('cr-paint-cv'), ctx = cv.getContext('2d');
   let last = null;
@@ -604,7 +589,7 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
   };
   cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pt(e); stroke(last, last); });
   cv.addEventListener('pointermove', e => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
-  ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { last = null; }));
+  ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { if (last) crButtons(); last = null; }));
   // a ring under the pointer shows the brush size (the slider value is in screen pixels)
   const ring = crEl('cr-brush-ring');
   const showRing = e => {
@@ -625,7 +610,7 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
   }, {passive: false});
   // brush / eraser / clear keys (default B / E / D, see ⚙ key bindings) — painter open, no text field focused
   document.addEventListener('keydown', e => {
-    if (crEl('cr-painter').style.display === 'none' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!crSource || e.ctrlKey || e.metaKey || e.altKey) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) return;
     const k = e.key.toLowerCase(), is = a => k === String(bind(a)).toLowerCase();   // keys from ⚙ key bindings
     if (is('paint_brush')) crPaintErase(false);
@@ -635,7 +620,7 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
     e.preventDefault(); e.stopPropagation();
   }, true);
 })();
-function crPainted() { return !!crSource && crEl('cr-painter').style.display !== 'none' && !crPaintEmpty(); }
+function crPainted() { return !!crSource && !crPaintEmpty(); }
 function crPaintEmpty() {
   const cv = crEl('cr-paint-cv');
   if (!cv.width) return true;
@@ -654,7 +639,7 @@ async function crRemove() {
     if (d.ok) { watchTask(d.task_id); pollTasks(true); crStatus(d.queued ? `remove queued — ${d.queued} job(s) ahead` : 'removing… the rest of the picture stays as it is'); crFollow(d.task_id); }
     else crStatus('⚠ ' + (d.error || 'error'), true);
   } catch (e) { crStatus('⚠ request failed', true); }
-  finally { btn.disabled = false; }
+  finally { crButtons(); }
 }
 
 /* ── saved descriptions (server pref createPrompts: [{id, name, text}], in the DB backups):
