@@ -328,14 +328,15 @@ function crMaxTemp() { const v = crEl('cr-maxtemp').value.trim(); return /^\d+$/
 async function crRun() {
   if (crPainted() && crWantsRemove() && !crEl('cr-pos').value.trim()) return crRemove();
   const b = crBody(false);
-  if (!b.positive) { crStatus('no prompt — plan first or type tags', true); return; }
+  if (!b.positive && !b.description) { crStatus('describe the picture or type a prompt', true); return; }
   crSaveUi();
   const btn = crEl('cr-run-btn'); btn.disabled = true;
   try {
     const d = await crPost('/api/comfy/create/', b);
     if (d.ok) {
       watchTask(d.task_id); pollTasks(true);
-      crStatus(`${d.width}×${d.height} (seed ${d.seed}) ` + (d.queued ? `queued — ${d.queued} job(s) ahead; you can send more` : 'started — you can send more, they queue'));
+      crStatus((d.planning ? 'sent — the job writes the prompt itself; ' : `${d.width}×${d.height} (seed ${d.seed}) `)
+        + (d.queued ? `queued — ${d.queued} job(s) ahead; you can send more` : 'started — you can send more, they queue'));
       crFollow(d.task_id);
     } else crStatus('⚠ ' + (d.error || 'error'), true);
   } catch (e) { crStatus('⚠ request failed', true); }
@@ -348,8 +349,13 @@ function crWantsRemove() { const t = crEl('cr-desc').value.trim(); return !t || 
    there is no prompt yet (only the painted area, if painted) and make the picture */
 async function crGo() {
   if (crPainted() && crWantsRemove() && !crEl('cr-pos').value.trim()) return crRemove();
-  if (!crPlanned || !crEl('cr-pos').value.trim()) { if (!(await crPlan())) return; }
-  crRun();
+  // planned (or a typed prompt): exactly that; otherwise the JOB plans on the server — the page
+  // doesn't wait for the prompt model, and the next one can be sent right away
+  if (crPlanned && crEl('cr-pos').value.trim()) return crRun();
+  const pos = crEl('cr-pos'), keep = pos.value;
+  if (!crPlanned) pos.value = '';          // a stale prompt from an older description must not be used
+  await crRun();
+  if (!crPlanned) pos.value = keep;
 }
 
 /* ── the AI queue: every job of this page (and edits from post pages) runs one after another.

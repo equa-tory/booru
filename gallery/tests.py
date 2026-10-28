@@ -3146,7 +3146,7 @@ class ComfyCreateTests(TestCase):
         self.assertEqual((new.source_post_id, new.source_photo_id, new.gen_info['fast']), (src_post.pk, src.pk, True))
 
     def test_create_refusals(self):
-        self.assertEqual(self._post('/api/comfy/create/', {'description': 'x'}).status_code, 400)        # no prompt
+        self.assertEqual(self._post('/api/comfy/create/', {}).status_code, 400)                          # nothing to go on
         r = self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]})
         self.assertEqual(r.status_code, 400)
 
@@ -3494,6 +3494,39 @@ class ComfyCreateTests(TestCase):
                                   'orientation': 'landscape', 'levels': {'beach': 4}, 'note': '', 'source': 'llm'}, picks={})
         self.assertEqual(d['positive'], '(beach:1.3), (red dress:1.2), 1girl, ocean')
 
+    def test_area_plan_drops_the_rest_of_the_scene(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('a', _png((60, 40)), '')}).json()['upload']
+        plan = {'characters': [], 'tags': ['1girl', 'red dress', 'tree', 'lamppost', 'night', 'walking', 'road'],
+                'negative': [], 'orientation': 'landscape', 'note': '', 'source': 'llm'}
+        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl', 'tree', 'lamppost', 'night', 'walking', 'road'], 'character': []}):
+            d, _pg = self._plan({'description': 'give her a red dress, walking', 'src_upload': up, 'area': True}, plan=plan, picks={})
+            whole, _pg = self._plan({'description': 'give her a red dress', 'src_upload': up},
+                                    plan=dict(plan, tags=['1girl', 'red dress', 'tree', 'lamppost', 'night', 'walking', 'road']), picks={})
+        self.assertEqual(d['positive'], '(red dress:1.2), (walking:1.2), 1girl, night')       # scene objects gone, typed kept
+        self.assertIn('lamppost', whole['positive'])                                          # whole-picture plans keep them
+
+    def test_generate_without_prompt_plans_inside_the_job(self):
+        planned = {'positive': '(red dress:1.2), hatsune miku, 1girl', 'negative': 'hat', 'orientation': 'landscape',
+                   'note': '', 'source': 'llm', 'characters': ['hatsune_miku'], 'model': 'm', 'seconds': 1, 'forced': [],
+                   'selected': [dict(self.CAT[0], sel_groups=[0, 2], default_groups=[0])], 'suggested': []}
+        with mock.patch.object(views, '_make_plan', return_value=planned) as mp:
+            r, gen, i2i = self._create({'description': 'miku in a red dress', 'size': 'draft',
+                                        'loras': [{'name': self.CAT[1]['name'], 'strength': 0.5, 'words': ['bikini, swimsuit']}]})
+        d = r.json()
+        self.assertTrue(d['ok'] and d['planning'])
+        mp.assert_called_once()
+        self.assertEqual(mp.call_args[0][4], [self.CAT[1]['name']])                         # the user's LoRA is kept
+        pos, neg, seed, w, h = gen.call_args[0][:5]
+        self.assertTrue(pos.startswith(comfy.config()['quality'] + ', (red dress:1.2)'))   # the job's own prompt
+        self.assertIn('maid, maid headdress', pos)                                         # plan's LoRA groups
+        self.assertIn('bikini, swimsuit', pos)                                             # user's own groups
+        self.assertEqual((w, h), (768, 512))                                               # plan's shape
+        g = Post.objects.get().gen_info
+        self.assertEqual(g['positive'], planned['positive'])
+        self.assertEqual({l['name']: l['strength'] for l in g['loras']}, {self.CAT[1]['name']: 0.5, self.CAT[0]['name']: 1.0})
+        self.assertEqual(self._post('/api/comfy/create/', {}).status_code, 400)            # nothing to go on
+
 
 class GifProgressTests(TestCase):
     def test_gif_duration_and_post_page(self):
@@ -3509,16 +3542,9 @@ class GifProgressTests(TestCase):
         ph = Photo.objects.create(post=post, order=0, rel_path='a.gif')
         self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
         html = self.client.get(f'/post/{post.pk}/').content.decode()
-        self.assertIn('data-gif-dur="0.600000"', html)
+        self.assertIn(f'data-gif-id="{ph.pk}"', html)
+        ph.refresh_from_db(); self.assertIsNone(ph.duration)                              # the page never measures
+        self.assertEqual(self.client.get(f'/api/photo/{ph.pk}/gif-length/').json()['seconds'], 0.6)
         ph.refresh_from_db(); self.assertEqual(ph.duration, 0.6)                          # measured once, stored
-
-    def test_area_plan_drops_the_rest_of_the_scene(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        up = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('a', _png((60, 40)), '')}).json()['upload']
-        plan = {'characters': [], 'tags': ['1girl', 'red dress', 'tree', 'lamppost', 'night', 'walking', 'road'],
-                'negative': [], 'orientation': 'landscape', 'note': '', 'source': 'llm'}
-        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl', 'tree', 'lamppost', 'night', 'walking', 'road'], 'character': []}):
-            d, _pg = self._plan({'description': 'give her a red dress, walking', 'src_upload': up, 'area': True}, plan=plan, picks={})
-            whole, _pg = self._plan({'description': 'give her a red dress', 'src_upload': up}, plan=plan, picks={})
-        self.assertEqual(d['positive'], '(red dress:1.2), (walking:1.2), 1girl, night')       # scene objects gone, typed kept
-        self.assertIn('lamppost', whole['positive'])                                          # whole-picture plans keep them
+        self.assertIn('data-gif-dur="0.600000"', self.client.get(f'/post/{post.pk}/').content.decode())
+        self.assertEqual(views._gif_delays(os.path.join(tmp, 'a.gif')), [200, 0, 300])    # parser, no decoding

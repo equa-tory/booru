@@ -114,10 +114,54 @@ def _length_q(term):
     return Q(_vlen__gte=sec, _vlen__lt=sec + (1 if unit == 's' else 60)) & Q(_vlen__gt=0)
 
 
+def _gif_delays(path):
+    """Frame delays (ms) read straight from the GIF's block structure — no pixel decoding, so a
+    big GIF takes milliseconds instead of seconds. None when the file isn't a GIF we can walk."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    if data[:3] != b'GIF' or len(data) < 13:
+        return None
+    i = 13
+    if data[10] & 0x80:                                   # global colour table
+        i += 3 * (2 << (data[10] & 7))
+    delays, pending = [], 0
+    n = len(data)
+
+    def skip_sub(j):
+        while j < n and data[j]:
+            j += data[j] + 1
+        return j + 1
+    while i < n:
+        b = data[i]
+        if b == 0x21 and i + 1 < n:                       # extension
+            if data[i + 1] == 0xF9 and i + 5 < n:         # graphic control: the next frame's delay
+                pending = (data[i + 4] | (data[i + 5] << 8)) * 10
+            i = skip_sub(i + 2)
+        elif b == 0x2C and i + 9 < n:                     # image = one frame
+            flags = data[i + 9]
+            i += 10
+            if flags & 0x80:
+                i += 3 * (2 << (flags & 7))
+            i = skip_sub(i + 1)                           # LZW minimum code size, then the data blocks
+            delays.append(pending)
+            pending = 0
+        elif b == 0x3B:                                   # trailer
+            break
+        else:
+            return None                                   # malformed: let Pillow try
+    return delays
+
+
 def gif_duration(path):
     """One loop of an animated GIF in seconds (sum of its frame delays, with the browsers'
     rule: a delay of 10 ms or less plays as 100 ms), or None (not animated / unreadable).
     Stored in Photo.duration — video-length search only looks at videos (is_video)."""
+    try:
+        delays = _gif_delays(path)
+    except OSError:
+        return None
+    if delays is not None:
+        return round(sum(d if d > 10 else 100 for d in delays) / 1000.0, 3) if len(delays) > 1 else None
     from PIL import Image
     try:
         with Image.open(path) as im:
@@ -132,6 +176,18 @@ def gif_duration(path):
             return round(total / 1000.0, 3)
     except Exception:
         return None
+
+
+def gif_length(request, pk):
+    """GET -> {'seconds'} of a GIF item (measured once, stored in Photo.duration). The post page
+    asks for it after loading, so a big GIF never delays the page."""
+    p = get_object_or_404(Photo, pk=pk)
+    if p.duration is None and p.is_gif:
+        d = gif_duration(p.file_path)
+        if d:
+            p.duration = d
+            Photo.objects.filter(pk=p.pk).update(duration=d)
+    return JsonResponse({'ok': True, 'seconds': p.duration if p.is_gif else None})
 
 
 def _video_len_sq():
@@ -618,13 +674,7 @@ def posts_json(request):
 def post_detail(request, pk):
     post   = get_object_or_404(Post, pk=pk)
     q_tags = request.GET.getlist('tag')
-    images = list(post.images.order_by('order', 'id'))
-    for p in images:                         # GIF progress bar: its loop length, measured once
-        if p.is_gif and p.duration is None:
-            d = gif_duration(p.file_path)
-            if d:
-                p.duration = d
-                Photo.objects.filter(pk=p.pk).update(duration=d)
+    images = list(post.images.order_by('order', 'id'))   # GIF lengths are measured AFTER the page loads (gif_length)
 
     # Store referrer for back button — prefer HTTP_REFERER that points to index
     referer  = request.META.get('HTTP_REFERER', '')
@@ -4200,9 +4250,7 @@ def _media_url(rel):
 
 @require_POST
 def comfy_plan(request):
-    """Describe → plan: tags + characters from the LLM, LoRAs for the characters (auto)
-    and suggestions for the rest, then the LLM picks each selected LoRA's trigger groups.
-    `loras` = names the user already picked (kept, their groups re-picked)."""
+    """Describe → plan (the ✨ plan button; generate without a prompt plans inside its job)."""
     body = _json_body(request)
     text = str(body.get('description') or '').strip()
     if not text:
@@ -4213,9 +4261,19 @@ def comfy_plan(request):
     cfg = comfy.config()
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
+    return JsonResponse(dict(ok=True, **_make_plan(text, src, cfg, bool(src and body.get('area')), body.get('loras') or [])))
+
+
+def _make_plan(text, src, cfg, area, keep_loras):
+    """Description (+ source) → {'positive','negative','orientation','note','source','characters',
+    'model','seconds','forced','selected','suggested'}: tags + characters from the LLM, LoRAs for
+    the characters (auto) and suggestions for the rest, the trigger groups picked per LoRA.
+    `keep_loras` = names the user already picked (kept, their groups re-picked); `area` = only a
+    painted area is redrawn."""
+    body = {'area': area, 'loras': keep_loras}
     t0 = time.time()
     cur = _source_tags(src) if src else None
-    plan = comfy.plan_prompt(text, cfg, cur, area=bool(src and body.get('area')))   # painted: describe only the area
+    plan = comfy.plan_prompt(text, cfg, cur, area=bool(src and area))   # painted: describe only the area
     chars = _canon_characters(plan['characters'])
     if src and src['photo']:
         chars = list(dict.fromkeys(chars + _char_tags_for(src['photo'], cur)))
@@ -4273,25 +4331,28 @@ def comfy_plan(request):
         levels[t] = max(levels.get(t, 1), 3)
     positive = comfy.join_prompt(comfy.forced_text(forced), [c for c in chars if comfy._norm(c) not in gone],
                                  comfy.weighted_tags([t for t in plan['tags'] if comfy._norm(t) not in gone], levels))
-    return JsonResponse({
-        'ok': True, 'positive': positive, 'negative': ', '.join(comfy.escape_tag(t) for t in plan['negative']),
+    return {
+        'positive': positive, 'negative': ', '.join(comfy.escape_tag(t) for t in plan['negative']),
         'orientation': plan['orientation'], 'note': plan['note'], 'source': plan['source'],
         'characters': chars, 'model': cfg['ollama_model'], 'seconds': round(time.time() - t0, 1),
         'forced': [t for t, _w in forced],
         'selected': selected, 'suggested': [_lora_json(i) for i in sug if i['name'] not in taken],
-    })
+    }
 
 
 @require_POST
 def comfy_create(request):
     """Generate from a (planned / edited) prompt: txt2img, or img2img when a source image
-    is given. Background task `comfy_create`; `count` pictures become ONE new post."""
+    is given. Background task `comfy_create`; `count` pictures become ONE new post. No prompt
+    but a description = the job plans it itself (server side, after its queue turn), so the
+    page never waits for the prompt model and more jobs can be queued at once."""
     body = _json_body(request)
     text = str(body.get('description') or '').strip()
     pos_text = str(body.get('positive') or '').strip()
     neg_text = str(body.get('negative') or '').strip()
-    if not pos_text:
-        return _err('no prompt — plan it first or type one')
+    auto_plan = not pos_text
+    if auto_plan and not text:
+        return _err('describe the picture or type a prompt')
     if not _comfy_enabled():
         return _err('AI edit is switched off in settings')
     src, err = _create_source(body)
@@ -4337,11 +4398,36 @@ def comfy_create(request):
     src_upload = src['upload'] if src else None
     total_units = count * 100 + 10          # progress: 100 per picture (sampler steps) + saving/tagging
 
+    def plan_in_job(task):
+        """No prompt was sent: write it now (like ✨ plan), keep the user's own LoRA rows as they
+        are, add the plan's picks, take its shape; then rebuild everything that depends on it."""
+        nonlocal pos_text, neg_text, loras, orientation, width, height, run_cfg, run_loras, triggers, positive, negative
+        task.message = 'writing the prompt…'
+        task.save(update_fields=['message'])
+        p = _make_plan(text, src, cfg, mask is not None, [l['name'] for l in loras])
+        check_cancel(task)
+        pos_text, neg_text = p['positive'], neg_text or p['negative']
+        mine = {l['name'] for l in loras}
+        extra = [{'name': it['name'], 'strength': 1.0 if it.get('kind') == 'character' else 0.8,
+                  'words': [it['groups'][g] for g in it.get('sel_groups') or [] if g < len(it['groups'])]}
+                 for it in p['selected'] if it['name'] not in mine]
+        loras = loras + comfy.resolve_loras(extra, comfy.lora_catalog(cfg))[:max(0, comfy.MAX_LORAS - len(loras))]
+        orientation = p['orientation'] if p['orientation'] in comfy.SIZE_RATIOS else orientation
+        width, height = comfy.size_for(orientation, size, cfg)
+        run_cfg, run_loras = cfg, [(l['name'], l['strength']) for l in loras]
+        if fast:
+            run_cfg, run_loras = comfy.fast_setup(cfg, run_loras)
+        triggers = comfy.trigger_text([w for l in loras for w in l['words']])
+        positive = comfy.compose_positive(cfg['quality'], triggers, pos_text)
+        negative = comfy.join_prompt(cfg['negative'], comfy.drop_terms(neg_text, triggers))
+
     def work(task):
         from . import ai_runtime
         t0 = time.time()
         task.total = total_units; task.done = 0
         task.save(update_fields=['total', 'done'])
+        if auto_plan:
+            plan_in_job(task)
         try:
             ai_runtime.force_unload()            # this worker's tagger sessions: the SDXL checkpoint needs the VRAM
         except Exception:
@@ -4415,4 +4501,5 @@ def comfy_create(request):
         task.save(update_fields=['done', 'message'])
 
     task, ahead = _start_comfy_job('comfy_create', work, total=total_units, max_temp=max_temp)
-    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height, 'queued': ahead})
+    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height, 'queued': ahead,
+                         'planning': auto_plan})

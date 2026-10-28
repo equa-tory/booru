@@ -122,6 +122,8 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 - Smaller prompt model pulled: `huihui_ai/qwen3-abliterated:4b-instruct-2507-q4_K_M` (2.5 GB; plan 38 s on the CPU vs 69 s for the 8B stheno, same result on the test request).
 - LoRA picker UI is SHARED: `_lora_picker_assets.html` (CSS + `makeLoraPicker(prefix, {detect})`, registry `LP[prefix]`) + `_lora_picker.html` (markup, `p` = id prefix) — used by the AI-edit box (`aiedit`) and the create page (`cr`). Not a /static/ file on purpose: /static/ is cached a year as immutable.
 
+- Idea, not built: training a LoRA from selected posts with ComfyUI's native `TrainLoraNode` — see `docs/idea-lora-training.md` (benchmark first).
+
 ## Host tuning (Tesla P4) — `ops/ai-host-tune.sh` (run with sudo)
 - Benchmark 2026-10-28 (SDXL 768×1024, cfg 5.5, s/step): fp8 + split attention (old) 6.8 · **fp8 + `--use-pytorch-cross-attention` 6.0** (load 19 s vs 32 s) · fp16 + SDPA 6.9 · fp16 + split 8.3. The script installs the SDPA flag as a drop-in `comfyui.service.d/booru-sdpa.conf`.
 - Ollama: `OLLAMA_LLM_LIBRARY=cuda_v12` is pinned, but GPU discovery at boot hits Ollama's fixed 30 s watchdog (`llama-server GPU discovery watchdog timed out` → `library=cpu`), so prompts took 50-110 s on the Xeon. The script adds a bigger CUDA JIT cache, `OLLAMA_VULKAN=0`, and `ollama-gpu-check.timer` (2 min after boot + every 30 min: restart Ollama if its current run reports `library=cpu` while `nvidia-smi` sees the GPU). On the GPU, `comfy.unload_ollama` frees its VRAM before every ComfyUI run.

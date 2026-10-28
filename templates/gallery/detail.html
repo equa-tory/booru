@@ -499,7 +499,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
           <div style="font-size:1.5rem;">&#128196; PDF</div>
         </div>
         {% else %}
-        <img id="main-img" src="{{ images.0.media_url }}" alt="{{ post.title }}"{% if images.0.is_gif and images.0.duration %} data-gif-dur="{{ images.0.duration|stringformat:"f" }}"{% endif %}
+        <img id="main-img" src="{{ images.0.media_url }}" alt="{{ post.title }}"{% if images.0.is_gif %} data-gif-id="{{ images.0.pk }}"{% if images.0.duration %} data-gif-dur="{{ images.0.duration|stringformat:"f" }}"{% endif %}{% endif %}
              style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">
         {% endif %}{% endif %}
       </div>
@@ -547,7 +547,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
              onloadedmetadata="if(typeof applyFitSingle!=='undefined')applyFitSingle()"
              style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
       {% else %}
-      <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"{% if img.is_gif and img.duration %} data-gif-dur="{{ img.duration|stringformat:"f" }}"{% endif %}
+      <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"{% if img.is_gif %} data-gif-id="{{ img.pk }}"{% if img.duration %} data-gif-dur="{{ img.duration|stringformat:"f" }}"{% endif %}{% endif %}
            style="min-height:38vh;background:var(--bg3);">
       {% endif %}
       </div>
@@ -1246,7 +1246,7 @@ function selectImage(idx, thumbEl) {
   } else if (item.is_pdf) {
     container.innerHTML = renderPdfContainer(item.url);
   } else {
-    container.innerHTML = `<img id="main-img" src="${item.url}"${item.gif_dur ? ` data-gif-dur="${item.gif_dur}"` : ''}
+    container.innerHTML = `<img id="main-img" src="${item.url}"${item.is_gif ? ` data-gif-id="${item.id}"` : ''}${item.gif_dur ? ` data-gif-dur="${item.gif_dur}"` : ''}
       style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">`;
     initPinchZoom();
   }
@@ -2894,13 +2894,29 @@ function gifBar(img) {
   }
   const inner = bar.firstChild;
   inner.style.setProperty('--gd', dur + 's');
-  inner.style.animation = 'none'; void inner.offsetWidth; inner.style.animation = '';   // restart in sync
+  // the length may arrive after the GIF started playing: start the bar where the GIF is now
+  const played = img._gifStart ? ((performance.now() - img._gifStart) / 1000) % dur : 0;
+  inner.style.animation = 'none'; void inner.offsetWidth; inner.style.animation = '';
+  inner.style.animationDelay = (-played) + 's';
+}
+/* the GIF's length is asked for after it loaded (never delays the page), then cached on the element */
+function gifStart(img) {
+  img._gifStart = performance.now();
+  if (img.dataset.gifDur) { gifBar(img); return; }
+  if (!img.dataset.gifId || img._gifAsked) return;
+  img._gifAsked = true;
+  fetch(`/api/photo/${img.dataset.gifId}/gif-length/`).then(r => r.json()).then(d => {
+    if (!d.seconds) return;
+    img.dataset.gifDur = d.seconds;
+    const it = IMAGES.find(x => x.id === +img.dataset.gifId); if (it) it.gif_dur = d.seconds;
+    gifBar(img);
+  }).catch(() => {});
 }
 document.addEventListener('load', e => {
   const el = e.target;
-  if (el instanceof HTMLImageElement && el.dataset && el.dataset.gifDur) gifBar(el);
+  if (el instanceof HTMLImageElement && el.dataset && el.dataset.gifId) gifStart(el);
 }, true);
-document.querySelectorAll('img[data-gif-dur]').forEach(im => { if (im.complete && im.naturalWidth) gifBar(im); });
+document.querySelectorAll('img[data-gif-id]').forEach(im => { if (im.complete && im.naturalWidth) gifStart(im); });
 
 /* ✎ AI in the top bar (also single-item posts / paged view): the picture on screen -> ✨ create */
 function openCreateFromCurrent() {
