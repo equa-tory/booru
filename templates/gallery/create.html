@@ -60,6 +60,8 @@
   .cr-paint-wrap { position: relative; margin-top: .5rem; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg3); }
   .cr-paint-wrap img { width: 100%; height: auto; display: block; }
   .cr-paint-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; touch-action: none; cursor: crosshair; }
+  #cr-brush-ring { position: absolute; display: none; pointer-events: none; border-radius: 50%; transform: translate(-50%, -50%);
+    border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.6), inset 0 0 0 1px rgba(0,0,0,.6); }
   .cr-paint-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin-top: .45rem; font-family: var(--mono); font-size: .72rem; color: var(--text-dim); }
   .cr-paint-tools input[type=range] { flex: 1; min-width: 6rem; }
   .cr-paint-tools .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -98,11 +100,13 @@
         <div class="cr-actions"><button class="btn" id="cr-paint-btn" onclick="crPaintToggle()"
              title="paint over a part of the picture: remove it, or change it with your description — everything else stays exactly the same">&#128396; paint an area to remove or change</button></div>
         <div id="cr-painter" style="display:none;">
-          <div class="cr-paint-wrap"><img id="cr-paint-img" alt=""><canvas id="cr-paint-cv"></canvas></div>
+          <div class="cr-paint-wrap"><img id="cr-paint-img" alt=""><canvas id="cr-paint-cv"></canvas><div id="cr-brush-ring"></div></div>
           <div class="cr-paint-tools">
             brush <input type="range" id="cr-brush" min="4" max="160" value="36">
-            <button class="btn" id="cr-erase" onclick="crPaintErase()" title="eraser: un-paint">eraser</button>
-            <button class="btn" onclick="crPaintClear()">clear</button>
+            <button class="btn on" id="cr-brush-btn" onclick="crPaintErase(false)" title="brush (B)">brush</button>
+            <button class="btn" id="cr-erase" onclick="crPaintErase(true)" title="eraser: un-paint (E)">eraser</button>
+            <button class="btn" onclick="crPaintClear()" title="clear the painting (D)">clear</button>
+            <span>wheel = size · B brush · E eraser · D clear</span>
           </div>
           <div class="cr-sub" style="margin:.4rem 0 0;">Paint a bit past the edges (around a person: generously, with room for the hair). Only the painted part changes.<br>
             <b>remove</b>: fills it from the surroundings (no prompt or model needed; a light's glow goes too).<br>
@@ -525,7 +529,10 @@ function crLoadMask(url) {
   };
   if (cv.width && img.complete && img.naturalWidth) draw(); else img.addEventListener('load', () => setTimeout(draw, 0), {once: true});
 }
-function crPaintErase() { crErasing = !crErasing; crEl('cr-erase').classList.toggle('on', crErasing); }
+function crPaintErase(on) {
+  crErasing = on === undefined ? !crErasing : on;
+  crEl('cr-erase').classList.toggle('on', crErasing); crEl('cr-brush-btn').classList.toggle('on', !crErasing);
+}
 function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); }
 (function painter() {
   const cv = crEl('cr-paint-cv'), ctx = cv.getContext('2d');
@@ -541,13 +548,35 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
   cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pt(e); stroke(last, last); });
   cv.addEventListener('pointermove', e => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
   ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { last = null; }));
+  // a ring under the pointer shows the brush size (the slider value is in screen pixels)
+  const ring = crEl('cr-brush-ring');
+  const showRing = e => {
+    const r = cv.getBoundingClientRect(), d = +crEl('cr-brush').value;
+    ring.style.width = ring.style.height = d + 'px';
+    ring.style.left = (e.clientX - r.left) + 'px'; ring.style.top = (e.clientY - r.top) + 'px';
+    ring.style.borderStyle = crErasing ? 'dashed' : 'solid';
+    ring.style.display = 'block';
+  };
+  cv.addEventListener('pointermove', e => { if (e.pointerType !== 'touch') showRing(e); });
+  cv.addEventListener('pointerleave', () => { ring.style.display = 'none'; });
   // scroll wheel over the picture = brush size (up = bigger)
   cv.addEventListener('wheel', e => {
     e.preventDefault();
     const b = crEl('cr-brush'), v = +b.value, step = Math.max(2, Math.round(v * 0.12));
     b.value = Math.min(+b.max, Math.max(+b.min, v + (e.deltaY < 0 ? step : -step)));
-    crStatus('brush ' + b.value);
+    showRing(e);
   }, {passive: false});
+  // B brush · E eraser · D clear — while the painter is open and no text field has focus
+  document.addEventListener('keydown', e => {
+    if (crEl('cr-painter').style.display === 'none' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'b') crPaintErase(false);
+    else if (k === 'e') crPaintErase(true);
+    else if (k === 'd') crPaintClear();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
 })();
 function crPainted() { return !!crSource && crEl('cr-painter').style.display !== 'none' && !crPaintEmpty(); }
 function crPaintEmpty() {
