@@ -302,16 +302,14 @@ body.force-scroll #mode-toggle-fixed { display:none !important; }
   .mini-jump { display:none; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
     flex-direction:column; gap:4px; pointer-events:none; }
   body.minimal-ui.mini-jump-on:not(.mode-paged) .mini-jump { display:flex; }
-  .mini-jump-btn { pointer-events:auto; touch-action:manipulation; width:28px; height:28px; border-radius:50%; padding:0;
-    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.2); color:rgba(255,255,255,.4);
-    font-size:.8rem; line-height:1; display:flex; align-items:center; justify-content:center;
+  .mini-jump-btn { pointer-events:auto; touch-action:manipulation; width:40px; height:40px; border-radius:50%; padding:0;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.25); color:rgba(255,255,255,.5);
+    font-size:1.05rem; line-height:1; display:flex; align-items:center; justify-content:center;
     -webkit-tap-highlight-color:transparent; cursor:pointer; }
   .mini-jump-btn:active { background:rgba(124,106,247,.25); border-color:rgba(124,106,247,.8); color:#fff; }
   /* with the jump buttons the scroll/paged toggle leaves the gap and lives in the bar's top row */
   body.minimal-ui.mini-jump-on #mode-toggle-fixed { display:none !important; }
   .mini-mode { display:none; }
-  body.minimal-ui.mini-jump-on .mini-mode { display:block; background:none; border:none; color:var(--text);
-    font-size:1.25rem; padding:0 .3rem; flex:none; height:100%; -webkit-tap-highlight-color:transparent; cursor:pointer; }
   .mini-nav-btn.disabled { opacity:.15; pointer-events:none; }
   /* Mode toggle sits lower, right above the rating row, in the horizontal
      gap between the two nav circles instead of floating high on its own. */
@@ -550,7 +548,7 @@ body.reduce-motion .gif-prog > div, body.fast-mode .gif-prog > div { animation: 
              style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
       {% else %}
       <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"{% if img.is_gif %} data-gif-id="{{ img.pk }}"{% if img.duration %} data-gif-dur="{{ img.duration|stringformat:"f" }}"{% endif %}{% endif %}
-           style="min-height:38vh;background:var(--bg3);">
+           style="{% if img.width and img.height %}aspect-ratio:auto {{ img.width }} / {{ img.height }};{% else %}min-height:38vh;{% endif %}background:var(--bg3);">
       {% endif %}
       </div>
       {% endfor %}
@@ -773,10 +771,8 @@ body.reduce-motion .gif-prog > div, body.fast-mode .gif-prog > div { animation: 
   <div class="mini-row mini-row-top">
     <div class="mini-stars">{% include "gallery/_score_control.html" %}</div>
     <button class="mob-rate-fav {% if post.fav %}active{% endif %}" onclick="toggleFav()" title="favourite">&#9829;</button>
-    <button class="mini-mode" id="mini-mode-btn" onclick="toggleViewMode()" aria-label="scroll / paged mode" title="switch scroll / paged mode">&#9783;</button>
   </div>
   <div class="mini-row mini-row-bottom">
-    <button class="mini-icon" id="mini-scrolltop-btn" onclick="scrollDetailTop()" title="scroll to top" style="display:none;">&#10514;</button>
     {% if edit_source %}<button class="mini-icon" onclick="location.href='/post/{{ edit_source.id }}/'" title="open the original post" aria-label="original">&#10548;</button>{% endif %}
     <button class="mini-icon mob-info-btn" onclick="toggleInfoPanel()">i</button>
     <button class="mini-icon" onclick="openTagSheet()">&#8864;</button>
@@ -991,6 +987,7 @@ function applyViewMode(mode, persist) {
         sc.scrollTop = Math.max(0, pt + estHeight / 2 - sc.clientHeight / 2);
       } else {
         sc.scrollTop = pt;
+        requestAnimationFrame(() => centerFirstItem(sc));
       }
     }
     setupScrollLazy();
@@ -2449,6 +2446,10 @@ function openQuickTagSheet() {
   renderQuickTagSheet().catch(() => {});
   renderQuickFolderSheet().catch(() => {});
 }
+document.addEventListener('DOMContentLoaded', () => {
+  const m = document.querySelector('#quick-tag-backdrop .modal');
+  attachDragDismiss(m, closeQuickTagSheet);      // pull down (content at its top) = close, like the other sheets
+});
 function closeQuickTagSheet() {
   closeModal('quick-tag-backdrop');
   hideQuickTagSuggestions();
@@ -2704,8 +2705,6 @@ function scrollDetailTop() {
 // storage, and when fit-to-screen forced scroll it must not overwrite the
 // post's remembered choice (so turning fit off can restore it).
 applyViewMode(viewMode, IS_MULTI);
-const scrollTopBtn = document.getElementById('mini-scrolltop-btn');
-if (scrollTopBtn && (IS_MULTI || IS_TALL)) scrollTopBtn.style.display = '';
 document.body.classList.toggle('mini-jump-on', IS_MULTI || IS_TALL);   // phone minimal UI: top/bottom circles + mode button in the bar
 loadNeighbors();
 if (IS_MULTI && typeof preloadNeighbors !== 'undefined') preloadNeighbors(currentImgIdx || 0);
@@ -2738,27 +2737,57 @@ if (IS_MULTI && !FORCE_SCROLL && LOCAL_VIEW_PREF === null) {
   }).catch(()=>{});
 }
 
-// ── Scroll position memory (last 3 posts, scroll mode) ──────
+// ── Scroll position memory: every post of this tab session (sessionStorage), stored as the item
+// at the screen centre + how far into it — not pixels, which went wrong while images above were
+// still loading. Restoring re-applies itself while items settle, until the user touches the page.
+const SCROLL_MEM = 'postScrollSession';
+function _scRel(sc, el) { return sc.scrollTop + el.getBoundingClientRect().top - sc.getBoundingClientRect().top; }
 function saveScrollPosition() {
-  if (viewMode !== 'scroll') return;
+  if (viewMode !== 'scroll' || window._scrollRestoring) return;
   const sc = document.getElementById('scroll-container');
-  if (!sc) return;
+  const items = sc ? sc.querySelectorAll('.scroll-item') : [];
+  if (!items.length) return;
+  const mid = sc.scrollTop + sc.clientHeight / 2;
+  let i = 0;
+  for (let k = 0; k < items.length; k++) { if (_scRel(sc, items[k]) <= mid) i = k; else break; }
+  const h = items[i].getBoundingClientRect().height || 1;
   let mem = {};
-  try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
-  mem[POST_ID] = { y: sc.scrollTop, t: Date.now() };
-  // keep only last 3 by timestamp
-  const entries = Object.entries(mem).sort((a,b)=>b[1].t-a[1].t).slice(0,3);
-  localStorage.setItem('postScroll', JSON.stringify(Object.fromEntries(entries)));
+  try { mem = JSON.parse(sessionStorage.getItem(SCROLL_MEM) || '{}'); } catch (e) {}
+  mem[POST_ID] = {i, f: Math.max(0, Math.min(1, (mid - _scRel(sc, items[i])) / h)), t: Date.now()};
+  const keep = Object.entries(mem).sort((x, y) => y[1].t - x[1].t).slice(0, 300);
+  try { sessionStorage.setItem(SCROLL_MEM, JSON.stringify(Object.fromEntries(keep))); } catch (e) {}
 }
-function restoreScrollPosition() {
-  if (viewMode !== 'scroll') return;
+function restoreScrollPosition() {              // true = this post had a remembered position
+  if (viewMode !== 'scroll') return false;
   let mem = {};
-  try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
+  try { mem = JSON.parse(sessionStorage.getItem(SCROLL_MEM) || '{}'); } catch (e) {}
   const saved = mem[POST_ID];
-  if (saved && Date.now() - saved.t < 3000) { // within 3 seconds
-    const sc = document.getElementById('scroll-container');
-    if (sc) setTimeout(() => sc.scrollTo(0, saved.y), 80);
-  }
+  const sc = document.getElementById('scroll-container');
+  const items = sc ? sc.querySelectorAll('.scroll-item') : [];
+  if (!saved || !items[saved.i]) return false;
+  const apply = () => {
+    const it = items[saved.i];
+    sc.scrollTop = _scRel(sc, it) + saved.f * it.getBoundingClientRect().height - sc.clientHeight / 2;
+  };
+  window._scrollRestoring = true;
+  apply(); requestAnimationFrame(apply);
+  const onLoad = e => { if (e.target && e.target.closest && e.target.closest('#scroll-container')) apply(); };
+  const stop = () => {
+    window._scrollRestoring = false;
+    document.removeEventListener('load', onLoad, true);
+    ['touchstart', 'wheel', 'pointerdown', 'keydown'].forEach(ev => sc.removeEventListener(ev, stop));
+  };
+  document.addEventListener('load', onLoad, true);          // an item above settles -> keep the same spot
+  ['touchstart', 'wheel', 'pointerdown', 'keydown'].forEach(ev => sc.addEventListener(ev, stop, {passive: true}));
+  setTimeout(stop, 2500);
+  return true;
+}
+/* a multi-item post opens with its first item centred (or its top in view when taller than the screen) */
+function centerFirstItem(sc) {
+  const first = sc && sc.querySelector('.scroll-item');
+  if (!first || window._scrollRestoring) return;        // a remembered position wins
+  const h = first.getBoundingClientRect().height;
+  sc.scrollTop = h <= sc.clientHeight ? _scRel(sc, first) + h / 2 - sc.clientHeight / 2 : _scRel(sc, first) - 8;
 }
 // Update the "N / total" counter in scroll mode based on the item nearest the
 // vertical centre of the viewport.
@@ -2788,8 +2817,8 @@ function updateScrollCounter() {
     }, {passive:true});
   }
   window.addEventListener('beforeunload', saveScrollPosition);
+  window.addEventListener('pagehide', saveScrollPosition);
 })();
-restoreScrollPosition();
 
 // if navigated here via 'prev' from another post, show last image
 if (window.location.hash === '#last' && IMAGES.length > 1) {
@@ -2804,15 +2833,9 @@ if (window.location.hash === '#last' && IMAGES.length > 1) {
   }
   history.replaceState(null, '', window.location.href.replace('#last', ''));
 } else if (viewMode === 'scroll') {
-  // scrollTop is already set synchronously in applyViewMode before the
-  // IntersectionObserver starts — nothing more needed here.
-  const sc = document.getElementById('scroll-container');
-  if (sc) {
-    let mem = {}; try { mem = JSON.parse(localStorage.getItem('postScroll') || '{}'); } catch(e){}
-    const saved = mem[POST_ID];
-    const hasRecent = saved && Date.now() - saved.t < 3000;
-    if (hasRecent) { sc.scrollTop = saved.y; } // restore position if navigated back quickly
-  }
+  // a post seen before in this tab: back to the same spot; otherwise applyViewMode's
+  // first-item centring stays
+  restoreScrollPosition();
 }
 loadNotDupes();
 updateFilePath();
