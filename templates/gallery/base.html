@@ -415,6 +415,10 @@ input[type=range].size-slider::-moz-range-thumb {
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .search-clear:hover { color: var(--text-bright); }
+/* quick links: each has its own colour (settings → quick links) */
+.btn.quick-link { color: var(--ql, var(--text)); border-color: color-mix(in srgb, var(--ql, var(--border)) 55%, transparent);
+  background: color-mix(in srgb, var(--ql, transparent) 12%, transparent); }
+.btn.quick-link:hover { background: color-mix(in srgb, var(--ql, transparent) 26%, transparent); border-color: var(--ql, var(--accent)); }
 </style>
 {% block extra_head %}{% endblock %}
 </head>
@@ -435,7 +439,7 @@ input[type=range].size-slider::-moz-range-thumb {
          console or re-enable here if needed). Hidden on phone too (no mobile
          menu entry exists for it). -->
     <button class="btn header-desktop" id="organize-btn" onclick="organizeMerged()" style="display:none;">&#128193; fix folders</button>
-    {% for l in quick_links %}<a class="btn header-desktop quick-link" href="{{ l.url }}" target="_blank" rel="noopener noreferrer" title="{{ l.url }}">{{ l.label }}</a>{% endfor %}
+    {% for l in quick_links %}<a class="btn header-desktop quick-link" data-ql="{{ forloop.counter0 }}" style="--ql:{{ l.color }}" href="{{ l.url }}" target="_blank" rel="noopener noreferrer" title="{{ l.url }}">{{ l.label }}</a>{% endfor %}
     <button class="btn header-desktop" onclick="openSettings()" title="maintenance + database backups">&#9881; settings</button>
     <a class="btn header-desktop" href="/logout/" style="color:var(--text-dim);">logout</a>
   </div>
@@ -468,7 +472,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <a class="btn" href="/tags/edit/">&#9998; edit tags</a>
       <a class="btn" href="/create/">&#10024; create</a>
       <button class="btn" onclick="organizeSingles();closeMobMenu()">&#128193; tidy files</button>
-      {% for l in quick_links %}<a class="btn quick-link" href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.label }}</a>{% endfor %}
+      {% for l in quick_links %}<a class="btn quick-link" data-ql="{{ forloop.counter0 }}" style="--ql:{{ l.color }}" href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.label }}</a>{% endfor %}
       <button class="btn" onclick="openSettings()">&#9881; settings</button>
       <a class="btn" href="/logout/" style="color:var(--text-dim);">logout</a>
     </div>

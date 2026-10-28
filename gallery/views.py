@@ -2707,9 +2707,24 @@ QUICK_LINKS_MAX = 20
 _URL_TOKEN = re.compile(r'^(https?://\S+|/\S*)$', re.I)
 
 
+_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _random_link_color(seed=None):
+    """A pleasant random colour (#rrggbb): any hue, fairly saturated, mid lightness —
+    readable as text on the dark header. `seed` (a URL) makes it fixed instead of random."""
+    import colorsys
+    import hashlib
+    r = random.Random(int(hashlib.md5(seed.encode()).hexdigest()[:8], 16)) if seed else random
+    rgb = colorsys.hls_to_rgb(r.random(), 0.62, 0.65)
+    return '#' + ''.join(f'{int(c * 255):02x}' for c in rgb)
+
+
 def _quick_links():
     links = _pref('quickLinks', [])
-    return [l for l in links if isinstance(l, dict) and l.get('url')] if isinstance(links, list) else []
+    out = [l for l in links if isinstance(l, dict) and l.get('url')] if isinstance(links, list) else []
+    # links saved before colours existed: a fixed colour from the URL until the user picks one
+    return [l if _COLOR_RE.match(str(l.get('color', ''))) else dict(l, color=_random_link_color(l['url'])) for l in out]
 
 
 def _link_label(url):
@@ -2749,7 +2764,16 @@ def quick_links_api(request):
                 links.pop(int(data['remove']))
             except (ValueError, IndexError, TypeError):
                 return _err('no such link')
-        added = parse_quick_links(data.get('add', ''))
+        if 'color' in data:                    # {color: {index, color: '#rrggbb'}}
+            c = data['color'] if isinstance(data['color'], dict) else {}
+            try:
+                i = int(c.get('index'))
+                if not _COLOR_RE.match(str(c.get('color', ''))) or not 0 <= i < len(links):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return _err('bad colour')
+            links[i] = dict(links[i], color=c['color'].lower())
+        added = [dict(l, color=_random_link_color()) for l in parse_quick_links(data.get('add', ''))]   # new: a random colour
         if data.get('add') and not added:
             return _err('no http(s) links found in that text')
         have = {l['url'] for l in links}

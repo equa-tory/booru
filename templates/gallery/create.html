@@ -40,10 +40,15 @@
   .cr-gauges .ok { color: #6c6; }
   .cr-bar { height: 8px; border-radius: 999px; background: var(--bg3); overflow: hidden; margin-top: .5rem; }
   .cr-bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
-  #cr-queue { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); }
-  #cr-queue .q { display: flex; align-items: center; gap: .4rem; padding: .25rem 0; border-top: 1px solid var(--border); }
+  /* the queue sits on top of the result preview */
+  #cr-queue { position: absolute; left: 0; right: 0; top: 0; z-index: 2; font-family: var(--mono); font-size: .7rem; color: #fff;
+    background: rgba(0,0,0,.72); backdrop-filter: blur(4px); border-radius: 8px 8px 0 0; padding: .3rem .55rem; max-height: 45%; overflow-y: auto; }
+  #cr-queue .q { display: flex; align-items: center; gap: .4rem; padding: .22rem 0; }
+  #cr-queue .q + .q { border-top: 1px solid rgba(255,255,255,.12); }
   #cr-queue .q span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #cr-queue .q button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: .9rem; }
+  #cr-queue .q button { background: none; border: none; color: rgba(255,255,255,.75); cursor: pointer; font-size: .9rem; }
+  #cr-queue .mini { height: 3px; background: rgba(255,255,255,.18); border-radius: 2px; overflow: hidden; margin: .1rem 0 .15rem; }
+  #cr-queue .mini > div { height: 100%; background: var(--accent); }
   .cr-prog-msg { font-family: var(--mono); font-size: .72rem; color: var(--text-dim); margin-top: .35rem; min-height: 1.1em; }
   .cr-preview { display: flex; align-items: center; justify-content: center; background: var(--bg3); border-radius: 8px;
     min-height: 260px; max-height: 70vh; overflow: hidden; }
@@ -69,6 +74,13 @@
   .cr-paint-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin-top: .45rem; font-family: var(--mono); font-size: .72rem; color: var(--text-dim); }
   .cr-paint-tools input[type=range] { flex: 1; min-width: 6rem; }
   .cr-paint-tools .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #cr-saved { border: 1px solid var(--border); border-radius: 8px; background: var(--bg3); padding: .45rem; margin: .4rem 0; }
+  #cr-saved .sv { display: flex; align-items: center; gap: .35rem; padding: .25rem 0; font-size: .76rem; }
+  #cr-saved .sv + .sv { border-top: 1px solid var(--border); }
+  #cr-saved .sv .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  #cr-saved .sv .nm small { color: var(--text-dim); font-family: var(--mono); font-size: .64rem; }
+  #cr-saved .sv button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: .85rem; padding: 0 .2rem; }
+  #cr-saved .ae-chip { flex: none; }
   .cr-h2 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 0 0 .5rem; }
 </style>
 {% include "gallery/_lora_picker_assets.html" %}
@@ -85,7 +97,11 @@
     {% if not comfy_enabled %}<div class="cr-card">AI edit / ComfyUI is switched off in &#9881; settings.</div>{% endif %}
 
     <div class="cr-card">
-      <label class="ae-l" for="cr-desc" style="margin-top:0;">description (any language)</label>
+      <div style="display:flex;align-items:center;gap:.4rem;">
+        <label class="ae-l" for="cr-desc" style="margin:0;flex:1;">description (any language)</label>
+        <button type="button" class="btn" style="font-size:.7rem;padding:.15rem .5rem;" onclick="crSavedToggle()" title="saved descriptions: save the current one, toggle saved ones in and out">&#128209; saved <span id="cr-saved-n"></span></button>
+      </div>
+      <div id="cr-saved" style="display:none;"></div>
       <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a maid outfit (holding a tray), smiling in a cafe"
                 onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
 
@@ -173,10 +189,12 @@
                 onclick="crStop()" title="stop now: ComfyUI is interrupted, nothing is saved">&#9632; stop</button>
       </div>
       <div class="cr-prog-msg" id="cr-prog">idle</div>
-      <div id="cr-queue"></div>
     </div>
     <div class="cr-card">
-      <div class="cr-preview" id="cr-preview"><div class="empty">the result shows here — or tap a picture in the history</div></div>
+      <div style="position:relative;">
+        <div class="cr-preview" id="cr-preview"><div class="empty">the result shows here — or tap a picture in the history</div></div>
+        <div id="cr-queue" style="display:none;"></div>
+      </div>
       <div class="cr-strip" id="cr-strip"></div>
       <div class="cr-pv-meta" id="cr-pv-meta"></div>
       <div class="cr-actions" id="cr-pv-actions" style="display:none;">
@@ -375,10 +393,15 @@ async function crTick() {
     } else if (crEl('cr-prog').textContent.startsWith('#')) {
       crEl('cr-prog').textContent = 'idle'; crEl('cr-bar').style.width = '0%';
     }
-    const rest = running.slice(1);
-    crEl('cr-queue').innerHTML = rest.map((t, i) => `<div class="q"><span>${i + 2}. #${t.id} ${CR_KIND_LABEL[t.kind]} — ${aeEsc(t.message || 'queued')}</span>
-        <button onclick="crCancelJob(${t.id})" title="cancel this queued job">&#10005;</button></div>`).join('')
-      + (rest.length ? `<div class="q"><span></span><button onclick="crStop(true)" title="stop the running job and cancel every queued one" style="font-size:.7rem;">clear queue</button></div>` : '');
+    const rest = running.slice(1), q = crEl('cr-queue');
+    q.style.display = running.length ? '' : 'none';
+    q.innerHTML = running.map((t, i) => {
+      const waiting = /^(queued|waiting for the GPU)/.test(t.message || '');
+      const pct = t.total && !waiting ? Math.round(100 * t.done / t.total) : 0;
+      return `<div class="q"><span>${i ? i + 1 + '. ' : '&#9654; '}#${t.id} ${CR_KIND_LABEL[t.kind]} — ${aeEsc(t.message || 'queued')}</span>
+        <button onclick="${i ? `crCancelJob(${t.id})` : 'crStop()'}" title="${i ? 'cancel this queued job' : 'stop this job (the next one starts)'}">${i ? '&#10005;' : '&#9632;'}</button></div>`
+        + (i ? '' : `<div class="mini"><div style="width:${pct}%"></div></div>`);
+    }).join('') + (rest.length ? `<div class="q"><span>${rest.length} waiting</span><button onclick="crStop(true)" title="stop the running job and cancel every queued one" style="font-size:.7rem;">clear queue</button></div>` : '');
     for (const t of jobs) {
       if (t.status === 'running' || !crMine.has(t.id) || crDone.has(t.id)) continue;
       crDone.add(t.id);
@@ -630,6 +653,61 @@ async function crRemove() {
   finally { btn.disabled = false; }
 }
 
+/* ── saved descriptions (server pref createPrompts: [{id, name, text}], in the DB backups):
+   save the current description under a name, toggle one in / out of the description,
+   edit, delete ── */
+let crSaved = [], crSavedEdit = null;
+async function crSavedLoad() {
+  try { const d = await (await fetch('/api/prefs/')).json(); crSaved = Array.isArray(d.prefs.createPrompts) ? d.prefs.createPrompts : []; } catch (e) {}
+  crSavedRender();
+}
+function crSavedStore() { crSavedRender(); return apiPost('/api/pref/set/', {key: 'createPrompts', value: crSaved}); }
+function crSavedToggle() { const p = crEl('cr-saved'); p.style.display = p.style.display === 'none' ? '' : 'none'; crSavedRender(); }
+const crSavedNorm = t => t.trim().replace(/^[,\s]+|[,\s]+$/g, '');
+function crSavedIn(text) { return crEl('cr-desc').value.includes(crSavedNorm(text)); }
+function crSavedUse(i) {                       // toggle: append it, or take it out again
+  const d = crEl('cr-desc'), t = crSavedNorm(crSaved[i].text);
+  if (!t) return;
+  if (d.value.includes(t)) d.value = d.value.replace(t, '').replace(/,\s*,/g, ',').replace(/^[,\s]+|[,\s]+$/g, '');
+  else d.value = d.value.trim() ? d.value.trim().replace(/[,\s]+$/, '') + ', ' + t : t;
+  d.dispatchEvent(new Event('input', {bubbles: true}));
+  crSavedRender();
+}
+function crSavedAdd() {
+  const text = crEl('cr-desc').value.trim();
+  if (!text) { crStatus('type a description first, then save it', true); return; }
+  crSavedEdit = {id: null, name: text.split(/[,.]/)[0].slice(0, 40), text};
+  crSavedRender();
+}
+function crSavedStartEdit(i) { crSavedEdit = {...crSaved[i]}; crSavedRender(); }
+function crSavedCommit() {
+  const name = crEl('cr-sv-name').value.trim(), text = crEl('cr-sv-text').value.trim();
+  if (!name || !text) { toast('name and text please', 'err'); return; }
+  if (crSavedEdit.id) { const it = crSaved.find(x => x.id === crSavedEdit.id); if (it) Object.assign(it, {name, text}); }
+  else crSaved.unshift({id: Date.now().toString(36), name, text});
+  crSavedEdit = null; crSavedStore(); toast('saved');
+}
+function crSavedDelete(i) {
+  if (!confirm(`delete "${crSaved[i].name}"?`)) return;
+  crSaved.splice(i, 1); crSavedStore();
+}
+function crSavedRender() {
+  crEl('cr-saved-n').textContent = crSaved.length ? '(' + crSaved.length + ')' : '';
+  const p = crEl('cr-saved');
+  if (p.style.display === 'none') return;
+  const form = crSavedEdit ? `<div style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.4rem;">
+      <input type="text" id="cr-sv-name" placeholder="name" value="${aeEsc(crSavedEdit.name)}">
+      <textarea id="cr-sv-text" rows="2">${aeEsc(crSavedEdit.text)}</textarea>
+      <div style="display:flex;gap:.4rem;"><button class="btn primary" onclick="crSavedCommit()">${crSavedEdit.id ? 'save changes' : 'save'}</button>
+        <button class="btn" onclick="crSavedEdit=null;crSavedRender()">cancel</button></div></div>` : '';
+  p.innerHTML = form + (crSavedEdit ? '' : `<div style="margin-bottom:.3rem;"><button class="btn" style="font-size:.72rem;" onclick="crSavedAdd()">&#65291; save the current description</button></div>`)
+    + (crSaved.map((it, i) => `<div class="sv">
+        <button class="ae-chip${crSavedIn(it.text) ? ' on' : ''}" onclick="crSavedUse(${i})" title="${crSavedIn(it.text) ? 'take it out of' : 'add it to'} the description">${crSavedIn(it.text) ? 'on' : 'off'}</button>
+        <span class="nm" onclick="crSavedUse(${i})" title="${aeEsc(it.text)}">${aeEsc(it.name)}<br><small>${aeEsc(it.text.slice(0, 80))}</small></span>
+        <button onclick="crSavedStartEdit(${i})" title="edit">&#9998;</button>
+        <button onclick="crSavedDelete(${i})" title="delete">&#128465;</button></div>`).join('') || '<div class="cr-sub" style="margin:0;">nothing saved yet</div>');
+}
+
 function crSaveUi() {
   try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value,
                                                          maxTemp: crEl('cr-maxtemp').value})); } catch (e) {}
@@ -643,7 +721,8 @@ async function crInit() {
     if (u.maxTemp !== undefined && u.maxTemp !== '') crEl('cr-maxtemp').value = u.maxTemp;
   } catch (e) {}
   ['cr-size', 'cr-count'].forEach(id => crEl(id).addEventListener('change', crSaveUi));
-  crEl('cr-desc').addEventListener('input', () => { crPlanned = false; });
+  crEl('cr-desc').addEventListener('input', () => { crPlanned = false; if (crEl('cr-saved').style.display !== 'none' && !crSavedEdit) crSavedRender(); });
+  crSavedLoad();
   document.querySelector('.cr-left').addEventListener('input', crSaveDraft);
   document.querySelector('.cr-left').addEventListener('change', crSaveDraft);
   document.querySelector('.cr-left').addEventListener('click', () => setTimeout(crSaveDraft, 50));   // LoRA chips / ✕

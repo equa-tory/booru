@@ -1437,7 +1437,13 @@ class QuickLinksTests(TestCase):
     def test_add_dedupe_remove_and_header(self):
         self.assertEqual(len(self._add('home https://example.org\nhttps://example.org').json()['links']), 1)
         html = self.client.get('/').content.decode()
-        self.assertIn('class="btn header-desktop quick-link" href="https://example.org"', html)
+        self.assertRegex(html, r'class="btn header-desktop quick-link" data-ql="0" style="--ql:#[0-9a-f]{6}" href="https://example.org"')
+        links = self.client.get('/api/quick-links/').json()['links']
+        self.assertRegex(links[0]['color'], r'^#[0-9a-f]{6}$')                     # a random colour on creation
+        d = self.client.post('/api/quick-links/', json.dumps({'color': {'index': 0, 'color': '#AA00ff'}}), content_type='application/json').json()
+        self.assertEqual(d['links'][0]['color'], '#aa00ff')                        # saved (→ prefs → backups)
+        self.assertEqual(self.client.post('/api/quick-links/', json.dumps({'color': {'index': 0, 'color': 'red;x'}}),
+                                          content_type='application/json').status_code, 400)
         d = self.client.post('/api/quick-links/', json.dumps({'remove': 0}), content_type='application/json').json()
         self.assertEqual(d['links'], [])
         self.assertNotIn('quick-link" href', self.client.get('/').content.decode())
