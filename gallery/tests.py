@@ -3493,3 +3493,21 @@ class ComfyCreateTests(TestCase):
                             plan={'characters': [], 'tags': ['1girl', 'beach', 'red dress', 'ocean'], 'negative': [],
                                   'orientation': 'landscape', 'levels': {'beach': 4}, 'note': '', 'source': 'llm'}, picks={})
         self.assertEqual(d['positive'], '(beach:1.3), (red dress:1.2), 1girl, ocean')
+
+
+class GifProgressTests(TestCase):
+    def test_gif_duration_and_post_page(self):
+        from PIL import Image
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        ov = override_settings(MEDIA_ROOT=tmp); ov.enable(); self.addCleanup(ov.disable)
+        frames = [Image.new('RGB', (8, 8), c) for c in ('red', 'green', 'blue')]
+        frames[0].save(os.path.join(tmp, 'a.gif'), save_all=True, append_images=frames[1:], duration=[200, 0, 300], loop=0)
+        Image.new('RGB', (8, 8)).save(os.path.join(tmp, 'still.gif'))
+        self.assertEqual(views.gif_duration(os.path.join(tmp, 'a.gif')), 0.6)          # 0 ms plays as 100 ms
+        self.assertIsNone(views.gif_duration(os.path.join(tmp, 'still.gif')))
+        post = Post.objects.create()
+        ph = Photo.objects.create(post=post, order=0, rel_path='a.gif')
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        html = self.client.get(f'/post/{post.pk}/').content.decode()
+        self.assertIn('data-gif-dur="0.600000"', html)
+        ph.refresh_from_db(); self.assertEqual(ph.duration, 0.6)                          # measured once, stored

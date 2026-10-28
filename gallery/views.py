@@ -114,6 +114,26 @@ def _length_q(term):
     return Q(_vlen__gte=sec, _vlen__lt=sec + (1 if unit == 's' else 60)) & Q(_vlen__gt=0)
 
 
+def gif_duration(path):
+    """One loop of an animated GIF in seconds (sum of its frame delays, with the browsers'
+    rule: a delay of 10 ms or less plays as 100 ms), or None (not animated / unreadable).
+    Stored in Photo.duration — video-length search only looks at videos (is_video)."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            n = getattr(im, 'n_frames', 1)
+            if n < 2:
+                return None
+            total = 0
+            for i in range(n):
+                im.seek(i)
+                d = im.info.get('duration') or 0
+                total += d if d > 10 else 100
+            return round(total / 1000.0, 3)
+    except Exception:
+        return None
+
+
 def _video_len_sq():
     """Correlated subquery: the longest measured video of each post, in seconds (0 if none)."""
     return Coalesce(Subquery(
@@ -599,6 +619,12 @@ def post_detail(request, pk):
     post   = get_object_or_404(Post, pk=pk)
     q_tags = request.GET.getlist('tag')
     images = list(post.images.order_by('order', 'id'))
+    for p in images:                         # GIF progress bar: its loop length, measured once
+        if p.is_gif and p.duration is None:
+            d = gif_duration(p.file_path)
+            if d:
+                p.duration = d
+                Photo.objects.filter(pk=p.pk).update(duration=d)
 
     # Store referrer for back button — prefer HTTP_REFERER that points to index
     referer  = request.META.get('HTTP_REFERER', '')

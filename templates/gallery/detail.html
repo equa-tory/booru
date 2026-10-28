@@ -453,6 +453,11 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
   .filmstrip           { order:3; }
   .img-counter         { order:4; }
 }
+/* GIF progress: a thin looping bar timed to the GIF's own loop length (browsers don't expose the frame) */
+.gif-prog { position:absolute; left:0; right:0; bottom:0; height:4px; background:rgba(255,255,255,.18); z-index:5; cursor:pointer; }
+.gif-prog::after { content:''; position:absolute; inset:-8px 0 0 0; }   /* bigger tap target */
+.gif-prog > div { height:100%; width:0; background:var(--accent); animation:gifprog var(--gd) linear infinite; }
+@keyframes gifprog { from { width:0; } to { width:100%; } }
 </style>
 {% endblock %}
 
@@ -494,7 +499,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
           <div style="font-size:1.5rem;">&#128196; PDF</div>
         </div>
         {% else %}
-        <img id="main-img" src="{{ images.0.media_url }}" alt="{{ post.title }}"
+        <img id="main-img" src="{{ images.0.media_url }}" alt="{{ post.title }}"{% if images.0.is_gif and images.0.duration %} data-gif-dur="{{ images.0.duration|stringformat:"f" }}"{% endif %}
              style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">
         {% endif %}{% endif %}
       </div>
@@ -542,7 +547,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
              onloadedmetadata="if(typeof applyFitSingle!=='undefined')applyFitSingle()"
              style="max-width:100%;display:block;border-radius:2px;background:#000;"></video>
       {% else %}
-      <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"
+      <img class="scroll-img" data-src="{{ img.media_url }}" alt="" loading="lazy"{% if img.is_gif and img.duration %} data-gif-dur="{{ img.duration|stringformat:"f" }}"{% endif %}
            style="min-height:38vh;background:var(--bg3);">
       {% endif %}
       </div>
@@ -855,7 +860,7 @@ const NET_PREFIX = '{{ net_prefix|escapejs }}';
 // Full search context (tags + filters + sort) for neighbor navigation
 const SEARCH_QS = '{{ search_qs|escapejs }}';
 const navSuffix = SEARCH_QS ? '?' + SEARCH_QS : '';
-const IMAGES   = [{% for img in images %}{"id":{{ img.pk }},"url":"{{ img.media_url }}","thumb":"{{ img.thumb_url }}","is_video":{{ img.is_video|yesno:"true,false" }},"is_pdf":{{ img.is_pdf|yesno:"true,false" }},"is_gif":{{ img.is_gif|yesno:"true,false" }}}{% if not forloop.last %},{% endif %}{% endfor %}];
+const IMAGES   = [{% for img in images %}{"id":{{ img.pk }},"url":"{{ img.media_url }}","thumb":"{{ img.thumb_url }}","is_video":{{ img.is_video|yesno:"true,false" }},"is_pdf":{{ img.is_pdf|yesno:"true,false" }},"is_gif":{{ img.is_gif|yesno:"true,false" }},"gif_dur":{% if img.is_gif and img.duration %}{{ img.duration|stringformat:"f" }}{% else %}0{% endif %}}{% if not forloop.last %},{% endif %}{% endfor %}];
 const IS_MULTI = IMAGES.length > 1;
 let currentImgIdx = 0;
 
@@ -1241,7 +1246,7 @@ function selectImage(idx, thumbEl) {
   } else if (item.is_pdf) {
     container.innerHTML = renderPdfContainer(item.url);
   } else {
-    container.innerHTML = `<img id="main-img" src="${item.url}"
+    container.innerHTML = `<img id="main-img" src="${item.url}"${item.gif_dur ? ` data-gif-dur="${item.gif_dur}"` : ''}
       style="max-width:100%;max-height:100%;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;pointer-events:none;">`;
     initPinchZoom();
   }
@@ -2870,6 +2875,33 @@ function aiPicker() {
     return d.loras || [];
   }}));
 }
+/* GIF progress bar: started when the GIF (re)loads — that is when the browser starts its loop.
+   Tap the bar = restart the GIF and the bar together. */
+function gifBar(img) {
+  const dur = parseFloat(img.dataset.gifDur || 0), host = img.parentElement;
+  if (!dur || !host) return;
+  if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+  let bar = host.querySelector(':scope > .gif-prog');
+  if (!bar) {
+    bar = document.createElement('div'); bar.className = 'gif-prog'; bar.title = 'GIF progress — tap to restart';
+    bar.innerHTML = '<div></div>';
+    bar.addEventListener('click', e => {
+      e.stopPropagation();
+      const src = img.currentSrc || img.src;
+      img.src = ''; img.src = src.split('#')[0];          // re-decode = the GIF starts from frame 1
+    });
+    host.appendChild(bar);
+  }
+  const inner = bar.firstChild;
+  inner.style.setProperty('--gd', dur + 's');
+  inner.style.animation = 'none'; void inner.offsetWidth; inner.style.animation = '';   // restart in sync
+}
+document.addEventListener('load', e => {
+  const el = e.target;
+  if (el instanceof HTMLImageElement && el.dataset && el.dataset.gifDur) gifBar(el);
+}, true);
+document.querySelectorAll('img[data-gif-dur]').forEach(im => { if (im.complete && im.naturalWidth) gifBar(im); });
+
 /* ✎ AI in the top bar (also single-item posts / paged view): the picture on screen -> ✨ create */
 function openCreateFromCurrent() {
   let idx = currentImgIdx;
