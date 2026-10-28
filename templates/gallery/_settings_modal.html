@@ -128,6 +128,22 @@
     </div>
 
     <div class="set-sec">
+      <h3>tag rules <span style="text-transform:none;letter-spacing:0;font-weight:400;">· when a tag is added, also add others</span></h3>
+      <div class="bk-list" id="tr-list" style="max-height:16rem;"></div>
+      <div class="set-grid" style="margin-top:.4rem;">
+        <div class="set-field"><label for="tr-when" title="a tag name, or a pattern: * = anything, e.g. *_(genshin_impact) = every Genshin character">when this tag is added</label>
+          <input type="text" id="tr-when" spellcheck="false" autocomplete="off" placeholder="hatsune_miku   or   *_(genshin_impact)"></div>
+        <div class="set-field"><label for="tr-add">also add (comma separated)</label>
+          <input type="text" id="tr-add" spellcheck="false" autocomplete="off" placeholder="vocaloid, my_favourites"></div>
+        <div class="set-field"><label for="tr-cat">as category</label>
+          <select id="tr-cat"><option value="meta">meta</option><option value="general">general</option><option value="character">character</option><option value="artist">artist</option><option value="copyright">copyright</option></select></div>
+      </div>
+      <div class="set-actions"><button class="btn primary" onclick="addTagRule()">add rule</button>
+        <button class="btn" onclick="applyTagRules()" title="run every rule over the posts already in the library (background job)">apply to existing posts</button></div>
+      <div class="set-note">New tags follow the rules automatically: tags you add, AI tagging, the character model. Rules can chain. Older posts only get them with "apply to existing posts".</div>
+    </div>
+
+    <div class="set-sec">
       <h3>AI edit (ComfyUI) <span style="text-transform:none;letter-spacing:0;font-weight:400;">· "&#9998; AI edit" on every still image of a post</span></h3>
       <div class="set-note" id="ce-status">checking…</div>
       <label class="set-check" style="margin:.2rem 0 .6rem;" title="Show the AI edit button on images in posts."><input type="checkbox" id="ce-enabled"> enabled</label>
@@ -191,6 +207,7 @@ function openSettings() {
   loadAiModels();
   loadCustom();
   loadQuickLinks();
+  loadTagRules();
   loadNetPath();
   loadComfy();
 }
@@ -285,6 +302,33 @@ async function addQuickLinks() {
 async function removeQuickLink(i) {
   const {ok, d} = await _qlPost({remove: i});
   if (ok) renderQuickLinks(d.links); else toast(d.error || 'failed', 'err');
+}
+function renderTagRules(rules) {
+  const list = document.getElementById('tr-list'); list.textContent = '';
+  if (!rules.length) { list.innerHTML = '<div class="set-note">none yet</div>'; return; }
+  rules.forEach((r, i) => {
+    const row = document.createElement('div'); row.className = 'bk-row';
+    const left = document.createElement('div'); left.style.minWidth = '0';
+    const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = r.when + '  →  ' + r.add.join(', ');
+    const meta = document.createElement('div'); meta.className = 'bk-meta'; meta.textContent = 'added as ' + r.category;
+    left.append(nm, meta);
+    const b = document.createElement('button'); b.className = 'btn danger'; b.textContent = 'remove';
+    b.onclick = async () => { const d = await (await apiPost('/api/tag-rules/', {remove: i})).json(); renderTagRules(d.rules || []); };
+    row.append(left, b); list.appendChild(row);
+  });
+}
+async function loadTagRules() {
+  try { renderTagRules((await (await fetch('/api/tag-rules/')).json()).rules || []); } catch (e) {}
+}
+async function addTagRule() {
+  const w = document.getElementById('tr-when'), a = document.getElementById('tr-add');
+  const d = await (await apiPost('/api/tag-rules/', {add: {when: w.value, add: a.value, category: document.getElementById('tr-cat').value}})).json();
+  if (!d.ok) { toast(d.error || 'could not add the rule', 'err'); return; }
+  w.value = ''; a.value = ''; renderTagRules(d.rules); toast('rule added — new tags follow it now; "apply to existing posts" for the old ones');
+}
+async function applyTagRules() {
+  const d = await (await apiPost('/api/tag-rules/apply/')).json();
+  if (d.task_id) { toast('applying the rules in the background — see the task card'); pollTasks(true); }
 }
 async function loadDbgStats() {
   ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });

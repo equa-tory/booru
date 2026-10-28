@@ -713,10 +713,49 @@ def recount_tags(tag_ids=None):
         Tag.objects.bulk_update(changed, ['count'], batch_size=500)
 
 
-def add_tags_to_post(post, tag_names, category='general', recount=True):
+_rules_cache = {'t': 0.0, 'rules': []}
+
+
+def tag_rules(fresh=False):
+    """The user's tag rules (pref `tagRules`): [{'when': name or glob, 'add': [names], 'category'}],
+    cached 5 s per process (add_tags_to_post runs for every scanned / tagged post)."""
+    import time as _t
+    from gallery import prefs
+    if fresh or _t.time() - _rules_cache['t'] > 5:
+        rules = prefs.get('tagRules', [])
+        _rules_cache.update(t=_t.time(), rules=[r for r in rules if isinstance(r, dict) and r.get('when') and r.get('add')]
+                            if isinstance(rules, list) else [])
+    return _rules_cache['rules']
+
+
+def implied_tags(names, rules=None, depth=3):
+    """Tags the rules add for `names`: {category: [names]} (chains followed `depth` levels, a
+    tag never re-adds itself). `when` is a tag name or a glob: `*_(genshin_impact)`."""
+    from fnmatch import fnmatchcase
+    rules = tag_rules() if rules is None else rules
+    have = {str(n).strip().lower().replace(' ', '_') for n in names}
+    out, frontier = {}, set(have)
+    for _ in range(depth):
+        new = set()
+        for r in rules:
+            pat = str(r['when']).strip().lower().replace(' ', '_')
+            if any(fnmatchcase(n, pat) for n in frontier):
+                for a in r['add']:
+                    a = str(a).strip().lower().replace(' ', '_')
+                    if a and a not in have:
+                        have.add(a); new.add(a)
+                        out.setdefault(r.get('category') or 'meta', []).append(a)
+        if not new:
+            break
+        frontier = new
+    return out
+
+
+def add_tags_to_post(post, tag_names, category='general', recount=True, rules=True):
     """Add tags to a post and (by default) refresh the counts of the tags it
     touched. Bulk callers (scan) pass recount=False and call recount_tags()
-    once at the end. Returns the touched Tag objects."""
+    once at the end. The user's tag rules add their implied tags too (`rules=False`
+    skips them). Returns the touched Tag objects."""
     from gallery.models import Tag
     touched = []
     seen = set()
@@ -726,6 +765,11 @@ def add_tags_to_post(post, tag_names, category='general', recount=True):
         seen.add(name)
         tag, _ = Tag.objects.get_or_create(name=name, defaults={'category': category})
         touched.append(tag)
+    if rules and seen and tag_rules():
+        for cat, names in implied_tags(seen).items():
+            for name in names:
+                tag, _ = Tag.objects.get_or_create(name=name, defaults={'category': cat})
+                touched.append(tag)
     if touched:
         post.tags.add(*touched)
     if recount:

@@ -123,6 +123,8 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 - LoRA picker UI is SHARED: `_lora_picker_assets.html` (CSS + `makeLoraPicker(prefix, {detect})`, registry `LP[prefix]`) + `_lora_picker.html` (markup, `p` = id prefix) — used by the AI-edit box (`aiedit`) and the create page (`cr`). Not a /static/ file on purpose: /static/ is cached a year as immutable.
 
 - Idea, not built: training a LoRA from selected posts with ComfyUI's native `TrainLoraNode` — see `docs/idea-lora-training.md` (benchmark first).
+- Idea, not built: PixAI tagger v1.0 (8,308 characters vs 3,720, 1008 px input) as the character model — `docs/idea-pixai-v1.md`.
+- Generate with no prompt but a description: the JOB plans (`_make_plan`, shared with `comfy_plan`) after its queue turn (`plan_in_job` rebinds prompt / LoRAs / shape); the user's own LoRA rows are kept as set, the plan's picks are added.
 
 ## Host tuning (Tesla P4) — `ops/ai-host-tune.sh` (run with sudo)
 - Benchmark 2026-10-28 (SDXL 768×1024, cfg 5.5, s/step): fp8 + split attention (old) 6.8 · **fp8 + `--use-pytorch-cross-attention` 6.0** (load 19 s vs 32 s) · fp16 + SDPA 6.9 · fp16 + split 8.3. The script installs the SDPA flag as a drop-in `comfyui.service.d/booru-sdpa.conf`.
@@ -134,6 +136,10 @@ The desktop sidebar shows `SIDEBAR_TAG_CAP` (150; 40 in fast mode) tags chosen p
 ## Wipe and split a post
 - **Wipe** (`☠ wipe` on the post page, `wipe` in the selection bar; type `wipe` to confirm): `POST /api/wipe/ {ids}` → Task `wipe` (`_wipe_work`, one at a time, cancel between posts) → `utils.wipe_post`: every file and thumbnail is zero-filled (same length, fsync), cut to 0 bytes and deleted (`wipe_file`: refuses paths outside `MEDIA_ROOT`, only unlinks symlinks/hard links, skips a thumbnail another post still uses), empty parent folders are removed (never `MEDIA_ROOT`/`inbox`/`inbox/_`), then the post row (items, tag links, folder membership), orphan tags and its `recentPosts` entry go. A post whose file can't be wiped is KEPT and reported. Copies elsewhere (DB backups, downloads, ComfyUI `input/booru`, SSD wear levelling / network-share snapshots) are out of reach.
 - **Split** (`✂ split into N posts` on the post page, `split` in the selection bar, `POST /api/post/<id>/split-all/`, bulk action `split_all`): `split_post_all` makes one NEW post per item (added now, title = file name, copies tags, rating/fav/AI flags and the manual folders of the source), re-points AI-edit posts made from one of the items, and deletes the source post (files stay put). The older filmstrip split-to-one / split-to-separate still exist for picking some items.
+
+## Tag rules and GIF lengths
+- Tag rules (settings → tag rules, pref `tagRules`, `/api/tag-rules/`): "when X (name or glob, e.g. `*_(genshin_impact)`) → also add Y, Z as category C". Applied inside `utils.add_tags_to_post` (`implied_tags`, chains 3 deep, rules cached 5 s per process) — so manual tags, AI tagging, the character model and my model all follow them; `rules=False` skips. Old posts: "apply to existing posts" (Task `tag_rules`).
+- GIF progress bar: the post page never measures; `/api/photo/<id>/gif-length/` (after the image loaded) reads the frame delays with `_gif_delays` (block parser, no decoding; Pillow fallback) into `Photo.duration`, and the bar starts offset by the time already played.
 
 ## Thumbnails
 `_regen_photo_thumb(photo, pct)` (views.py) is the single implementation behind the per-photo regen button and the bulk "pic thumbs" action (`/api/bulk-regen-thumb/`, covers that are pictures/gif/pdf); videos in a bulk selection go through `bulk_video_thumb` (needs the frame %).

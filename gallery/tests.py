@@ -3548,3 +3548,48 @@ class GifProgressTests(TestCase):
         ph.refresh_from_db(); self.assertEqual(ph.duration, 0.6)                          # measured once, stored
         self.assertIn('data-gif-dur="0.600000"', self.client.get(f'/post/{post.pk}/').content.decode())
         self.assertEqual(views._gif_delays(os.path.join(tmp, 'a.gif')), [200, 0, 300])    # parser, no decoding
+
+
+class TagRuleTests(TestCase):
+    def setUp(self):
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        from gallery import utils as _u
+        self.addCleanup(_u.tag_rules, True)
+
+    def _rules(self, rules):
+        from gallery import utils as _u
+        prefs.set('tagRules', rules); _u.tag_rules(fresh=True)
+
+    def test_engine_names_globs_chains(self):
+        from gallery import utils as _u
+        rules = [{'when': 'hatsune_miku', 'add': ['vocaloid'], 'category': 'copyright'},
+                 {'when': 'vocaloid', 'add': ['singer', 'hatsune_miku'], 'category': 'meta'},
+                 {'when': '*_(genshin_impact)', 'add': ['genshin'], 'category': 'meta'}]
+        self.assertEqual(_u.implied_tags(['Hatsune Miku'], rules), {'copyright': ['vocaloid'], 'meta': ['singer']})  # chain, no self re-add
+        self.assertEqual(_u.implied_tags(['raiden_shogun_(genshin_impact)'], rules), {'meta': ['genshin']})
+        self.assertEqual(_u.implied_tags(['1girl'], rules), {})
+
+    def test_added_tags_follow_the_rules(self):
+        self._rules([{'when': 'hatsune_miku', 'add': ['my_meta'], 'category': 'meta'}])
+        post = Post.objects.create()
+        add_tags_to_post(post, ['hatsune_miku'], category='character')
+        self.assertEqual(set(post.tags.values_list('name', 'category')), {('hatsune_miku', 'character'), ('my_meta', 'meta')})
+        self.assertEqual(Tag.objects.get(name='my_meta').count, 1)
+        other = Post.objects.create()
+        add_tags_to_post(other, ['hatsune_miku'], rules=False)
+        self.assertEqual(other.tags.count(), 1)
+
+    def test_api_and_apply_to_existing(self):
+        post = Post.objects.create(); add_tags_to_post(post, ['nahida_(genshin_impact)'], category='character')
+        d = self.client.post('/api/tag-rules/', json.dumps({'add': {'when': '*_(genshin_impact)', 'add': 'Genshin, my fav', 'category': 'meta'}}),
+                             content_type='application/json').json()
+        self.assertEqual(d['rules'], [{'when': '*_(genshin_impact)', 'add': ['genshin', 'my_fav'], 'category': 'meta'}])
+        self.assertEqual(self.client.post('/api/tag-rules/', json.dumps({'add': {'when': 'x', 'add': ''}}),
+                                          content_type='application/json').status_code, 400)
+        self.assertFalse(post.tags.filter(name='genshin').exists())             # old posts: only via apply
+        with mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            self.client.post('/api/tag-rules/apply/')
+        self.assertEqual(set(post.tags.values_list('name', flat=True)), {'nahida_(genshin_impact)', 'genshin', 'my_fav'})
+        self.assertEqual(Tag.objects.get(name='genshin').count, 1)
+        d = self.client.post('/api/tag-rules/', json.dumps({'remove': 0}), content_type='application/json').json()
+        self.assertEqual(d['rules'], [])

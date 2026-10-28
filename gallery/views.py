@@ -2860,6 +2860,72 @@ def quick_links_api(request):
     return JsonResponse({'links': links})
 
 
+# ── Tag rules: "when tag X is added, also add Y" (pref tagRules, applied in utils.add_tags_to_post) ──
+TAG_RULES_MAX = 200
+TAG_RULE_CATEGORIES = ('meta', 'general', 'character', 'artist', 'copyright')
+
+
+def tag_rules_api(request):
+    """GET -> {'rules'}; POST {add: {when, add (text or list), category}} or {remove: index}."""
+    from . import utils as _u
+    rules = list(_u.tag_rules(fresh=True))
+    if request.method == 'POST':
+        data = _json_body(request)
+        if 'remove' in data:
+            try:
+                rules.pop(int(data['remove']))
+            except (TypeError, ValueError, IndexError):
+                return _err('no such rule')
+        if isinstance(data.get('add'), dict):
+            r = data['add']
+            when = re.sub(r'\s+', '_', str(r.get('when') or '').strip().lower())
+            add = r.get('add') or ''
+            add = [re.sub(r'\s+', '_', a.strip().lower()) for a in (add if isinstance(add, list) else str(add).split(','))]
+            add = [a for a in dict.fromkeys(add) if a and a != when][:20]
+            cat = r.get('category') if r.get('category') in TAG_RULE_CATEGORIES else 'meta'
+            if not when or not add:
+                return _err('a rule needs a "when" tag and at least one tag to add')
+            if len(rules) >= TAG_RULES_MAX:
+                return _err(f'at most {TAG_RULES_MAX} rules')
+            rules.append({'when': when[:200], 'add': add, 'category': cat})
+        _set_pref('tagRules', rules)
+        _u.tag_rules(fresh=True)
+    return JsonResponse({'ok': True, 'rules': rules})
+
+
+@require_POST
+def tag_rules_apply(request):
+    """Apply every rule to the posts already in the library (Task `tag_rules`): only posts that
+    carry a matching tag, only the tags they lack; counts recomputed once."""
+    from fnmatch import fnmatchcase
+    from . import utils as _u
+
+    def work(task):
+        rules = _u.tag_rules(fresh=True)
+        names = list(Tag.objects.values_list('name', flat=True))
+        hit = {n for r in rules for n in names if fnmatchcase(n, str(r['when']))}
+        posts = list(Post.objects.filter(tags__name__in=hit).distinct().values_list('id', flat=True))
+        task.total = len(posts); task.save(update_fields=['total'])
+        added = 0
+        for i, pid in enumerate(posts):
+            if i % 50 == 0:
+                check_cancel(task)
+                task.done = i; task.message = f'{i}/{len(posts)} posts · {added} tags added'
+                task.save(update_fields=['done', 'message'])
+            post = Post.objects.get(pk=pid)
+            have = set(post.tags.values_list('name', flat=True))
+            for cat, imp in _u.implied_tags(have, rules).items():
+                missing = [t for t in imp if t not in have]
+                if missing:
+                    add_tags_to_post(post, missing, category=cat, recount=False, rules=False)
+                    added += len(missing)
+        recount_tags()
+        task.done = len(posts)
+        task.message = f'done: {added} tags added to {len(posts)} posts checked'
+        task.save(update_fields=['done', 'message'])
+    return JsonResponse({'ok': True, 'task_id': _start_task('tag_rules', work, message='applying tag rules…', exclusive=True).id})
+
+
 # ── Character model (PixAI) + AI runtime ────────────────────────
 def ai_info(request):
     """State for the settings panel's AI section. Loads no model."""
