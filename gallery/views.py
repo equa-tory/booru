@@ -3610,6 +3610,47 @@ def comfy_lora_preview(request):
     return resp
 
 
+def _job_max_temp(body, cfg):
+    """The "start when the GPU is at most N °C" of a queued job (0 = don't wait)."""
+    try:
+        return min(110, max(0, int(body.get('max_temp'))))
+    except (TypeError, ValueError):
+        return int(cfg['max_temp'])
+
+
+def _queue_turn(task, max_temp):
+    """Block a ComfyUI job until it is first in the queue (the oldest running AI-picture
+    job) and the GPU is no hotter than `max_temp` °C. Heartbeats every 10 s (the stale sweep
+    must not take a waiting job for dead); a ✕ on its task card cancels it while it waits."""
+    from . import ai_runtime
+    beat = 0.0
+    while True:
+        check_cancel(task)
+        ahead = Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running', id__lt=task.id).count()
+        msg = f'queued — {ahead} job(s) ahead' if ahead else None
+        if not msg and max_temp:
+            g = ai_runtime.gpu_stats()
+            if g and g.get('temp') is not None and g['temp'] > max_temp:
+                msg = f'waiting for the GPU to cool: {g["temp"]:.0f} °C > {max_temp} °C'
+        if not msg:
+            return
+        if msg != task.message or time.time() - beat >= 10:
+            task.message = msg
+            task.save(update_fields=['message'])
+            beat = time.time()
+        time.sleep(2)
+
+
+def _start_comfy_job(kind, work, total=0, max_temp=0):
+    """Start an AI-picture job (edit / create / remove) behind the ones already queued: it
+    begins at once and waits for its turn (`_queue_turn`). Returns (task, jobs ahead)."""
+    def queued(task):
+        _queue_turn(task, max_temp)
+        work(task)
+    task = _start_task(kind, queued, total=total, message='queued…')
+    return task, Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running', id__lt=task.id).count()
+
+
 def _comfy_busy():
     """409 response when a ComfyUI job (edit or create) is running, else None."""
     _sweep_stale_tasks()
@@ -3680,9 +3721,6 @@ def comfy_edit(request):
         return _err('type what should change')
     if not _comfy_enabled():
         return _err('AI edit is switched off in settings')
-    busy = _comfy_busy()
-    if busy:
-        return busy
     cfg = comfy.config()
     if body.get('ollama_model') and str(body['ollama_model']).strip() != cfg['ollama_model']:
         cfg = comfy.save_config({'ollama_model': str(body['ollama_model']).strip()})   # the box remembers the last choice
@@ -3787,8 +3825,8 @@ def comfy_edit(request):
         task.message = f'done in {int(_t.time() - t0)}s → post #{new.id}'
         task.save(update_fields=['done', 'message'])
 
-    task = _start_task('comfy_edit', work, total=4, message='starting…', exclusive=True)
-    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed})
+    task, ahead = _start_comfy_job('comfy_edit', work, total=4, max_temp=int(cfg['max_temp']))
+    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'queued': ahead})
 
 
 # ── ✨ create: describe a picture → prompt + LoRAs + trigger groups → ComfyUI ─────────
@@ -3957,9 +3995,6 @@ def comfy_remove(request):
     mask = _mask_from_body(body)
     if mask is None:
         return _err('paint what to remove first')
-    busy = _comfy_busy()
-    if busy:
-        return busy
     text = str(body.get('description') or '').strip()
     photo_id = src['photo'].id if src['photo'] else None
     src_path, src_upload = src['path'], src['upload']
@@ -4004,20 +4039,24 @@ def comfy_remove(request):
         task.message = f'done in {int(total)}s → post #{new.id}'
         task.save(update_fields=['done', 'message'])
 
-    task = _start_task('ai_remove', work, total=1, message='starting…', exclusive=True)
-    return JsonResponse({'ok': True, 'task_id': task.id})
+    task, ahead = _start_comfy_job('ai_remove', work, total=1, max_temp=_job_max_temp(body, comfy.config()))
+    return JsonResponse({'ok': True, 'task_id': task.id, 'queued': ahead})
 
 
 @require_POST
 def comfy_stop(request):
-    """■ stop on the create page: every running ComfyUI job is marked stopped AT ONCE (a new
-    one can start right away; the thread notices at its next check and never saves a post),
+    """■ stop on the create page: the job at the head of the queue (`all: true` = the whole
+    queue) is marked stopped AT ONCE (the next one starts right away; the thread notices at its
+    next check and never saves a post),
     ComfyUI's queue is cleared and the running picture interrupted. `plan: true` = the AI was
     still writing the prompt: Ollama drops its loaded models, which ends that request."""
     body = _json_body(request)
     cfg = comfy.config()
     n = 0
-    for t in Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running'):
+    jobs = Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running').order_by('id')
+    if not body.get('all'):
+        jobs = jobs[:1]                       # ■ stop = the job at the head of the queue; the rest go on
+    for t in jobs:
         t.cancel_requested = True
         t.status = 'cancelled'
         t.message = (t.message + ' — stopped')[:300]
@@ -4192,12 +4231,11 @@ def comfy_create(request):
     src, err = _create_source(body)
     if err:
         return err
-    busy = _comfy_busy()
-    if busy:
-        return busy
     cfg = comfy.config()
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
+    max_temp = _job_max_temp(body, cfg)
+    cfg['max_temp'] = max_temp            # also the ComfyUI temperature node's limit for this job
     try:
         seed = int(body.get('seed'))
         if seed < 0:
@@ -4310,5 +4348,5 @@ def comfy_create(request):
         task.message = f'done in {int(total)}s → post #{new.id}'
         task.save(update_fields=['done', 'message'])
 
-    task = _start_task('comfy_create', work, total=total_units, message='starting…', exclusive=True)
-    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height})
+    task, ahead = _start_comfy_job('comfy_create', work, total=total_units, max_temp=max_temp)
+    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height, 'queued': ahead})

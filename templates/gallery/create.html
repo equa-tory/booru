@@ -40,6 +40,10 @@
   .cr-gauges .ok { color: #6c6; }
   .cr-bar { height: 8px; border-radius: 999px; background: var(--bg3); overflow: hidden; margin-top: .5rem; }
   .cr-bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+  #cr-queue { font-family: var(--mono); font-size: .7rem; color: var(--text-dim); }
+  #cr-queue .q { display: flex; align-items: center; gap: .4rem; padding: .25rem 0; border-top: 1px solid var(--border); }
+  #cr-queue .q span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cr-queue .q button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: .9rem; }
   .cr-prog-msg { font-family: var(--mono); font-size: .72rem; color: var(--text-dim); margin-top: .35rem; min-height: 1.1em; }
   .cr-preview { display: flex; align-items: center; justify-content: center; background: var(--bg3); border-radius: 8px;
     min-height: 260px; max-height: 70vh; overflow: hidden; }
@@ -137,6 +141,8 @@
           <select id="cr-count">{% for n in "1234" %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select></div>
         <div><label class="ae-l" for="cr-seed">seed</label>
           <input type="text" id="cr-seed" inputmode="numeric" placeholder="random"></div>
+        <div><label class="ae-l" for="cr-maxtemp" title="a queued job waits until the GPU is at most this hot before it starts (and ComfyUI pauses before sampling); 0 = don't wait">start when GPU ≤ °C</label>
+          <input type="text" id="cr-maxtemp" inputmode="numeric" value="{{ cfg.max_temp }}" onchange="crSaveUi()"></div>
       </div>
       <label class="cr-check" title="DMD2 speed LoRA: {{ cfg.fast_steps }} steps at cfg 1 instead of {{ cfg.steps }} at cfg {{ cfg.cfg }} — much quicker, the negative prompt is ignored">
         <input type="checkbox" id="cr-fast" onchange="crSaveUi()"{% if cfg.fast_lora %} checked{% endif %}> &#9889; fast ({{ cfg.fast_steps }} steps, speed LoRA — about 3× quicker)</label>
@@ -167,6 +173,7 @@
                 onclick="crStop()" title="stop now: ComfyUI is interrupted, nothing is saved">&#9632; stop</button>
       </div>
       <div class="cr-prog-msg" id="cr-prog">idle</div>
+      <div id="cr-queue"></div>
     </div>
     <div class="cr-card">
       <div class="cr-preview" id="cr-preview"><div class="empty">the result shows here — or tap a picture in the history</div></div>
@@ -194,7 +201,7 @@
 <script>
 const crEl = id => document.getElementById(id);
 const CR_INIT_SRC = {% if src %}{photo_id: {{ src.id }}, thumb: "{{ src.thumb|escapejs }}", url: "{{ src.url|escapejs }}"}{% else %}null{% endif %};
-let crPlanned = false, crSource = null, crShown = null, crTaskId = null;
+let crPlanned = false, crSource = null, crShown = null;
 const crPick = makeLoraPicker('cr', {detect: async () => {
   const d = await crPost('/api/comfy/plan/', crBody(true));     // re-plan = fresh detection + group picks
   if (d.ok) crApplyPlan(d, true);
@@ -250,7 +257,7 @@ function crBody(forPlan) {
   if (forPlan) { b.loras = crPick.list.map(l => l.name); return b; }
   Object.assign(b, {positive: crEl('cr-pos').value.trim(), negative: crEl('cr-neg').value.trim(),
     orientation: crEl('cr-orient').value, size: crEl('cr-size').value, count: crEl('cr-count').value,
-    fast: crEl('cr-fast').checked, loras: crPick.body()});
+    fast: crEl('cr-fast').checked, loras: crPick.body(), max_temp: crMaxTemp()});
   const seed = crEl('cr-seed').value.trim(); if (/^\d+$/.test(seed)) b.seed = seed;
   if (crPainted()) b.mask = crEl('cr-paint-cv').toDataURL('image/png');     // only the painted area is redrawn
   return b;
@@ -296,21 +303,23 @@ async function crPlan() {
   } catch (e) { crStatus(e.name === 'AbortError' ? 'stopped' : '⚠ request failed', e.name !== 'AbortError'); return false; }
   finally { clearInterval(tick); btn.disabled = false; crPlanAbort = null; crStopVisible(); }
 }
-/* ■ stop: the prompt request (if the AI is still writing it) and the running ComfyUI job */
+/* ■ stop: the prompt request (if the AI is still writing it) and the job at the head of the queue */
 let crPlanAbort = null, crRunning = false;
 function crStopVisible() { crEl('cr-stop').style.display = (crPlanAbort || crRunning) ? '' : 'none'; }
-async function crStop() {
+async function crStop(all) {
   const planning = !!crPlanAbort;
   if (crPlanAbort) crPlanAbort.abort();
   crEl('cr-stop').disabled = true;
   try {
-    const d = await crPost('/api/comfy/stop/', {plan: planning});
-    crEl('cr-prog').textContent = d.stopped ? 'stopped — nothing was saved' : (planning ? 'prompt writing stopped' : 'nothing was running');
+    const d = await crPost('/api/comfy/stop/', {plan: planning, all: !!all});
+    crEl('cr-prog').textContent = d.stopped ? (all ? 'queue cleared — nothing was saved' : 'stopped — nothing was saved; the next job starts')
+                                            : (planning ? 'prompt writing stopped' : 'nothing was running');
     crEl('cr-bar').style.width = '0%';
-    if (d.stopped) { clearInterval(crFollowT); crRunning = false; watchTask(null); pollTasks(true); }
+    pollTasks(true); crTick();
   } catch (e) { toast('stop failed', 'err'); }
   finally { crEl('cr-stop').disabled = false; crStopVisible(); }
 }
+function crMaxTemp() { const v = crEl('cr-maxtemp').value.trim(); return /^\d+$/.test(v) ? +v : undefined; }
 async function crRun() {
   if (crPainted() && crWantsRemove() && !crEl('cr-pos').value.trim()) return crRemove();
   const b = crBody(false);
@@ -321,10 +330,9 @@ async function crRun() {
     const d = await crPost('/api/comfy/create/', b);
     if (d.ok) {
       watchTask(d.task_id); pollTasks(true);
-      crStatus(`generating ${d.width}×${d.height} (seed ${d.seed})…`);
+      crStatus(`${d.width}×${d.height} (seed ${d.seed}) ` + (d.queued ? `queued — ${d.queued} job(s) ahead; you can send more` : 'started — you can send more, they queue'));
       crFollow(d.task_id);
-    } else if (d._status === 409) { crStatus('⚠ another AI edit / creation is still running — wait for it (or stop it in the task card)', true); crFollow(d.task_id); }
-    else crStatus('⚠ ' + (d.error || 'error'), true);
+    } else crStatus('⚠ ' + (d.error || 'error'), true);
   } catch (e) { crStatus('⚠ request failed', true); }
   finally { btn.disabled = false; }
 }
@@ -338,37 +346,54 @@ async function crGo(change) {
   crRun();
 }
 
-/* ── progress of the running job (task row: done/total; ComfyUI steps arrive live) ── */
+/* ── the AI queue: every job of this page (and edits from post pages) runs one after another.
+   Bar = the job running now; below it the waiting ones (✕ cancels one). Each finished job of
+   this page lands in the preview + history. ── */
+const CR_KINDS = ['comfy_create', 'comfy_edit', 'ai_remove'];
+const CR_KIND_LABEL = {comfy_create: 'create', comfy_edit: 'edit', ai_remove: 'remove'};
 let crFollowT = null;
+const crMine = new Set((() => { try { return JSON.parse(sessionStorage.getItem('crMine') || '[]'); } catch (e) { return []; } })());
+const crDone = new Set();       // finished jobs already reported
 function crFollow(id) {
-  crTaskId = id;
-  clearInterval(crFollowT);
-  crFollowT = setInterval(crTick, 1500);
+  if (id) { crMine.add(id); try { sessionStorage.setItem('crMine', JSON.stringify([...crMine].slice(-50))); } catch (e) {} }
+  if (!crFollowT) crFollowT = setInterval(crTick, 1500);
   crTick();
 }
+function crCancelJob(id) { apiPost(`/api/tasks/${id}/cancel/`).then(() => setTimeout(crTick, 300)); }
 async function crTick() {
   try {
     const d = await (await fetch('/api/tasks/')).json();
-    const t = (d.tasks || []).find(x => x.id === crTaskId);
-    if (!t) return;
-    crRunning = t.status === 'running'; crStopVisible();
-    const pct = t.total ? Math.round(100 * t.done / t.total) : 0;
-    crEl('cr-bar').style.width = (t.status === 'running' ? pct : 100) + '%';
-    crEl('cr-prog').textContent = (t.status === 'running' ? pct + '% · ' : '') + (t.message || t.status);
-    if (t.status === 'running') return;
-    clearInterval(crFollowT);
-    const m = /post #(\d+)/.exec(t.message || '');
-    if (t.status === 'done' && m) {
-      crStatus('done → post #' + m[1]);
-      crAddRecent(+m[1]); crShow(+m[1]);
-    } else crStatus(t.status === 'cancelled' ? 'stopped — nothing was saved' : '⚠ ' + (t.error || t.message || t.status), t.status !== 'cancelled');
+    const jobs = (d.tasks || []).filter(t => CR_KINDS.includes(t.kind));
+    const running = jobs.filter(t => t.status === 'running').sort((a, b) => a.id - b.id);
+    const head = running[0];
+    crRunning = !!head; crStopVisible();
+    if (head) {
+      const waiting = /^(queued|waiting for the GPU)/.test(head.message || '');
+      const pct = head.total && !waiting ? Math.round(100 * head.done / head.total) : 0;
+      crEl('cr-bar').style.width = pct + '%';
+      crEl('cr-prog').textContent = `#${head.id} ${CR_KIND_LABEL[head.kind]} · ` + (waiting ? '' : pct + '% · ') + (head.message || '');
+    } else if (crEl('cr-prog').textContent.startsWith('#')) {
+      crEl('cr-prog').textContent = 'idle'; crEl('cr-bar').style.width = '0%';
+    }
+    const rest = running.slice(1);
+    crEl('cr-queue').innerHTML = rest.map((t, i) => `<div class="q"><span>${i + 2}. #${t.id} ${CR_KIND_LABEL[t.kind]} — ${aeEsc(t.message || 'queued')}</span>
+        <button onclick="crCancelJob(${t.id})" title="cancel this queued job">&#10005;</button></div>`).join('')
+      + (rest.length ? `<div class="q"><span></span><button onclick="crStop(true)" title="stop the running job and cancel every queued one" style="font-size:.7rem;">clear queue</button></div>` : '');
+    for (const t of jobs) {
+      if (t.status === 'running' || !crMine.has(t.id) || crDone.has(t.id)) continue;
+      crDone.add(t.id);
+      const m = /post #(\d+)/.exec(t.message || '');
+      if (t.status === 'done' && m) { crStatus('done → post #' + m[1]); crAddRecent(+m[1]); crShow(+m[1]); }
+      else crStatus(t.status === 'cancelled' ? `#${t.id} stopped — nothing was saved` : '⚠ ' + (t.error || t.message || t.status), t.status !== 'cancelled');
+    }
+    if (!running.length && ![...crMine].some(id => !crDone.has(id) && jobs.some(t => t.id === id))) { clearInterval(crFollowT); crFollowT = null; }
   } catch (e) {}
 }
-async function crResumeRunning() {         // page opened while a job runs: show its progress
+async function crResumeRunning() {         // page opened while jobs run / wait: show the queue
   try {
     const d = await (await fetch('/api/tasks/')).json();
-    const t = (d.tasks || []).find(x => ['comfy_create', 'comfy_edit', 'ai_remove'].includes(x.kind) && x.status === 'running');
-    if (t) crFollow(t.id);
+    for (const t of d.tasks || []) if (CR_KINDS.includes(t.kind) && t.status !== 'running') crDone.add(t.id);   // old results: no replay
+    if ((d.tasks || []).some(t => CR_KINDS.includes(t.kind) && t.status === 'running')) crFollow();
   } catch (e) {}
 }
 
@@ -594,20 +619,20 @@ function crPaintEmpty() {
 async function crRemove() {
   if (!crSource) { crStatus('pick a source picture first', true); return; }
   if (crPaintEmpty()) { crStatus('paint over what should disappear first', true); return; }
-  const b = {description: crEl('cr-desc').value.trim(), mask: crEl('cr-paint-cv').toDataURL('image/png')};
+  const b = {description: crEl('cr-desc').value.trim(), mask: crEl('cr-paint-cv').toDataURL('image/png'), max_temp: crMaxTemp()};
   if (crSource.photo_id) b.photo_id = crSource.photo_id; else b.src_upload = crSource.upload;
   const btn = crEl('cr-remove-btn'); btn.disabled = true;
   try {
     const d = await crPost('/api/comfy/remove/', b);
-    if (d.ok) { watchTask(d.task_id); pollTasks(true); crStatus('removing… the rest of the picture stays as it is'); crFollow(d.task_id); }
-    else if (d._status === 409) { crStatus('⚠ another AI job is still running — wait for it (or stop it)', true); crFollow(d.task_id); }
+    if (d.ok) { watchTask(d.task_id); pollTasks(true); crStatus(d.queued ? `remove queued — ${d.queued} job(s) ahead` : 'removing… the rest of the picture stays as it is'); crFollow(d.task_id); }
     else crStatus('⚠ ' + (d.error || 'error'), true);
   } catch (e) { crStatus('⚠ request failed', true); }
   finally { btn.disabled = false; }
 }
 
 function crSaveUi() {
-  try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value})); } catch (e) {}
+  try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value,
+                                                         maxTemp: crEl('cr-maxtemp').value})); } catch (e) {}
 }
 async function crInit() {
   try {
@@ -615,6 +640,7 @@ async function crInit() {
     if ('fast' in u) crEl('cr-fast').checked = !!u.fast;
     if (u.size) crEl('cr-size').value = u.size;
     if (u.count) crEl('cr-count').value = u.count;
+    if (u.maxTemp !== undefined && u.maxTemp !== '') crEl('cr-maxtemp').value = u.maxTemp;
   } catch (e) {}
   ['cr-size', 'cr-count'].forEach(id => crEl(id).addEventListener('change', crSaveUi));
   crEl('cr-desc').addEventListener('input', () => { crPlanned = false; });

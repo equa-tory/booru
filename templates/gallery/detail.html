@@ -467,6 +467,8 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
       <a href="javascript:goBack()" class="btn" style="font-size:.75rem;">&#8592; back</a>
       <button class="mode-toggle" id="mode-toggle" onclick="toggleViewMode()">&#9783; scroll</button>
       {% if edit_source %}<a class="btn" href="/post/{{ edit_source.id }}/" style="font-size:.75rem;" title="open the post this AI edit was made from">&#10548; original #{{ edit_source.id }}</a>{% endif %}
+      {% if comfy_enabled %}<a class="btn" id="ai-create-top" href="#" style="font-size:.75rem;" onclick="openCreateFromCurrent();return false;"
+         title="✨ create with the picture you are looking at as the source (paint to change / remove parts){% if post.gen_info %} — with the settings it was made with{% endif %}">&#9998; AI</a>{% endif %}
       <span class="nav-counter" id="nav-counter">...</span>
     </div>
 
@@ -853,7 +855,7 @@ const NET_PREFIX = '{{ net_prefix|escapejs }}';
 // Full search context (tags + filters + sort) for neighbor navigation
 const SEARCH_QS = '{{ search_qs|escapejs }}';
 const navSuffix = SEARCH_QS ? '?' + SEARCH_QS : '';
-const IMAGES   = [{% for img in images %}{"id":{{ img.pk }},"url":"{{ img.media_url }}","thumb":"{{ img.thumb_url }}","is_video":{{ img.is_video|yesno:"true,false" }},"is_pdf":{{ img.is_pdf|yesno:"true,false" }}}{% if not forloop.last %},{% endif %}{% endfor %}];
+const IMAGES   = [{% for img in images %}{"id":{{ img.pk }},"url":"{{ img.media_url }}","thumb":"{{ img.thumb_url }}","is_video":{{ img.is_video|yesno:"true,false" }},"is_pdf":{{ img.is_pdf|yesno:"true,false" }},"is_gif":{{ img.is_gif|yesno:"true,false" }}}{% if not forloop.last %},{% endif %}{% endfor %}];
 const IS_MULTI = IMAGES.length > 1;
 let currentImgIdx = 0;
 
@@ -2867,6 +2869,21 @@ function aiPicker() {
     const d = await (await fetch(`/api/comfy/loras/suggest/?photo_id=${aiEditPhotoId}&request=${encodeURIComponent(aeEl('aiedit-req').value)}`)).json();
     return d.loras || [];
   }}));
+}
+/* ✎ AI in the top bar (also single-item posts / paged view): the picture on screen -> ✨ create */
+function openCreateFromCurrent() {
+  let idx = currentImgIdx;
+  if (viewMode === 'scroll') {
+    const sc = document.getElementById('scroll-container'), imgs = document.querySelectorAll('.scroll-img');
+    if (sc && imgs.length) {
+      const mid = sc.scrollTop + sc.clientHeight / 2; let best = Infinity;
+      imgs.forEach((im, i) => { const d = Math.abs(im.offsetTop + im.offsetHeight / 2 - mid); if (d < best) { best = d; idx = i; } });
+    }
+  }
+  const still = i => IMAGES[i] && !IMAGES[i].is_video && !IMAGES[i].is_pdf && !IMAGES[i].is_gif;
+  if (!still(idx)) idx = IMAGES.findIndex((_, i) => still(i));
+  if (idx < 0) { toast('only still pictures can be used (not video / PDF / GIF)', 'err'); return; }
+  location.href = '/create/?photo=' + IMAGES[idx].id + ({{ post.gen_info|yesno:"true,false" }} ? '&from=' + POST_ID : '');
 }
 function toggleEditBtn(item) {
   const on = !item.classList.contains('show-edit');

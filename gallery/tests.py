@@ -2186,11 +2186,6 @@ class ComfyEditEndpointTests(TestCase):
         self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': '  '}).status_code, 400)
         self.assertEqual(self._post('/api/comfy/prompt/', {'photo_id': self.photo.pk, 'request': ''}).status_code, 400)
 
-    def test_one_edit_at_a_time(self):
-        t = Task.objects.create(kind='comfy_edit')
-        r = self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'})
-        self.assertEqual((r.status_code, r.json()['busy'], r.json()['task_id']), (409, True, t.pk))
-
     def test_switched_off(self):
         comfy.save_config({'enabled': False})
         self.assertEqual(self._post('/api/comfy/edit/', {'photo_id': self.photo.pk, 'request': 'x'}).status_code, 400)
@@ -3146,10 +3141,6 @@ class ComfyCreateTests(TestCase):
 
     def test_create_refusals(self):
         self.assertEqual(self._post('/api/comfy/create/', {'description': 'x'}).status_code, 400)        # no prompt
-        t = Task.objects.create(kind='comfy_edit')                                                     # edits block creating
-        r = self._post('/api/comfy/create/', {'positive': 'x'})
-        self.assertEqual((r.status_code, r.json()['task_id']), (409, t.pk))
-        t.delete()
         r = self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]})
         self.assertEqual(r.status_code, 400)
 
@@ -3302,39 +3293,57 @@ class ComfyCreateTests(TestCase):
                 self._post('/api/comfy/create/', {'positive': '1girl'})
         self.assertEqual(Post.objects.count(), 0)
 
-    def test_dead_comfy_job_frees_the_lock_after_3_minutes(self):
+
+
+    # the AI queue: jobs wait their turn (and for a cool GPU) instead of being refused
+    def test_jobs_queue_instead_of_refusing(self):
+        older = Task.objects.create(kind='comfy_edit', status='running')
+        with mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: Task.objects.create(kind=kind)) as st:
+            d = self._post('/api/comfy/create/', {'positive': '1girl', 'max_temp': 65}).json()
+        self.assertTrue(d['ok']); self.assertEqual(d['queued'], 1)               # one job ahead
+        self.assertNotIn('exclusive', st.call_args.kwargs)
+        older.delete()
+
+    def test_queue_turn_waits_for_the_job_ahead_then_the_gpu(self):
+        older = Task.objects.create(kind='comfy_create', status='running')
+        me = Task.objects.create(kind='comfy_create', status='running')
+        temps = iter([80.0, 70.0, 60.0])
+        seen = []
+
+        def fake_sleep(_s):
+            seen.append(Task.objects.get(pk=me.pk).message)
+            if older.status == 'running':
+                older.status = 'done'; older.save()                               # the job ahead finishes
+        with mock.patch('gallery.views.time.sleep', side_effect=fake_sleep), \
+             mock.patch('gallery.ai_runtime.gpu_stats', side_effect=lambda: {'temp': next(temps)}):
+            views._queue_turn(me, 65)
+        self.assertEqual(seen[0], 'queued — 1 job(s) ahead')
+        self.assertIn('waiting for the GPU to cool: 80 °C > 65 °C', seen)
+        self.assertEqual(len(seen), 3)                                            # 80 and 70 waited, 60 starts
+        Task.objects.filter(pk=me.pk).update(cancel_requested=True)              # ✕ on a waiting job
+        with self.assertRaises(TaskCancelled):
+            views._queue_turn(me, 0)
+
+    def test_stop_ends_only_the_running_job_unless_all(self):
+        a = Task.objects.create(kind='comfy_create', status='running')
+        b = Task.objects.create(kind='ai_remove', status='running')
+        ok = lambda r: httpx.Response(200, json={'models': []})
+        with mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(ok))):
+            self.assertEqual(self._post('/api/comfy/stop/', {}).json()['stopped'], 1)
+            a.refresh_from_db(); b.refresh_from_db()
+            self.assertEqual((a.status, b.status), ('cancelled', 'running'))     # the queued one goes on
+            self.assertEqual(self._post('/api/comfy/stop/', {'all': True}).json()['stopped'], 1)
+        b.refresh_from_db(); self.assertEqual(b.status, 'cancelled')
+
+    def test_dead_comfy_job_is_swept_after_3_minutes(self):
         t = Task.objects.create(kind='comfy_create', status='running')
         Task.objects.filter(pk=t.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=2))
-        self.assertEqual(self._post('/api/comfy/create/', {'positive': 'x'}).status_code, 409)     # still alive
+        self.client.get('/api/tasks/'); t.refresh_from_db(); self.assertEqual(t.status, 'running')
         Task.objects.filter(pk=t.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=4))
-        r = self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]})
-        self.assertEqual(r.status_code, 400)                                                       # lock freed
-        t.refresh_from_db()
-        self.assertEqual(t.status, 'error')
+        self.client.get('/api/tasks/'); t.refresh_from_db(); self.assertEqual(t.status, 'error')   # the queue moves on
         scan = Task.objects.create(kind='scan', status='running')
         Task.objects.filter(pk=scan.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=4))
-        self.client.get('/api/tasks/')
-        scan.refresh_from_db(); self.assertEqual(scan.status, 'running')                            # others keep 30 min
-
-    def test_upload_source_accepts_any_name_and_type(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        from PIL import Image
-        import io as _io
-
-        def up(name, data, ctype):
-            return self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile(name, data, ctype)}).json()
-        buf = _io.BytesIO(); Image.new('RGB', (40, 30), 'red').save(buf, 'JPEG')
-        d = up('clipboard.txt', buf.getvalue(), 'application/octet-stream')            # a JPEG with the wrong name/type
-        self.assertTrue(d['ok'], d); self.assertEqual((d['width'], d['height']), (40, 30))
-        buf = _io.BytesIO(); Image.new('RGBA', (20, 10), (0, 0, 255, 128)).save(buf, 'AVIF')
-        self.assertTrue(up('image', buf.getvalue(), '')['ok'])                           # no extension, no type
-        self.assertFalse(up('x.png', b'just text', 'image/png')['ok'])
-        if shutil.which('ffmpeg'):                                                       # a video: its first frame
-            vid = os.path.join(self.tmp, 'v.mp4')
-            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=5', '-t', '1',
-                            '-pix_fmt', 'yuv420p', vid], check=True)
-            d = up('clip.dat', open(vid, 'rb').read(), '')
-            self.assertTrue(d['ok'], d); self.assertEqual((d['width'], d['height']), (64, 48))
+        self.client.get('/api/tasks/'); scan.refresh_from_db(); self.assertEqual(scan.status, 'running')
 
     # 🖌 remove (LaMa) — fake model, real masking / tiling / pasting
     def test_remover_changes_only_the_painted_area(self):
