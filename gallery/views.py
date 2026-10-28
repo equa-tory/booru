@@ -3786,7 +3786,7 @@ def comfy_edit(request):
             note = pr['note']
         den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, den))
         triggers = comfy.trigger_text([w for l in loras for w in l['words']])
-        positive = comfy.join_prompt(cfg['quality'], triggers, pos_text)
+        positive = comfy.compose_positive(cfg['quality'], triggers, pos_text)
         t_prompt = _t.time() - t0
         neg_text = comfy.drop_terms(neg_text, triggers)           # a selected trigger word wins over the negative
         negative = comfy.join_prompt(cfg['negative'], neg_text)
@@ -4229,8 +4229,13 @@ def comfy_plan(request):
     # "(blue hair)" in the description: forced in, weighted, first
     forced = comfy.forced_terms(text)
     gone = {comfy._norm(t) for t, _w in forced}
+    # importance: the planner's 1-4, and anything the user literally typed is at least 3 —
+    # weighted tags go before the LoRA trigger words at generate (comfy.compose_positive)
+    levels = dict(plan.get('levels') or {})
+    for t in typed:
+        levels[t] = max(levels.get(t, 1), 3)
     positive = comfy.join_prompt(comfy.forced_text(forced), [c for c in chars if comfy._norm(c) not in gone],
-                                 [t for t in plan['tags'] if comfy._norm(t) not in gone])
+                                 comfy.weighted_tags([t for t in plan['tags'] if comfy._norm(t) not in gone], levels))
     return JsonResponse({
         'ok': True, 'positive': positive, 'negative': ', '.join(comfy.escape_tag(t) for t in plan['negative']),
         'orientation': plan['orientation'], 'note': plan['note'], 'source': plan['source'],
@@ -4288,7 +4293,7 @@ def comfy_create(request):
     except comfy.ComfyError as e:
         return _err(str(e))
     triggers = comfy.trigger_text([w for l in loras for w in l['words']])
-    positive = comfy.join_prompt(cfg['quality'], triggers, comfy.drop_terms(pos_text, triggers))
+    positive = comfy.compose_positive(cfg['quality'], triggers, pos_text)     # described (weighted) tags before trigger words
     negative = comfy.join_prompt(cfg['negative'], comfy.drop_terms(neg_text, triggers))
     photo_id = src['photo'].id if src and src['photo'] else None
     src_path = src['path'] if src else None

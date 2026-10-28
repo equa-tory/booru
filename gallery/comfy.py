@@ -286,14 +286,15 @@ The user describes a picture (any language). Answer with:
 - "tags": Danbooru tags for everything else in the picture, most important first: count (1girl, 2girls, 1boy, solo), hair, eyes, outfit and its parts, expression, pose, action, objects, background, lighting, framing (upper body, full body, cowboy shot, close-up). 15 to 35 tags. Lowercase, spaces instead of underscores. Never quality tags.
 - "negative": things the user explicitly does NOT want (e.g. "no glasses" -> "glasses"). Usually empty.
 - "orientation": "portrait", "landscape" or "square" (people standing or a single character: portrait; scenery or several people side by side: landscape).
+- "importance": for the tags that matter most, {"tag": <a tag from "tags">, "level": 2-4}: 4 = the core of the request (what the user asked for), 3 = clearly asked, 2 = useful detail. Tags you only added to fill the picture are left out (level 1).
 - "note": one short sentence describing the picture.
 When a source picture is given, its tags describe it now; "tags" must describe the FINAL picture (keep what the user does not change).
 When the request turns a person into a named character (or another person), DROP that person's old hair, eye and clothing tags: the character brings its own look; keep the pose, background and the rest.
 Examples:
 Request: hayasaka ai in a maid outfit smiling in a cafe
-{"characters": ["hayasaka ai"], "tags": ["1girl", "solo", "maid", "maid headdress", "maid apron", "black dress", "white apron", "frills", "smile", "looking at viewer", "standing", "holding tray", "cafe", "indoors", "table", "window", "sunlight", "cowboy shot"], "negative": [], "orientation": "portrait", "note": "Hayasaka Ai as a smiling maid in a cafe"}
+{"characters": ["hayasaka ai"], "tags": ["1girl", "solo", "maid", "maid headdress", "maid apron", "black dress", "white apron", "frills", "smile", "looking at viewer", "standing", "holding tray", "cafe", "indoors", "table", "window", "sunlight", "cowboy shot"], "negative": [], "orientation": "portrait", "importance": [{"tag": "maid", "level": 4}, {"tag": "cafe", "level": 3}, {"tag": "smile", "level": 3}, {"tag": "maid headdress", "level": 2}], "note": "Hayasaka Ai as a smiling maid in a cafe"}
 Request: two girls on a beach at sunset, no hats
-{"characters": [], "tags": ["2girls", "beach", "sunset", "ocean", "sand", "orange sky", "cloud", "swimsuit", "bikini", "barefoot", "smile", "holding hands", "wind", "long hair", "from side", "wide shot"], "negative": ["hat"], "orientation": "landscape", "note": "two girls holding hands on a beach at sunset"}
+{"characters": [], "tags": ["2girls", "beach", "sunset", "ocean", "sand", "orange sky", "cloud", "swimsuit", "bikini", "barefoot", "smile", "holding hands", "wind", "long hair", "from side", "wide shot"], "negative": ["hat"], "orientation": "landscape", "importance": [{"tag": "2girls", "level": 4}, {"tag": "beach", "level": 4}, {"tag": "sunset", "level": 4}, {"tag": "holding hands", "level": 3}], "note": "two girls holding hands on a beach at sunset"}
 Answer with JSON only."""
 
 PLAN_SCHEMA = {
@@ -303,9 +304,11 @@ PLAN_SCHEMA = {
         'tags': {'type': 'array', 'items': {'type': 'string'}},
         'negative': {'type': 'array', 'items': {'type': 'string'}},
         'orientation': {'type': 'string', 'enum': ['portrait', 'landscape', 'square']},
+        'importance': {'type': 'array', 'items': {'type': 'object', 'properties': {
+            'tag': {'type': 'string'}, 'level': {'type': 'integer'}}, 'required': ['tag', 'level']}},
         'note': {'type': 'string'},
     },
-    'required': ['characters', 'tags', 'negative', 'orientation', 'note'],
+    'required': ['characters', 'tags', 'negative', 'orientation', 'importance', 'note'],
 }
 
 GROUPS_SYSTEM_PROMPT = """You choose trigger words for LoRAs (add-ons of an anime image model).
@@ -362,8 +365,16 @@ def parse_plan(data):
     if not tags and not chars:
         raise ValueError('the model returned no tags')
     orient = data.get('orientation') if data.get('orientation') in SIZE_RATIOS else 'portrait'
+    levels = {}
+    for it in data.get('importance') or []:
+        try:
+            t, lv = clean_tags([it.get('tag')]), int(it.get('level'))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if t and t[0] in tags:
+            levels[t[0]] = min(4, max(1, lv))
     return {'characters': chars, 'tags': tags, 'negative': as_list(data.get('negative'))[:MAX_NEGATIVE],
-            'orientation': orient, 'note': str(data.get('note') or '')[:300]}
+            'orientation': orient, 'levels': levels, 'note': str(data.get('note') or '')[:300]}
 
 
 FORCE_WEIGHTS = {1: 1.2, 2: 1.4}
@@ -392,6 +403,47 @@ def forced_terms(text):
 def strip_forced(text):
     """The description with the bracket marks removed (words kept), for the LLM / fallback."""
     return re.sub(r'\s+', ' ', re.sub(r':\s*[0-9]*\.?[0-9]+\s*\)', ')', str(text or '')).replace('(', ' ').replace(')', ' ')).strip()
+
+
+LEVEL_WEIGHTS = {2: 1.1, 3: 1.2, 4: 1.3}      # importance 1-4 -> prompt weight (1 = plain)
+
+
+def weighted_tags(tags, levels):
+    """Tags as prompt text, most important first: level 2-4 become (tag:1.1-1.3)."""
+    order = sorted(tags, key=lambda t: -levels.get(t, 1))
+    return ', '.join(f'({escape_tag(t)}:{LEVEL_WEIGHTS[levels[t]]:g})' if levels.get(t, 1) > 1 else escape_tag(t) for t in order)
+
+
+_COLOR_SLOT = re.compile(r'^(?:(?:light|dark|very)\s+)?(aqua|black|blonde|blue|brown|green|grey|gray|orange|pink|purple|red|'
+                         r'silver|white|yellow|multicolored|two-tone|streaked|gradient)\s+(hair|eyes)$')   # colours only
+
+
+def compose_positive(quality, triggers, pos_text):
+    """The final positive: quality, then the user's WEIGHTED tags ((x:1.2)... — what the
+    description asked for), then the LoRA trigger words, then the rest of the prompt.
+    Trigger words that contradict a described hair / eye colour are dropped ("pink hair" from
+    a character's trigger group when the user asked for blue hair). Trigger words also
+    present in the prompt are not repeated."""
+    items = [x.strip() for x in re.split(r',(?![^()]*\))', str(pos_text or '')) if x.strip()]
+    first = [x for x in items if re.match(r'^\(.+:\s*[0-9.]+\)$', x)]
+    rest = [x for x in items if x not in first]
+    plain = lambda x: _norm(re.sub(r'^\((.+?):\s*[0-9.]+\)$', r'\1', x).replace('\\(', '(').replace('\\)', ')'))
+    slots = {}
+    for x in items:
+        m = _COLOR_SLOT.match(plain(x))
+        if m:
+            slots.setdefault(m.group(2), set()).add(m.group(1))
+    have = {plain(x) for x in items}
+    trig = []
+    for w in str(triggers or '').split(','):
+        w = w.strip()
+        if not w or _norm(w) in have:
+            continue
+        m = _COLOR_SLOT.match(_norm(w))
+        if m and m.group(2) in slots and m.group(1) not in slots[m.group(2)]:
+            continue                     # the description chose another colour
+        trig.append(w)
+    return join_prompt(quality, ', '.join(first), ', '.join(trig), ', '.join(rest))
 
 
 def forced_text(forced):

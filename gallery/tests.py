@@ -2465,7 +2465,7 @@ class ComfyLoraEndpointTests(TestCase):
         self.assertEqual(r.status_code, 200)
         pos = gen.call_args[0][1]
         q = comfy.config()['quality']
-        self.assertEqual(pos, q + ', hayasaka ai, side ponytail, (maid:1.3), 1girl')            # quality, triggers, prompt
+        self.assertEqual(pos, q + ', (maid:1.3), hayasaka ai, side ponytail, 1girl')            # quality, weighted, triggers, rest
         self.assertEqual(gen.call_args.kwargs['loras'], [(self.CAT[0]['name'], 0.9)])
         new = Post.objects.exclude(pk=self.post.pk).get()
         self.assertEqual(new.gen_info['loras'][0]['title'], 'Hayasaka Ai')
@@ -3088,7 +3088,7 @@ class ComfyCreateTests(TestCase):
         self.assertEqual(d['suggested'], [])                              # planned "bikini" was never typed: no concept LoRA
         d, pg = self._plan({'description': 'hayasaka ai as a maid, bikini'})
         self.assertEqual(d['characters'], ['hayasaka_ai'])                 # the library's own tag name
-        self.assertEqual(d['positive'], 'hayasaka ai, 1girl, maid, bikini')
+        self.assertEqual(d['positive'], 'hayasaka ai, (maid:1.2), (bikini:1.2), 1girl')   # typed words weighted
         self.assertEqual((d['negative'], d['orientation']), ('hat', 'landscape'))
         self.assertEqual([l['name'] for l in d['selected']], [self.CAT[0]['name']])     # character LoRA auto-selected
         self.assertEqual(d['selected'][0]['sel_groups'], [0, 2])
@@ -3120,7 +3120,7 @@ class ComfyCreateTests(TestCase):
         self.assertEqual(gen.call_count, 3); i2i.assert_not_called()
         self.assertEqual([c[0][2] for c in gen.call_args_list], [100, 101, 102])            # seed + i
         pos, neg = gen.call_args[0][0], gen.call_args[0][1]
-        self.assertEqual(pos, comfy.config()['quality'] + ', hayasaka ai, side ponytail, 1girl, maid')   # no duplicate name
+        self.assertEqual(pos, comfy.config()['quality'] + ', side ponytail, hayasaka ai, 1girl, maid')   # no duplicate name
         self.assertNotIn('side ponytail', neg.replace(comfy.config()['negative'], ''))     # trigger word wins over the negative
         new = Post.objects.get()
         self.assertEqual(new.images.count(), 3)
@@ -3473,3 +3473,23 @@ class ComfyCreateTests(TestCase):
         self.assertNotIn('brown hair', d['positive']); self.assertNotIn('brown eyes', d['positive'])
         self.assertIn('red eyes', d['positive'])                                  # typed by the user: kept
         self.assertIn('long hair', d['positive'])
+
+
+    def test_description_outranks_trigger_words(self):
+        q = 'masterpiece'
+        self.assertIn('long hair', comfy.compose_positive(q, 'long hair, aqua hair', '(blue hair:1.2)'))   # a style, not a colour
+        pos = comfy.compose_positive(q, 'miku, twintails, aqua hair, aqua eyes, detached sleeves',
+                                     '(blue hair:1.3), (red dress:1.2), hatsune miku, 1girl, red eyes, park')
+        self.assertEqual(pos, 'masterpiece, (blue hair:1.3), (red dress:1.2), miku, twintails, detached sleeves, '
+                              'hatsune miku, 1girl, red eyes, park')                # aqua hair / eyes contradicted: dropped
+        self.assertEqual(comfy.weighted_tags(['1girl', 'park', 'red dress'], {'red dress': 4, 'park': 2}),
+                         '(red dress:1.3), (park:1.1), 1girl')
+        p = comfy.parse_plan({'characters': [], 'tags': ['1girl', 'red dress'], 'negative': [], 'orientation': 'portrait',
+                              'importance': [{'tag': 'red dress', 'level': 9}, {'tag': 'not a tag', 'level': 4}], 'note': ''})
+        self.assertEqual(p['levels'], {'red dress': 4})
+
+    def test_plan_weights_what_the_user_typed(self):
+        d, _pg = self._plan({'description': 'a girl in a red dress at the beach'},
+                            plan={'characters': [], 'tags': ['1girl', 'beach', 'red dress', 'ocean'], 'negative': [],
+                                  'orientation': 'landscape', 'levels': {'beach': 4}, 'note': '', 'source': 'llm'}, picks={})
+        self.assertEqual(d['positive'], '(beach:1.3), (red dress:1.2), 1girl, ocean')
