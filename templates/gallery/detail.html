@@ -456,7 +456,9 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
 /* GIF progress: a thin looping bar timed to the GIF's own loop length (browsers don't expose the frame) */
 .gif-prog { position:absolute; left:0; right:0; bottom:0; height:4px; background:rgba(255,255,255,.18); z-index:5; cursor:pointer; }
 .gif-prog::after { content:''; position:absolute; inset:-8px 0 0 0; }   /* bigger tap target */
-.gif-prog > div { height:100%; width:0; background:var(--accent); animation:gifprog var(--gd) linear infinite; }
+.gif-prog > div { height:100%; width:0; background:var(--accent); animation:gifprog var(--gd) linear var(--gdelay, 0s) infinite; }
+/* "reduce animations" / fast mode switch off every animation — not this bar: it is information, not decoration */
+body.reduce-motion .gif-prog > div, body.fast-mode .gif-prog > div { animation: gifprog var(--gd) linear var(--gdelay, 0s) infinite !important; }
 @keyframes gifprog { from { width:0; } to { width:100%; } }
 </style>
 {% endblock %}
@@ -2892,12 +2894,14 @@ function gifBar(img) {
     });
     host.appendChild(bar);
   }
+  // a fresh inner element restarts the animation (an inline 'animation: none' reset is ignored
+  // where the reduce-animations rule uses !important); the length may arrive after the GIF
+  // started playing: start the bar where the GIF is now
+  bar.innerHTML = '<div></div>';
   const inner = bar.firstChild;
-  inner.style.setProperty('--gd', dur + 's');
-  // the length may arrive after the GIF started playing: start the bar where the GIF is now
   const played = img._gifStart ? ((performance.now() - img._gifStart) / 1000) % dur : 0;
-  inner.style.animation = 'none'; void inner.offsetWidth; inner.style.animation = '';
-  inner.style.animationDelay = (-played) + 's';
+  inner.style.setProperty('--gd', dur + 's');
+  inner.style.setProperty('--gdelay', (-played) + 's');
 }
 /* the GIF's length is asked for after it loaded (never delays the page), then cached on the element */
 function gifStart(img) {
