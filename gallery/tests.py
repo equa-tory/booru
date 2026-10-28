@@ -3566,6 +3566,7 @@ class TagRuleTests(TestCase):
                  {'when': 'vocaloid', 'add': ['singer', 'hatsune_miku'], 'category': 'meta'},
                  {'when': '*_(genshin_impact)', 'add': ['genshin'], 'category': 'meta'}]
         self.assertEqual(_u.implied_tags(['Hatsune Miku'], rules), {'copyright': ['vocaloid'], 'meta': ['singer']})  # chain, no self re-add
+        self.assertEqual(_u.implied_tags(['x'], [{'when': 'x', 'add': ['y']}]), {'general': ['y']})
         self.assertEqual(_u.implied_tags(['raiden_shogun_(genshin_impact)'], rules), {'meta': ['genshin']})
         self.assertEqual(_u.implied_tags(['1girl'], rules), {})
 
@@ -3581,15 +3582,22 @@ class TagRuleTests(TestCase):
 
     def test_api_and_apply_to_existing(self):
         post = Post.objects.create(); add_tags_to_post(post, ['nahida_(genshin_impact)'], category='character')
-        d = self.client.post('/api/tag-rules/', json.dumps({'add': {'when': '*_(genshin_impact)', 'add': 'Genshin, my fav', 'category': 'meta'}}),
+        Tag.objects.create(name='genshin', category='copyright')                       # exists already: keeps its category
+        d = self.client.post('/api/tag-rules/', json.dumps({'add': {'when': '*_(genshin_impact)', 'add': 'Genshin, my fav'}}),
                              content_type='application/json').json()
-        self.assertEqual(d['rules'], [{'when': '*_(genshin_impact)', 'add': ['genshin', 'my_fav'], 'category': 'meta'}])
+        self.assertEqual(d['rules'], [{'when': '*_(genshin_impact)', 'add': ['genshin', 'my_fav']}])
+        self.client.post('/api/tag-rules/', json.dumps({'add': {'when': 'nahida_(genshin_impact)', 'add': 'dendro'}}), content_type='application/json')
         self.assertEqual(self.client.post('/api/tag-rules/', json.dumps({'add': {'when': 'x', 'add': ''}}),
                                           content_type='application/json').status_code, 400)
         self.assertFalse(post.tags.filter(name='genshin').exists())             # old posts: only via apply
         with mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
-            self.client.post('/api/tag-rules/apply/')
-        self.assertEqual(set(post.tags.values_list('name', flat=True)), {'nahida_(genshin_impact)', 'genshin', 'my_fav'})
+            self.client.post('/api/tag-rules/apply/', json.dumps({'index': 1}), content_type='application/json')   # ONE rule
+            self.assertEqual(set(post.tags.values_list('name', flat=True)), {'nahida_(genshin_impact)', 'dendro'})
+            self.client.post('/api/tag-rules/apply/')                                                            # all rules
+        self.assertEqual(set(post.tags.values_list('name', flat=True)), {'nahida_(genshin_impact)', 'dendro', 'genshin', 'my_fav'})
+        self.assertEqual(Tag.objects.get(name='genshin').category, 'copyright')
+        self.assertEqual(Tag.objects.get(name='my_fav').category, 'general')                  # new tag: general
         self.assertEqual(Tag.objects.get(name='genshin').count, 1)
+        self.assertEqual(self.client.post('/api/tag-rules/apply/', json.dumps({'index': 9}), content_type='application/json').status_code, 400)
         d = self.client.post('/api/tag-rules/', json.dumps({'remove': 0}), content_type='application/json').json()
-        self.assertEqual(d['rules'], [])
+        self.assertEqual(len(d['rules']), 1)

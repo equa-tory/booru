@@ -5,6 +5,11 @@
 .set-sec:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
 .set-sec h3 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: .6rem; font-weight: 600; }
 .set-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.tr-sug { position: absolute; left: 0; right: 0; top: 100%; z-index: 30; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  max-height: 14rem; overflow-y: auto; box-shadow: 0 6px 18px rgba(0,0,0,.45); font-family: var(--mono); font-size: .76rem; }
+.tr-sug div { padding: .35rem .55rem; cursor: pointer; display: flex; justify-content: space-between; gap: .5rem; }
+.tr-sug div:hover { background: var(--bg3); }
+.tr-sug small { color: var(--text-dim); }
 .set-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .6rem; }
 .set-grid .wide { grid-column: 1 / -1; }
 .set-field label { display: block; font-family: var(--mono); font-size: .68rem; color: var(--text-dim); margin-bottom: .2rem; }
@@ -131,16 +136,16 @@
       <h3>tag rules <span style="text-transform:none;letter-spacing:0;font-weight:400;">· when a tag is added, also add others</span></h3>
       <div class="bk-list" id="tr-list" style="max-height:16rem;"></div>
       <div class="set-grid" style="margin-top:.4rem;">
-        <div class="set-field"><label for="tr-when" title="a tag name, or a pattern: * = anything, e.g. *_(genshin_impact) = every Genshin character">when this tag is added</label>
-          <input type="text" id="tr-when" spellcheck="false" autocomplete="off" placeholder="hatsune_miku   or   *_(genshin_impact)"></div>
-        <div class="set-field"><label for="tr-add">also add (comma separated)</label>
-          <input type="text" id="tr-add" spellcheck="false" autocomplete="off" placeholder="vocaloid, my_favourites"></div>
-        <div class="set-field"><label for="tr-cat">as category</label>
-          <select id="tr-cat"><option value="meta">meta</option><option value="general">general</option><option value="character">character</option><option value="artist">artist</option><option value="copyright">copyright</option></select></div>
+        <div class="set-field" style="position:relative;"><label for="tr-when" title="a tag name, or a pattern: * = anything, e.g. *_(genshin_impact) = every Genshin character">when this tag is added (* = anything)</label>
+          <input type="text" id="tr-when" spellcheck="false" autocomplete="off" placeholder="hatsune_miku   or   *_(genshin_impact)">
+          <div class="tr-sug" id="tr-when-sug" style="display:none;"></div></div>
+        <div class="set-field" style="position:relative;"><label for="tr-add">also add these tags (comma separated)</label>
+          <input type="text" id="tr-add" spellcheck="false" autocomplete="off" placeholder="vocaloid, my_favourites">
+          <div class="tr-sug" id="tr-add-sug" style="display:none;"></div></div>
       </div>
       <div class="set-actions"><button class="btn primary" onclick="addTagRule()">add rule</button>
         <button class="btn" onclick="applyTagRules()" title="run every rule over the posts already in the library (background job)">apply to existing posts</button></div>
-      <div class="set-note">New tags follow the rules automatically: tags you add, AI tagging, the character model. Rules can chain. Older posts only get them with "apply to existing posts".</div>
+      <div class="set-note">New tags follow the rules automatically: tags you add, AI tagging, the character model. Rules can chain. Added tags keep their own category (a brand-new one becomes general). Older posts get them with "apply" on a rule, or "apply to existing posts" for all rules.</div>
     </div>
 
     <div class="set-sec">
@@ -208,6 +213,7 @@ function openSettings() {
   loadCustom();
   loadQuickLinks();
   loadTagRules();
+  tagRuleSuggest('tr-when', false); tagRuleSuggest('tr-add', true);
   loadNetPath();
   loadComfy();
 }
@@ -310,11 +316,13 @@ function renderTagRules(rules) {
     const row = document.createElement('div'); row.className = 'bk-row';
     const left = document.createElement('div'); left.style.minWidth = '0';
     const nm = document.createElement('div'); nm.className = 'bk-name'; nm.textContent = r.when + '  →  ' + r.add.join(', ');
-    const meta = document.createElement('div'); meta.className = 'bk-meta'; meta.textContent = 'added as ' + r.category;
-    left.append(nm, meta);
+    left.append(nm);
+    const ap = document.createElement('button'); ap.className = 'btn'; ap.textContent = 'apply';
+    ap.title = 'add the tags of THIS rule to every existing post that matches it (background job)';
+    ap.onclick = () => applyTagRules(i);
     const b = document.createElement('button'); b.className = 'btn danger'; b.textContent = 'remove';
     b.onclick = async () => { const d = await (await apiPost('/api/tag-rules/', {remove: i})).json(); renderTagRules(d.rules || []); };
-    row.append(left, b); list.appendChild(row);
+    row.append(left, ap, b); list.appendChild(row);
   });
 }
 async function loadTagRules() {
@@ -322,13 +330,45 @@ async function loadTagRules() {
 }
 async function addTagRule() {
   const w = document.getElementById('tr-when'), a = document.getElementById('tr-add');
-  const d = await (await apiPost('/api/tag-rules/', {add: {when: w.value, add: a.value, category: document.getElementById('tr-cat').value}})).json();
+  const d = await (await apiPost('/api/tag-rules/', {add: {when: w.value, add: a.value}})).json();
   if (!d.ok) { toast(d.error || 'could not add the rule', 'err'); return; }
   w.value = ''; a.value = ''; renderTagRules(d.rules); toast('rule added — new tags follow it now; "apply to existing posts" for the old ones');
 }
-async function applyTagRules() {
-  const d = await (await apiPost('/api/tag-rules/apply/')).json();
-  if (d.task_id) { toast('applying the rules in the background — see the task card'); pollTasks(true); }
+async function applyTagRules(index) {
+  const d = await (await apiPost('/api/tag-rules/apply/', index === undefined ? {} : {index})).json();
+  if (d.task_id) { toast((index === undefined ? 'applying all rules' : 'applying this rule') + ' in the background — see the task card'); pollTasks(true); }
+  else toast(d.error || 'failed', 'err');
+}
+/* tag suggestions for the rule fields (like the search box): the word being typed — for the
+   "also add" list the part after the last comma; a * pattern shows the tags it matches */
+function tagRuleSuggest(inputId, multi) {
+  const inp = document.getElementById(inputId), box = document.getElementById(inputId + '-sug');
+  if (!inp || inp._sug) return;
+  inp._sug = true;
+  let t = null, seq = 0;
+  const part = () => multi ? inp.value.split(',').pop().trim() : inp.value.trim();
+  const pick = name => {
+    if (multi) { const parts = inp.value.split(','); parts[parts.length - 1] = ' ' + name; inp.value = parts.join(',').replace(/^\s+/, '') + ', '; }
+    else inp.value = name;
+    box.style.display = 'none'; inp.focus();
+  };
+  inp.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      const q = part(), my = ++seq;
+      if (q.length < 2) { box.style.display = 'none'; return; }
+      try {
+        const d = await (await fetch('/api/tag-search/?limit=12&q=' + encodeURIComponent(q.replace(/\*/g, '')))).json();
+        if (my !== seq) return;                          // a newer keystroke won
+        const re = q.includes('*') ? new RegExp('^' + q.toLowerCase().replace(/\s+/g, '_').replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$') : null;
+        const tags = (d.tags || []).filter(x => !re || re.test(x.name));
+        box.innerHTML = tags.map(x => `<div data-n="${x.name.replace(/"/g, '&quot;')}">${x.name.replace(/</g, '&lt;')} <small>${x.count}</small></div>`).join('');
+        box.style.display = tags.length ? '' : 'none';
+      } catch (e) { box.style.display = 'none'; }
+    }, 180);
+  });
+  box.addEventListener('mousedown', e => { const r = e.target.closest('[data-n]'); if (r) { e.preventDefault(); if (!inp.value.includes('*') || multi) pick(r.dataset.n); } });
+  inp.addEventListener('blur', () => setTimeout(() => { box.style.display = 'none'; }, 150));
 }
 async function loadDbgStats() {
   ['id','ai','ch','folder'].forEach(k => { const el = document.getElementById('dbg-' + k); if (el) el.checked = !!dbgState()[k]; });
@@ -586,6 +626,8 @@ async function startMultiRetag() {
   } catch(e) { toast('could not start', 'err'); }
 }
 function closeSettings() { closeModal('settings-modal'); }
+// pull the panel down while its content is at the top = close (like the other sheets)
+document.addEventListener('DOMContentLoaded', () => attachDragDismiss(document.querySelector('#settings-modal .modal'), closeSettings));
 
 function _bkSize(n) { return n == null ? '?' : n >= 1073741824 ? (n/1073741824).toFixed(1)+' GB' : (n/1048576).toFixed(n >= 10485760 ? 0 : 1)+' MB'; }
 function _bkWhen(ts) { return ts ? new Date(ts*1000).toLocaleString([], {dateStyle:'medium', timeStyle:'short'}) : 'never'; }

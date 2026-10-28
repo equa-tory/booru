@@ -2862,11 +2862,11 @@ def quick_links_api(request):
 
 # ── Tag rules: "when tag X is added, also add Y" (pref tagRules, applied in utils.add_tags_to_post) ──
 TAG_RULES_MAX = 200
-TAG_RULE_CATEGORIES = ('meta', 'general', 'character', 'artist', 'copyright')
 
 
 def tag_rules_api(request):
-    """GET -> {'rules'}; POST {add: {when, add (text or list), category}} or {remove: index}."""
+    """GET -> {'rules'}; POST {add: {when, add (text or list)}} or {remove: index}. The added tags keep
+    their own category (they usually exist already); a new one becomes general."""
     from . import utils as _u
     rules = list(_u.tag_rules(fresh=True))
     if request.method == 'POST':
@@ -2882,12 +2882,11 @@ def tag_rules_api(request):
             add = r.get('add') or ''
             add = [re.sub(r'\s+', '_', a.strip().lower()) for a in (add if isinstance(add, list) else str(add).split(','))]
             add = [a for a in dict.fromkeys(add) if a and a != when][:20]
-            cat = r.get('category') if r.get('category') in TAG_RULE_CATEGORIES else 'meta'
             if not when or not add:
                 return _err('a rule needs a "when" tag and at least one tag to add')
             if len(rules) >= TAG_RULES_MAX:
                 return _err(f'at most {TAG_RULES_MAX} rules')
-            rules.append({'when': when[:200], 'add': add, 'category': cat})
+            rules.append({'when': when[:200], 'add': add})
         _set_pref('tagRules', rules)
         _u.tag_rules(fresh=True)
     return JsonResponse({'ok': True, 'rules': rules})
@@ -2895,13 +2894,20 @@ def tag_rules_api(request):
 
 @require_POST
 def tag_rules_apply(request):
-    """Apply every rule to the posts already in the library (Task `tag_rules`): only posts that
-    carry a matching tag, only the tags they lack; counts recomputed once."""
+    """Apply the rules to the posts already in the library (Task `tag_rules`): every rule, or one
+    (`{index}`); only posts that carry a matching tag, only the tags they lack; counts once."""
     from fnmatch import fnmatchcase
     from . import utils as _u
+    one = _json_body(request).get('index')
+    rules_now = _u.tag_rules(fresh=True)
+    if one is not None:
+        try:
+            rules_now = [rules_now[int(one)]]
+        except (TypeError, ValueError, IndexError):
+            return _err('no such rule')
 
     def work(task):
-        rules = _u.tag_rules(fresh=True)
+        rules = rules_now
         names = list(Tag.objects.values_list('name', flat=True))
         hit = {n for r in rules for n in names if fnmatchcase(n, str(r['when']))}
         posts = list(Post.objects.filter(tags__name__in=hit).distinct().values_list('id', flat=True))

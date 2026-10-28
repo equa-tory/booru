@@ -717,7 +717,7 @@ _rules_cache = {'t': 0.0, 'rules': []}
 
 
 def tag_rules(fresh=False):
-    """The user's tag rules (pref `tagRules`): [{'when': name or glob, 'add': [names], 'category'}],
+    """The user's tag rules (pref `tagRules`): [{'when': name or glob, 'add': [names]}],
     cached 5 s per process (add_tags_to_post runs for every scanned / tagged post)."""
     import time as _t
     from gallery import prefs
@@ -744,7 +744,7 @@ def implied_tags(names, rules=None, depth=3):
                     a = str(a).strip().lower().replace(' ', '_')
                     if a and a not in have:
                         have.add(a); new.add(a)
-                        out.setdefault(r.get('category') or 'meta', []).append(a)
+                        out.setdefault(r.get('category') or 'general', []).append(a)   # an existing tag keeps its category
         if not new:
             break
         frontier = new
