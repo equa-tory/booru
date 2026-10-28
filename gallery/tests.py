@@ -3310,3 +3310,23 @@ class ComfyCreateTests(TestCase):
         Task.objects.filter(pk=scan.pk).update(updated_at=timezone.now() - timezone.timedelta(minutes=4))
         self.client.get('/api/tasks/')
         scan.refresh_from_db(); self.assertEqual(scan.status, 'running')                            # others keep 30 min
+
+    def test_upload_source_accepts_any_name_and_type(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+        import io as _io
+
+        def up(name, data, ctype):
+            return self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile(name, data, ctype)}).json()
+        buf = _io.BytesIO(); Image.new('RGB', (40, 30), 'red').save(buf, 'JPEG')
+        d = up('clipboard.txt', buf.getvalue(), 'application/octet-stream')            # a JPEG with the wrong name/type
+        self.assertTrue(d['ok'], d); self.assertEqual((d['width'], d['height']), (40, 30))
+        buf = _io.BytesIO(); Image.new('RGBA', (20, 10), (0, 0, 255, 128)).save(buf, 'AVIF')
+        self.assertTrue(up('image', buf.getvalue(), '')['ok'])                           # no extension, no type
+        self.assertFalse(up('x.png', b'just text', 'image/png')['ok'])
+        if shutil.which('ffmpeg'):                                                       # a video: its first frame
+            vid = os.path.join(self.tmp, 'v.mp4')
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=5', '-t', '1',
+                            '-pix_fmt', 'yuv420p', vid], check=True)
+            d = up('clip.dat', open(vid, 'rb').read(), '')
+            self.assertTrue(d['ok'], d); self.assertEqual((d['width'], d['height']), (64, 48))

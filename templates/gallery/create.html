@@ -77,13 +77,13 @@
       <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a maid outfit (holding a tray), smiling in a cafe"
                 onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
 
-      <label class="ae-l">source image — optional (drop, paste or tap to choose)</label>
+      <label class="ae-l">source image — optional (drop, paste or tap to choose; any file, a video gives its first frame)</label>
       <div class="cr-drop" id="cr-drop" tabindex="0" onclick="if(!event.target.closest('.x')) crEl('cr-file').click()">
         <img id="cr-src-img" alt="" style="display:none;">
         <div class="txt" id="cr-src-txt">no source — a new picture is drawn from scratch</div>
         <button type="button" class="x" id="cr-src-x" style="display:none;" onclick="crSetSource(null)" title="no source image">&#10005;</button>
       </div>
-      <input type="file" id="cr-file" accept="image/*" style="display:none;" onchange="if(this.files[0]) crUpload(this.files[0]); this.value='';">
+      <input type="file" id="cr-file" style="display:none;" onchange="if(this.files[0]) crUpload(this.files[0]); this.value='';">
       <div id="cr-den-row" style="display:none;">
         <label class="ae-l" for="cr-den">how much may change: <b id="cr-den-val">0.55</b> <span style="opacity:.7;">(low = add details, high = re-draw)</span></label>
         <input type="range" id="cr-den" min="0.2" max="0.9" step="0.05" value="0.55" style="width:100%;" oninput="crEl('cr-den-val').textContent=(+this.value).toFixed(2)">
@@ -188,7 +188,7 @@ function crSetSource(s) {
   if (typeof crSaveDraft === 'function') crSaveDraft();
 }
 async function crUpload(file) {
-  if (!file || !/^image\//.test(file.type)) { crStatus('that is not a picture', true); return; }
+  if (!file) return;               // any name / type: the server sniffs the content (a video gives its first frame)
   const fd = new FormData(); fd.append('file', file);
   crStatus('uploading the source picture…');
   try {
@@ -204,7 +204,9 @@ async function crUpload(file) {
   ['dragleave', 'drop'].forEach(ev => z.addEventListener(ev, e => { e.preventDefault(); z.classList.remove('over'); }));
   z.addEventListener('drop', e => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) crUpload(f); });
   document.addEventListener('paste', e => {            // paste a copied picture anywhere on the page
-    const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.type.startsWith('image/'));
+    // any pasted FILE (copied in a file manager, any name/type) or a copied picture; pasted text stays text
+    const items = [...(e.clipboardData ? e.clipboardData.items : [])].filter(i => i.kind === 'file');
+    const it = items.find(i => i.type.startsWith('image/')) || items[0];
     if (it) { e.preventDefault(); crUpload(it.getAsFile()); }
   });
 })();

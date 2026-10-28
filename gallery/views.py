@@ -3864,27 +3864,13 @@ def comfy_upload_source(request):
     f = request.FILES.get('file')
     if not f:
         return _err('no file')
-    if f.size > 40 * 1024 * 1024:
-        return _err('the picture is too big (max 40 MB)')
+    if f.size > 200 * 1024 * 1024:
+        return _err('the file is too big (max 200 MB)')
     import hashlib
-    import io
-    from PIL import Image, ImageOps
     try:
-        with Image.open(f) as im:
-            im = ImageOps.exif_transpose(im)
-            if getattr(im, 'is_animated', False):
-                im.seek(0)
-            im = im.convert('RGBA') if im.mode in ('RGBA', 'LA', 'P') else im.convert('RGB')
-            if im.mode == 'RGBA':
-                bg = Image.new('RGB', im.size, (255, 255, 255))
-                bg.paste(im, mask=im.split()[3])
-                im = bg
-            buf = io.BytesIO()
-            im.save(buf, 'PNG')
-            w, h = im.size
-    except Exception:
-        return _err('not a picture')
-    data = buf.getvalue()
+        data, w, h = _any_picture_to_png(f)
+    except ValueError:
+        return _err('could not read a picture from that file')
     rel = f'{CREATE_INPUTS}/{hashlib.md5(data).hexdigest()}.png'
     path = os.path.join(settings.MEDIA_ROOT, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -3939,6 +3925,51 @@ def comfy_gpu(request):
     except Exception:
         ollama = None
     return JsonResponse({'ok': True, 'gpu': ai_runtime.gpu_stats(), 'ollama': ollama})
+
+
+def _any_picture_to_png(f):
+    """Whatever was dropped/pasted -> (png bytes, w, h). The name and the browser's type are
+    ignored (pasted files are often 'image.png' holding a JPEG, or have no type at all): Pillow
+    sniffs the content; anything it can't read (video, odd formats) goes through ffmpeg, which
+    takes the first frame. Raises ValueError when neither can make a picture of it."""
+    import io
+    import subprocess
+    from PIL import Image, ImageOps
+    raw = f.read()
+
+    def flatten(im):
+        im = ImageOps.exif_transpose(im)
+        if getattr(im, 'is_animated', False):
+            im.seek(0)
+        if im.mode in ('RGBA', 'LA', 'P', 'PA'):
+            im = im.convert('RGBA')
+            bg = Image.new('RGB', im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[3])
+            im = bg
+        else:
+            im = im.convert('RGB')
+        buf = io.BytesIO()
+        im.save(buf, 'PNG')
+        return buf.getvalue(), im.size[0], im.size[1]
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            return flatten(im)
+    except Exception:
+        pass
+    with tempfile.NamedTemporaryFile(suffix='.bin') as tmp:
+        tmp.write(raw); tmp.flush()
+        try:
+            r = subprocess.run(['ffmpeg', '-v', 'error', '-i', tmp.name, '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-'],
+                               capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError('ffmpeg failed')
+    if r.returncode != 0 or not r.stdout:
+        raise ValueError('not a picture')
+    try:
+        with Image.open(io.BytesIO(r.stdout)) as im:
+            return flatten(im)
+    except Exception:
+        raise ValueError('not a picture')
 
 
 def _media_url(rel):
