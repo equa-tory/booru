@@ -18,7 +18,7 @@ from PIL import Image, ImageFilter
 
 LAMA_URL = 'https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx'
 LAMA_SIZE = 208044816
-TILE_MIN, TILE_MAX = 384, 1536
+TILE_MIN, TILE_MAX = 384, 2048
 
 
 def model_path():
@@ -108,23 +108,43 @@ def deglow_at(a, x, y, g, reach=3.0, pct=35):
 
 
 def _lights(img_arr, mask_arr, box):
-    """Bright spots inside a painted blob: [(x, y, core radius)] — the brightest point and the
-    size of the near-white area around it (none when the blob holds nothing really bright)."""
+    """A painted blob that IS a light: [(x, y, core radius)], else []. Both must hold: a near-white
+    core that is big for the blob (a lamp head, not the white collar of a painted person:
+    blob short side <= 7 core radii), and a real halo (the unpainted ring just around it clearly
+    brighter than further out). A false positive is costly: the halo pass wipes a whole disc."""
     x0, y0, x1, y1 = box
-    lum = img_arr[y0:y1, x0:x1].mean(2) * (mask_arr[y0:y1, x0:x1] > 127)
+    sub = img_arr[y0:y1, x0:x1]
+    lum = sub.mean(2) * (mask_arr[y0:y1, x0:x1] > 127)
     if lum.size == 0 or lum.max() < 225:
         return []
+    core = int((lum > 215).sum())
+    r = max(6, int((core / np.pi) ** 0.5))
+    if min(x1 - x0, y1 - y0) > 7 * r:
+        return []
     yy, xx = np.unravel_index(np.argmax(lum), lum.shape)
-    core = (lum > 215).sum()
-    return [(x0 + int(xx), y0 + int(yy), max(6, int((core / np.pi) ** 0.5)))]
+    x, y = x0 + int(xx), y0 + int(yy)
+    H, W = img_arr.shape[:2]
+    g = max(4 * r, min(x1 - x0, y1 - y0) // 2)
+    R = int(3 * g)
+    ys, xs = np.mgrid[max(0, y - R):min(H, y + R + 1), max(0, x - R):min(W, x + R + 1)]
+    d = np.hypot(xs - x, ys - y)
+    L = img_arr[max(0, y - R):min(H, y + R + 1), max(0, x - R):min(W, x + R + 1)].mean(2)
+    free = mask_arr[max(0, y - R):min(H, y + R + 1), max(0, x - R):min(W, x + R + 1)] < 128
+    near = free & (d >= g * 0.8) & (d < g * 1.4)
+    far = free & (d >= g * 2.3) & (d < g * 3.0)
+    need = 2 if r < 15 else 8               # small lamps have faint halos; a wrong small disc costs little
+    if near.sum() < 20 or far.sum() < 20 or np.median(L[near]) - np.median(L[far]) < need:
+        return []
+    return [(x, y, r)]
 
 
 def tiles(box, W, H):
-    """Square crops covering a blob with context: side ~2.4× the blob's short side (min 384,
-    max 1536), stepping 75% along the long side (a lamp pole = a column of squares)."""
+    """Square crops covering a blob with context: side ~3.5× the blob's short side (min 384,
+    max 2048; more context filled a removed person far better than 2.4×), stepping 75% along
+    the long side (a lamp pole or a standing person = a column of squares)."""
     x0, y0, x1, y1 = box
     bw, bh = x1 - x0, y1 - y0
-    T = int(min(TILE_MAX, max(TILE_MIN, 2.4 * min(bw, bh) + 120)))
+    T = int(min(TILE_MAX, max(TILE_MIN, 3.5 * min(bw, bh) + 120)))
     T = min(T, W, H)
     out = []
     step = int(T * 0.75)

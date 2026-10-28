@@ -3356,11 +3356,16 @@ class ComfyCreateTests(TestCase):
 
     def test_remover_finds_lights_and_tiles_tall_objects(self):
         from gallery import remover
-        img = np.full((400, 400, 3), 20.0); img[100:110, 200:210] = 255
+        yy, xx = np.mgrid[0:400, 0:400]
+        img = (20 + 150 * np.exp(-np.hypot(xx - 205, yy - 105) / 30))[..., None].repeat(3, 2)     # a lamp with a halo
+        img[100:110, 200:210] = 255
         m = np.zeros((400, 400), np.uint8); m[95:115, 195:215] = 255
-        (x, y, r), = remover._lights(img, m, (190, 90, 220, 120))
+        (x, y, r), = remover._lights(img, m, (195, 95, 215, 115))
         self.assertEqual((x // 10, y // 10), (20, 10))
-        self.assertEqual(remover._lights(np.full((400, 400, 3), 90.0), m, (190, 90, 220, 120)), [])   # not bright: no light
+        flat = np.full((400, 400, 3), 20.0); flat[100:110, 200:210] = 255
+        self.assertEqual(remover._lights(flat, m, (195, 95, 215, 115)), [])          # bright but no halo: a white object
+        big = np.zeros((400, 400), np.uint8); big[40:360, 150:260] = 255              # a painted person with a white collar
+        self.assertEqual(remover._lights(img, big, (150, 40, 260, 360)), [])
         ts = remover.tiles((500, 100, 530, 1300), 2000, 1500)            # a pole: a column of squares
         self.assertGreater(len(ts), 2)
         self.assertTrue(all(t[2] - t[0] == t[3] - t[1] for t in ts))

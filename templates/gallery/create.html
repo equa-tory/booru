@@ -104,7 +104,7 @@
             <button class="btn" id="cr-erase" onclick="crPaintErase()" title="eraser: un-paint">eraser</button>
             <button class="btn" onclick="crPaintClear()">clear</button>
           </div>
-          <div class="cr-sub" style="margin:.4rem 0 0;">Paint over what should disappear (a bit past its edges). A light's glow and rays are removed automatically. Only the painted parts change.</div>
+          <div class="cr-sub" style="margin:.4rem 0 0;">Paint over what should disappear (a bit past its edges). A light's glow and rays are removed automatically. Only the painted parts change — no prompt, model or fast mode is used. While something is painted, every generate button removes it instead.</div>
           <div class="cr-actions"><button class="btn primary" id="cr-remove-btn" onclick="crRemove()">&#129533; remove painted</button></div>
         </div>
       </div>
@@ -301,6 +301,7 @@ async function crStop() {
   finally { crEl('cr-stop').disabled = false; crStopVisible(); }
 }
 async function crRun() {
+  if (crPainted()) return crRemove();
   const b = crBody(false);
   if (!b.positive) { crStatus('no prompt — plan first or type tags', true); return; }
   crSaveUi();
@@ -317,6 +318,7 @@ async function crRun() {
   finally { btn.disabled = false; }
 }
 async function crGo() {
+  if (crPainted()) return crRemove();      // something is painted: the user wants it removed, not a new picture
   if (!crPlanned || !crEl('cr-pos').value.trim()) { if (!(await crPlan())) return; }
   crRun();
 }
@@ -507,6 +509,7 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
   cv.addEventListener('pointermove', e => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
   ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { last = null; }));
 })();
+function crPainted() { return !!crSource && crEl('cr-painter').style.display !== 'none' && !crPaintEmpty(); }
 function crPaintEmpty() {
   const cv = crEl('cr-paint-cv');
   if (!cv.width) return true;
