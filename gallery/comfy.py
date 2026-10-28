@@ -288,6 +288,7 @@ The user describes a picture (any language). Answer with:
 - "orientation": "portrait", "landscape" or "square" (people standing or a single character: portrait; scenery or several people side by side: landscape).
 - "note": one short sentence describing the picture.
 When a source picture is given, its tags describe it now; "tags" must describe the FINAL picture (keep what the user does not change).
+When the request turns a person into a named character (or another person), DROP that person's old hair, eye and clothing tags: the character brings its own look; keep the pose, background and the rest.
 Examples:
 Request: hayasaka ai in a maid outfit smiling in a cafe
 {"characters": ["hayasaka ai"], "tags": ["1girl", "solo", "maid", "maid headdress", "maid apron", "black dress", "white apron", "frills", "smile", "looking at viewer", "standing", "holding tray", "cafe", "indoors", "table", "window", "sunlight", "cowboy shot"], "negative": [], "orientation": "portrait", "note": "Hayasaka Ai as a smiling maid in a cafe"}
@@ -521,9 +522,25 @@ def build_txt2img(positive, negative, seed, cfg=None, width=832, height=1216, ba
     return _sample_chain(wf, ['4', 0], positive, negative, seed, cfg, 1.0, loras, temp_node)
 
 
-def _sample_chain(wf, latent, positive, negative, seed, cfg, den, loras, temp_node):
-    """Shared tail of both workflows: LoRAs -> prompts -> [GPU temp wait] -> KSampler ->
-    VAE decode -> PreviewImage (node ids 5-10, LoRAs 20+)."""
+def build_inpaint(image_name, mask_name, positive, negative, seed, cfg=None, denoise=0.75, loras=(), temp_node=None):
+    """Redraw only the painted area of a (cropped) picture: VAE-encode it, SetLatentNoiseMask
+    with the soft mask + DifferentialDiffusion (soft edges blend), the same LoRAs / prompts /
+    sampler. The caller pastes the result back into the full picture through the mask."""
+    cfg = cfg or config()
+    wf = {
+        '1': {'class_type': 'CheckpointLoaderSimple', 'inputs': {'ckpt_name': cfg['checkpoint']}},
+        '2': {'class_type': 'LoadImage', 'inputs': {'image': image_name}},
+        '3': {'class_type': 'LoadImageMask', 'inputs': {'image': mask_name, 'channel': 'red'}},
+        '4': {'class_type': 'VAEEncode', 'inputs': {'pixels': ['2', 0], 'vae': ['1', 2]}},
+        '11': {'class_type': 'SetLatentNoiseMask', 'inputs': {'samples': ['4', 0], 'mask': ['3', 0]}},
+    }
+    den = min(1.0, max(DENOISE_MIN, float(denoise)))
+    return _sample_chain(wf, ['11', 0], positive, negative, seed, cfg, den, loras, temp_node, diff=True)
+
+
+def _sample_chain(wf, latent, positive, negative, seed, cfg, den, loras, temp_node, diff=False):
+    """Shared tail of the workflows: LoRAs -> [DifferentialDiffusion] -> prompts -> [GPU temp
+    wait] -> KSampler -> VAE decode -> PreviewImage (node ids 5-10, 12, LoRAs 20+)."""
     model, clip = ['1', 0], ['1', 1]
     for i, (name, strength) in enumerate(loras):
         nid = str(20 + i)
@@ -531,6 +548,9 @@ def _sample_chain(wf, latent, positive, negative, seed, cfg, den, loras, temp_no
                    'inputs': {'model': model, 'clip': clip, 'lora_name': name,
                               'strength_model': float(strength), 'strength_clip': float(strength)}}
         model, clip = [nid, 0], [nid, 1]
+    if diff:
+        wf['12'] = {'class_type': 'DifferentialDiffusion', 'inputs': {'model': model}}
+        model = ['12', 0]
     wf['5'] = {'class_type': 'CLIPTextEncode', 'inputs': {'text': positive, 'clip': clip}}
     wf['6'] = {'class_type': 'CLIPTextEncode', 'inputs': {'text': negative, 'clip': clip}}
     if temp_node is None:
@@ -901,6 +921,33 @@ def generate_txt2img(positive, negative, seed, width, height, cfg=None, check=No
     unload_ollama(cfg)
     wf = build_txt2img(positive, negative, seed, cfg, width, height, loras=loras, temp_node=stat['temp_node'])
     return _run_workflow(wf, cfg, check, progress, step), wf
+
+
+def generate_inpaint(img_path, mask_path, positive, negative, seed, denoise, cfg=None, check=None, progress=None,
+                     loras=(), step=None):
+    """Upload a crop + its mask, redraw the masked part; returns (png_bytes of the crop, workflow)."""
+    cfg = cfg or config()
+    stat = status_light(cfg)
+    if progress:
+        progress('uploading to ComfyUI…')
+    unload_ollama(cfg)
+    name, mname = upload_image(img_path, cfg), upload_image(mask_path, cfg)
+    wf = build_inpaint(name, mname, positive, negative, seed, cfg, denoise, loras=loras, temp_node=stat['temp_node'])
+    return _run_workflow(wf, cfg, check, progress, step), wf
+
+
+def inpaint_crop(src, mask, megapixels):
+    """Where to redraw a painted area: (box, (w, h)) — the mask's bounding box plus context
+    (half its size, at least 64 px) clamped to the picture, and the size to render it at
+    (about `megapixels`, multiples of 8). src/mask: PIL images of the same size."""
+    x0, y0, x1, y1 = mask.getbbox()
+    W, H = src.size
+    m = max(64, max(x1 - x0, y1 - y0) // 2)
+    box = (max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(H, y1 + m))
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    k = (megapixels * 1_000_000 / (bw * bh)) ** 0.5
+    k = min(k, 4.0)                                   # a tiny painted spot: upscale at most 4×
+    return box, (max(64, int(bw * k) // 8 * 8), max(64, int(bh * k) // 8 * 8))
 
 
 def _run_workflow(wf, cfg, check, progress, step=None):

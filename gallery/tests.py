@@ -1679,6 +1679,11 @@ class MultiImageTaggingTests(TestCase):
         self.assertEqual(self.client.get('/api/ai/info/').json()['multi_todo'], 0)
 
 
+def _png_bytes_of(im):
+    import io as _i
+    b = _i.BytesIO(); im.save(b, 'PNG'); return b.getvalue()
+
+
 def _run_now(kind, fn):
     task = Task.objects.create(kind=kind, status='running')
     fn(task)
@@ -3394,3 +3399,62 @@ class ComfyCreateTests(TestCase):
         self.assertEqual(self._post('/api/comfy/remove/', {'src_upload': up['upload'],
                          'mask': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()}).status_code, 400)
         self.assertEqual(self._post('/api/comfy/remove/', {'mask': data}).status_code, 400)        # no source
+
+    # painted area + description = redraw only that area (inpaint)
+    def test_inpaint_workflow_and_crop(self):
+        from PIL import Image
+        wf = comfy.build_inpaint('c.png', 'm.png', 'p', 'n', 3, comfy.config(), 0.85, loras=[('a.safetensors', 1.0)], temp_node=False)
+        self.assertEqual(comfy.workflow_problems(wf), [])
+        self.assertEqual(wf['11']['class_type'], 'SetLatentNoiseMask')
+        self.assertEqual(wf['8']['inputs']['latent_image'], ['11', 0])
+        self.assertEqual(wf['12']['inputs']['model'], ['20', 0])                # LoRAs -> DifferentialDiffusion
+        self.assertEqual(wf['8']['inputs']['model'], ['12', 0])
+        self.assertNotIn('12', comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config(), temp_node=False))
+        src = Image.new('RGB', (2000, 1000)); m = Image.new('L', (2000, 1000)); m.paste(255, (900, 400, 1000, 500))
+        box, (w, h) = comfy.inpaint_crop(src, m, 0.8)
+        self.assertEqual(box, (836, 336, 1064, 564))                         # bbox + 64 px context
+        self.assertEqual((w % 8, h % 8), (0, 0)); self.assertLessEqual(w, 228 * 4)
+
+    def test_create_with_paint_changes_only_the_painted_area(self):
+        import base64
+        from PIL import Image, ImageDraw
+        rng = np.random.default_rng(3)
+        arr = rng.integers(0, 120, (200, 300, 3), dtype=np.uint8)
+        Image.fromarray(arr).save(os.path.join(self.tmp, 'pic.png'))
+        ph = Photo.objects.create(post=Post.objects.create(), order=0, rel_path='pic.png', width=300, height=200)
+        m = Image.new('RGBA', (150, 100), (0, 0, 0, 0)); ImageDraw.Draw(m).rectangle([60, 40, 80, 60], fill=(255, 0, 0, 255))
+        buf = _io.BytesIO(); m.save(buf, 'PNG')
+        sent = {}
+
+        def fake_inpaint(img_path, mask_path, pos, neg, seed, den, cfg, **kw):
+            crop = Image.open(img_path); sent.update(size=crop.size, den=den, pos=pos)
+            return _png_bytes_of(Image.new('RGB', crop.size, (250, 250, 250))), {}
+        with mock.patch.object(comfy, 'generate_inpaint', side_effect=fake_inpaint), \
+             mock.patch.object(comfy, 'generate') as full, mock.patch.object(comfy, 'free_comfy'), \
+             mock.patch.object(views, 'apply_ai_tags'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            r = self._post('/api/comfy/create/', {'positive': 'red dress', 'photo_id': ph.pk,
+                                                  'mask': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()})
+        self.assertEqual(r.status_code, 200, r.content)
+        full.assert_not_called()                                                 # not the whole-picture redraw
+        self.assertEqual(sent['den'], 0.75)                                      # painted default
+        new = Post.objects.exclude(pk=ph.post_id).get()
+        out = np.asarray(Image.open(new.images.first().file_path).convert('RGB'))
+        self.assertEqual(out.shape, arr.shape)
+        self.assertTrue((out[85:115, 125:155] > 200).all())                       # painted area redrawn
+        far = np.ones(arr.shape[:2], bool); far[50:150, 90:190] = False
+        self.assertTrue((out[far] == arr[far]).all())                             # the rest: original pixels
+        g = self.client.get(f'/api/post/{new.pk}/gen-info/').json()['gen_info']
+        self.assertRegex(g['mask'], r'^ai_create/inputs/mask_[0-9a-f]{32}\.png$')
+        self.assertTrue(g['mask_url'].startswith('/media/ai_create/inputs/mask_'))
+
+    def test_plan_drops_old_hair_and_eye_colours_for_a_new_character(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('a', _png((60, 40)), '')}).json()['upload']
+        plan = {'characters': ['hatsune miku'], 'tags': ['1girl', 'brown hair', 'brown eyes', 'long hair', 'red eyes', 'park'],
+                'negative': [], 'orientation': 'landscape', 'note': '', 'source': 'llm'}
+        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': [], 'character': []}):
+            d, _pg = self._plan({'description': 'make her hatsune miku with red eyes', 'src_upload': up}, plan=plan, picks={})
+        self.assertNotIn('brown hair', d['positive']); self.assertNotIn('brown eyes', d['positive'])
+        self.assertIn('red eyes', d['positive'])                                  # typed by the user: kept
+        self.assertIn('long hair', d['positive'])

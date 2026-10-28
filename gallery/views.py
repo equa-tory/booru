@@ -3657,6 +3657,8 @@ def post_gen_info(request, pk):
         src = {'upload': gi['source_upload'], 'url': u, 'thumb': u}
     images = [{'id': p.id, 'url': p.media_url, 'thumb': p.thumb_url or p.media_url}
               for p in post.images.order_by('order', 'id') if not (p.is_video or p.is_pdf)][:12]
+    if gi and gi.get('mask') and re.match(r'^ai_create/inputs/mask_[0-9a-f]{32}\.png$', gi['mask']):
+        gi = dict(gi, mask_url=_media_url(gi['mask']))
     return JsonResponse({'ok': True, 'gen_info': gi, 'id': post.id, 'title': post.title,
                          'source_post': post.source_post_id, 'source_photo': post.source_photo_id,
                          'source': src, 'images': images})
@@ -3824,6 +3826,8 @@ def _canon_characters(names):
     return list(dict.fromkeys(out))
 
 
+_LOOK_RE = re.compile(r'^(?:(?:light|dark|very)\s+)?(?:aqua|black|blonde|blue|brown|green|grey|gray|orange|pink|purple|red|'
+                      r'silver|white|yellow|multicolored|two-tone|streaked|gradient)\s+(?:hair|eyes)$')
 CREATE_INPUTS = 'ai_create/inputs'
 _UPLOAD_RE = re.compile(r'^ai_create/inputs/[0-9a-f]{32}\.png$')
 
@@ -3880,12 +3884,67 @@ def comfy_upload_source(request):
     return JsonResponse({'ok': True, 'upload': rel, 'url': _media_url(rel), 'width': w, 'height': h})
 
 
+def _mask_from_body(body):
+    """The painted mask (PNG data URL; alpha/red = painted) as a PIL 'L' image, or None when
+    nothing is painted."""
+    import base64
+    import io
+    from PIL import Image
+    data = str(body.get('mask') or '')
+    if not data:
+        return None
+    try:
+        im = Image.open(io.BytesIO(base64.b64decode(data.split(',', 1)[-1])))
+        im = im.getchannel('A') if 'A' in im.getbands() else im.convert('L')
+    except Exception:
+        return None
+    return im if im.getbbox() else None
+
+
+def _save_mask(mask):
+    """Keep the painted mask beside the inputs (for "restore inputs"); returns its rel path."""
+    import hashlib
+    import io
+    buf = io.BytesIO(); mask.save(buf, 'PNG')
+    data = buf.getvalue()
+    rel = f'{CREATE_INPUTS}/mask_{hashlib.md5(data).hexdigest()}.png'
+    path = os.path.join(settings.MEDIA_ROOT, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, 'wb') as f:
+            f.write(data)
+    return rel
+
+
+def _inpaint_full(src_path, mask, positive, negative, seed, den, cfg, check, progress, loras, step):
+    """Redraw only the painted part of the full-size picture: a crop around it rendered at about
+    cfg['megapixels'], pasted back through a feathered mask -> PNG bytes (full size, every
+    unpainted pixel unchanged)."""
+    import io
+    import tempfile as _tf
+    from PIL import Image, ImageFilter, ImageOps
+    with Image.open(src_path) as im:
+        src = ImageOps.exif_transpose(im).convert('RGB')
+    m = mask.resize(src.size, Image.BILINEAR).point(lambda v: 255 if v > 40 else 0).filter(ImageFilter.MaxFilter(9))
+    box, (w, h) = comfy.inpaint_crop(src, m, float(cfg['megapixels']))
+    k = w / (box[2] - box[0])
+    with _tf.TemporaryDirectory() as td:
+        cp, mp = os.path.join(td, 'crop.png'), os.path.join(td, 'mask.png')
+        src.crop(box).resize((w, h), Image.LANCZOS).save(cp)
+        m.crop(box).resize((w, h), Image.BILINEAR).filter(ImageFilter.GaussianBlur(max(2, 6 * k))).convert('RGB').save(mp)
+        png, _wf = comfy.generate_inpaint(cp, mp, positive, negative, seed, den, cfg, check=check, progress=progress,
+                                          loras=loras, step=step)
+    res = Image.open(io.BytesIO(png)).convert('RGB').resize((box[2] - box[0], box[3] - box[1]), Image.LANCZOS)
+    src.paste(res, box[:2], m.crop(box).filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(6)))
+    buf = io.BytesIO(); src.save(buf, 'PNG')
+    return buf.getvalue()
+
+
 @require_POST
 def comfy_remove(request):
     """🖌 remove: the painted parts of the source picture are erased and filled from their
     surroundings (LaMa, gallery/remover.py) — nothing else changes, full resolution. Body:
     photo_id | src_upload, mask = PNG data URL (white = remove, any size). Result = new post."""
-    import base64
     import io
     from PIL import Image
     from . import remover
@@ -3895,12 +3954,8 @@ def comfy_remove(request):
         return err
     if not src:
         return _err('pick a source picture first')
-    data = str(body.get('mask') or '')
-    try:
-        mask = Image.open(io.BytesIO(base64.b64decode(data.split(',', 1)[-1]))).convert('L')
-    except Exception:
-        return _err('paint what to remove first')
-    if not mask.getbbox():
+    mask = _mask_from_body(body)
+    if mask is None:
         return _err('paint what to remove first')
     busy = _comfy_busy()
     if busy:
@@ -4076,6 +4131,11 @@ def comfy_plan(request):
         catalog = comfy.lora_catalog(cfg)
     except Exception:
         catalog = []
+    if src and plan['characters']:
+        # someone becomes a NAMED character: the old person's hair / eye colours would fight the
+        # character's own look (small planners keep them despite the instruction) — unless typed
+        said_l = text.lower()
+        plan['tags'] = [t for t in plan['tags'] if not (_LOOK_RE.match(t) and t not in said_l)]
     terms = chars + plan['tags']
     # concept LoRAs: only planned tags the user actually wrote — the planner's filler tags
     # (smile, indoors, looking at viewer) matched unrelated pose LoRAs
@@ -4148,10 +4208,12 @@ def comfy_create(request):
         count = min(CREATE_MAX_COUNT, max(1, int(body.get('count') or 1)))
     except (TypeError, ValueError):
         count = 1
+    mask = _mask_from_body(body) if src else None          # painted: only that area is redrawn
     try:
-        den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, float(body.get('denoise') or 0.55)))
+        den = min(1.0 if mask else comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, float(body.get('denoise') or (0.75 if mask else 0.55))))
     except (TypeError, ValueError):
-        den = 0.55
+        den = 0.75 if mask else 0.55
+    mask_rel = _save_mask(mask) if mask else None
     orientation = body.get('orientation') if body.get('orientation') in comfy.SIZE_RATIOS else 'portrait'
     size = body.get('size') if body.get('size') in comfy.SIZE_MP else 'normal'
     width, height = comfy.size_for(orientation, size, cfg)
@@ -4207,7 +4269,9 @@ def comfy_create(request):
                 task.done = i * 100 + min(99, int(value * 100 / mx))
                 task.message = f'{label}: step {value}/{mx}'
                 task.save(update_fields=['done', 'message'])
-            if src_path:
+            if mask is not None:
+                png = _inpaint_full(src_path, mask, positive, negative, seed + i, den, run_cfg, check, progress, run_loras, step)
+            elif src_path:
                 png, _wf = comfy.generate(src_path, positive, negative, seed + i, den, run_cfg,
                                           check=check, progress=progress, loras=run_loras, step=step)
             else:
@@ -4224,6 +4288,7 @@ def comfy_create(request):
             'kind': 'create', 'request': text, 'positive': pos_text, 'negative': neg_text, 'seed': seed, 'count': count,
             'orientation': orientation, 'size': size, 'width': width, 'height': height, 'fast': fast,
             'denoise': den if src_path else None, 'source_photo': photo_id, 'source_upload': src_upload,
+            'mask': mask_rel,
             'checkpoint': cfg['checkpoint'], 'steps': run_cfg['steps'], 'cfg': run_cfg['cfg'],
             'sampler': run_cfg['sampler'], 'scheduler': run_cfg['scheduler'], 'megapixels': cfg['megapixels'],
             'ollama_model': cfg['ollama_model'], 'loras': loras, 'triggers': triggers,
