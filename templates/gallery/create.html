@@ -272,7 +272,7 @@ async function crUpload(file) {
 function crBody(forPlan) {
   const b = {description: crEl('cr-desc').value.trim(), ollama_model: crEl('cr-model').value};
   if (crSource) { if (crSource.photo_id) b.photo_id = crSource.photo_id; else b.src_upload = crSource.upload; b.denoise = crEl('cr-den').value; }
-  if (forPlan) { b.loras = crPick.list.map(l => l.name); return b; }
+  if (forPlan) { b.loras = crPick.list.map(l => l.name); b.area = crPainted(); return b; }
   Object.assign(b, {positive: crEl('cr-pos').value.trim(), negative: crEl('cr-neg').value.trim(),
     orientation: crEl('cr-orient').value, size: crEl('cr-size').value, count: crEl('cr-count').value,
     fast: crEl('cr-fast').checked, loras: crPick.body(), max_temp: crMaxTemp()});
@@ -360,6 +360,10 @@ function crWantsRemove() { const t = crEl('cr-desc').value.trim(); return !t || 
 async function crGo(change) {
   if (crPainted() && !change && crWantsRemove()) return crRemove();
   if (change && !crEl('cr-desc').value.trim() && !crEl('cr-pos').value.trim()) { crStatus('describe what the painted area should become', true); return; }
+  if (change && (!crPlanned || !crEl('cr-pos').value.trim())) {     // plan first, so prompt / LoRAs can be checked
+    if (await crPlan()) crStatus('planned for the painted area — check the prompt and LoRAs, then press "change painted" again');
+    return;
+  }
   if (!crPlanned || !crEl('cr-pos').value.trim()) { if (!(await crPlan())) return; }
   crRun();
 }

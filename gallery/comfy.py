@@ -450,7 +450,7 @@ def forced_text(forced):
     return ', '.join(f'({escape_tag(t)}:{w:g})' for t, w in forced)
 
 
-def plan_prompt(description, cfg=None, current_tags=None):
+def plan_prompt(description, cfg=None, current_tags=None, area=False):
     """Description (+ the source picture's tags) -> plan dict + 'source' ('llm'/'fallback').
     Never raises: without a usable answer the description's comma parts become the tags."""
     cfg = cfg or config()
@@ -461,6 +461,10 @@ def plan_prompt(description, cfg=None, current_tags=None):
         user += '\nMust be in "tags": ' + ', '.join(forced)
     if current_tags:
         user = 'Source picture tags: ' + ', '.join(clean_tags(current_tags)[:60]) + '\n' + user
+    if area:     # painted-area change: the rest of the picture stays, describe only what goes INTO the area
+        user += ('\nOnly a PAINTED AREA of the source picture is redrawn, the rest stays as it is. "tags" = what the '
+                 'painted area must show (the requested subject with its look, pose, clothes) plus the picture\'s style '
+                 'and lighting (e.g. night, autumn, outdoors). Do NOT list other objects of the scene (they are outside the area).')
     try:
         plan = parse_plan(_ollama_json(cfg, PLAN_SYSTEM_PROMPT, user, PLAN_SCHEMA))
         plan['source'] = 'llm'
@@ -990,11 +994,11 @@ def generate_inpaint(img_path, mask_path, positive, negative, seed, denoise, cfg
 
 def inpaint_crop(src, mask, megapixels):
     """Where to redraw a painted area: (box, (w, h)) — the mask's bounding box plus context
-    (half its size, at least 64 px) clamped to the picture, and the size to render it at
+    (its own size on every side, at least 128 px) clamped to the picture, and the size to render it at
     (about `megapixels`, multiples of 8). src/mask: PIL images of the same size."""
     x0, y0, x1, y1 = mask.getbbox()
     W, H = src.size
-    m = max(64, max(x1 - x0, y1 - y0) // 2)
+    m = max(128, max(x1 - x0, y1 - y0))      # the area's own size of context on every side (half was too little)
     box = (max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(H, y1 + m))
     bw, bh = box[2] - box[0], box[3] - box[1]
     k = (megapixels * 1_000_000 / (bw * bh)) ** 0.5

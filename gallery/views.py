@@ -3916,6 +3916,11 @@ def _canon_characters(names):
 
 _LOOK_RE = re.compile(r'^(?:(?:light|dark|very)\s+)?(?:aqua|black|blonde|blue|brown|green|grey|gray|orange|pink|purple|red|'
                       r'silver|white|yellow|multicolored|two-tone|streaked|gradient)\s+(?:hair|eyes)$')
+_AREA_KEEP = {   # source tags that still belong in a painted-area prompt: count, time / light, season, style
+    '1girl', '2girls', '3girls', 'multiple girls', '1boy', '2boys', 'multiple boys', 'solo', 'outdoors', 'indoors',
+    'night', 'day', 'evening', 'sunset', 'dusk', 'twilight', 'dawn', 'night sky', 'sunlight', 'moonlight', 'backlighting',
+    'dark', 'dim lighting', 'rain', 'snow', 'snowing', 'fog', 'autumn', 'winter', 'summer', 'spring', 'anime screencap',
+    'realistic', 'photorealistic', 'sketch', 'monochrome', 'greyscale', 'watercolor (medium)', 'pixel art', '3d', 'lineart'}
 CREATE_INPUTS = 'ai_create/inputs'
 _UPLOAD_RE = re.compile(r'^ai_create/inputs/[0-9a-f]{32}\.png$')
 
@@ -4210,7 +4215,7 @@ def comfy_plan(request):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
     t0 = time.time()
     cur = _source_tags(src) if src else None
-    plan = comfy.plan_prompt(text, cfg, cur)
+    plan = comfy.plan_prompt(text, cfg, cur, area=bool(src and body.get('area')))   # painted: describe only the area
     chars = _canon_characters(plan['characters'])
     if src and src['photo']:
         chars = list(dict.fromkeys(chars + _char_tags_for(src['photo'], cur)))
@@ -4225,6 +4230,12 @@ def comfy_plan(request):
         # character's own look (small planners keep them despite the instruction) — unless typed
         said_l = text.lower()
         plan['tags'] = [t for t in plan['tags'] if not (_LOOK_RE.match(t) and t not in said_l)]
+    if src and body.get('area') and cur:
+        # painted-area change: tags the source already had describe the REST of the scene (tree,
+        # lamppost, road) and pull it into the area — keep only picture-wide ones and typed ones
+        had = {comfy._norm(t) for t in comfy.clean_tags(cur)}
+        said_l = text.lower()
+        plan['tags'] = [t for t in plan['tags'] if comfy._norm(t) not in had or t in _AREA_KEEP or t in said_l]
     terms = chars + plan['tags']
     # concept LoRAs: only planned tags the user actually wrote — the planner's filler tags
     # (smile, indoors, looking at viewer) matched unrelated pose LoRAs

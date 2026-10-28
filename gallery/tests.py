@@ -3427,7 +3427,7 @@ class ComfyCreateTests(TestCase):
         self.assertNotIn('12', comfy.build_img2img('a.png', 'p', 'n', 1, comfy.config(), temp_node=False))
         src = Image.new('RGB', (2000, 1000)); m = Image.new('L', (2000, 1000)); m.paste(255, (900, 400, 1000, 500))
         box, (w, h) = comfy.inpaint_crop(src, m, 0.8)
-        self.assertEqual(box, (836, 336, 1064, 564))                         # bbox + 64 px context
+        self.assertEqual(box, (772, 272, 1128, 628))                         # bbox + 128 px (its own size, min 128)
         self.assertEqual((w % 8, h % 8), (0, 0)); self.assertLessEqual(w, 228 * 4)
 
     def test_create_with_paint_changes_only_the_painted_area(self):
@@ -3511,3 +3511,14 @@ class GifProgressTests(TestCase):
         html = self.client.get(f'/post/{post.pk}/').content.decode()
         self.assertIn('data-gif-dur="0.600000"', html)
         ph.refresh_from_db(); self.assertEqual(ph.duration, 0.6)                          # measured once, stored
+
+    def test_area_plan_drops_the_rest_of_the_scene(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('a', _png((60, 40)), '')}).json()['upload']
+        plan = {'characters': [], 'tags': ['1girl', 'red dress', 'tree', 'lamppost', 'night', 'walking', 'road'],
+                'negative': [], 'orientation': 'landscape', 'note': '', 'source': 'llm'}
+        with mock.patch.object(views, 'run_ai_tagger', return_value={'general': ['1girl', 'tree', 'lamppost', 'night', 'walking', 'road'], 'character': []}):
+            d, _pg = self._plan({'description': 'give her a red dress, walking', 'src_upload': up, 'area': True}, plan=plan, picks={})
+            whole, _pg = self._plan({'description': 'give her a red dress', 'src_upload': up}, plan=plan, picks={})
+        self.assertEqual(d['positive'], '(red dress:1.2), (walking:1.2), 1girl, night')       # scene objects gone, typed kept
+        self.assertIn('lamppost', whole['positive'])                                          # whole-picture plans keep them
