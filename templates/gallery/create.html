@@ -103,10 +103,10 @@
           <div class="cr-paint-wrap"><img id="cr-paint-img" alt=""><canvas id="cr-paint-cv"></canvas><div id="cr-brush-ring"></div></div>
           <div class="cr-paint-tools">
             brush <input type="range" id="cr-brush" min="4" max="160" value="36">
-            <button class="btn on" id="cr-brush-btn" onclick="crPaintErase(false)" title="brush (B)">brush</button>
-            <button class="btn" id="cr-erase" onclick="crPaintErase(true)" title="eraser: un-paint (E)">eraser</button>
-            <button class="btn" onclick="crPaintClear()" title="clear the painting (D)">clear</button>
-            <span>wheel = size · B brush · E eraser · D clear</span>
+            <button class="btn on" id="cr-brush-btn" onclick="crPaintErase(false)">brush</button>
+            <button class="btn" id="cr-erase" onclick="crPaintErase(true)" title="eraser: un-paint">eraser</button>
+            <button class="btn" onclick="crPaintClear()">clear</button>
+            <span id="cr-paint-keys"></span>
           </div>
           <div class="cr-sub" style="margin:.4rem 0 0;">Paint a bit past the edges (around a person: generously, with room for the hair). Only the painted part changes.<br>
             <b>remove</b>: fills it from the surroundings (no prompt or model needed; a light's glow goes too).<br>
@@ -498,6 +498,7 @@ let crPaintSrc = null, crErasing = false;
 function crPaintToggle() {
   const p = crEl('cr-painter'), open = p.style.display === 'none';
   p.style.display = open ? '' : 'none';
+  crPaintKeysLabel();
   const den = crEl('cr-den');
   den.max = open ? '1' : '0.9';
   if (open && !den.dataset.touched) { den.value = 0.75; crEl('cr-den-val').textContent = '0.75'; }   // keeps size + pose, still a full change
@@ -528,6 +529,10 @@ function crLoadMask(url) {
     m.src = url;
   };
   if (cv.width && img.complete && img.naturalWidth) draw(); else img.addEventListener('load', () => setTimeout(draw, 0), {once: true});
+}
+function crPaintKeysLabel() {     // the current keys, after the server-side bindings arrived
+  const k = a => String(bind(a)).toUpperCase();
+  crEl('cr-paint-keys').innerHTML = `wheel = size · ${k('paint_brush')} brush · ${k('paint_erase')} eraser · ${k('paint_clear')} clear · <a href="/shortcuts/" style="color:inherit;">change keys</a>`;
 }
 function crPaintErase(on) {
   crErasing = on === undefined ? !crErasing : on;
@@ -566,14 +571,14 @@ function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').cl
     b.value = Math.min(+b.max, Math.max(+b.min, v + (e.deltaY < 0 ? step : -step)));
     showRing(e);
   }, {passive: false});
-  // B brush · E eraser · D clear — while the painter is open and no text field has focus
+  // brush / eraser / clear keys (default B / E / D, see ⚙ key bindings) — painter open, no text field focused
   document.addEventListener('keydown', e => {
     if (crEl('cr-painter').style.display === 'none' || e.ctrlKey || e.metaKey || e.altKey) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '')) return;
-    const k = e.key.toLowerCase();
-    if (k === 'b') crPaintErase(false);
-    else if (k === 'e') crPaintErase(true);
-    else if (k === 'd') crPaintClear();
+    const k = e.key.toLowerCase(), is = a => k === String(bind(a)).toLowerCase();   // keys from ⚙ key bindings
+    if (is('paint_brush')) crPaintErase(false);
+    else if (is('paint_erase')) crPaintErase(true);
+    else if (is('paint_clear')) crPaintClear();
     else return;
     e.preventDefault(); e.stopPropagation();
   }, true);
