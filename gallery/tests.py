@@ -2236,7 +2236,9 @@ class ComfyEditPageTests(TestCase):
         post = self._post('a.png', 'b.mp4', 'c.gif', 'd.pdf', 'e.jpg')
         html = self.client.get(f'/post/{post.pk}/').content.decode()
         self.assertEqual(html.count('class="ai-edit-btn"'), 2)             # a.png and e.jpg only
-        self.assertIn('aria-label="AI edit">&#9998;</button>', html)        # icon only, no text
+        self.assertIn('aria-label="AI create from this picture">&#9998;</a>', html)     # icon only, no text
+        a = Photo.objects.get(post=post, rel_path='a.png')
+        self.assertIn(f'href="/create/?photo={a.pk}"', html)               # not generated: just the picture
         self.assertIn('id="aiedit-backdrop"', html)
         for ph in Photo.objects.filter(post=post, rel_path__in=['a.png', 'e.jpg']):
             self.assertIn(f'data-photo-id="{ph.pk}"', html)
@@ -2260,7 +2262,8 @@ class ComfyEditPageTests(TestCase):
         self.assertIn(f'href="/post/{src.pk}/" style="font-size:.75rem;" title="open the post this AI edit was made from">&#10548; original #{src.pk}</a>', html)
         self.assertIn(f"location.href='/post/{src.pk}/'\" title=\"open the original post\"", html)
         self.assertIn('add &lt;glasses&gt;', html)                          # request is escaped
-        self.assertIn(f'aiedit={item.pk}&req=add%20%3Cglasses%3E', html)    # "edit again" prefilled
+        self.assertIn(f'href="/create/?from={new.pk}"', html)               # "again in ✨ create"
+        self.assertIn(f'href="/create/?photo={new.images.first().pk}&amp;from={new.pk}"', html)   # ✎ keeps the settings
         self.assertIn(f'#{new.pk}</a>', self.client.get(f'/post/{src.pk}/').content.decode())
 
     def test_deleting_the_source_keeps_the_edit(self):
@@ -2465,7 +2468,7 @@ class ComfyLoraEndpointTests(TestCase):
         self.assertEqual((d['gen_info']['loras'][0]['words'], d['source_photo']), (['hayasaka ai, side ponytail'], self.photo.pk))
         html = self.client.get(f'/post/{new.pk}/').content.decode()
         self.assertIn('<b>LoRA</b> Hayasaka Ai × 0.9 — hayasaka ai, side ponytail', html)
-        self.assertIn(f'&from={new.pk}', html)
+        self.assertIn(f'/create/?from={new.pk}', html)
 
     def test_unknown_lora_is_refused(self):
         r, gen = self._edit({'photo_id': self.photo.pk, 'request': 'x', 'loras': [{'name': 'evil.safetensors'}]})
@@ -3156,8 +3159,8 @@ class ComfyCreateTests(TestCase):
         Photo.objects.create(post=made, order=0, rel_path='m.png', width=64, height=48, rel_thumb_path='m.png')
         add_tags_to_post(made, ['ai_create'], category='meta')
         html = self.client.get(f'/create/?photo={ph.pk}').content.decode()
-        self.assertIn(f'data-photo="{ph.pk}"', html)
-        self.assertIn(f'/create/?from={made.pk}', html)
+        self.assertIn(f'const CR_INIT_SRC = {{photo_id: {ph.pk},', html)
+        self.assertIn(f'data-post="{made.pk}"', html)
         self.assertIn("makeLoraPicker('cr'", html)
 
     def test_finished_create_task_stays_listed(self):
@@ -3165,3 +3168,100 @@ class ComfyCreateTests(TestCase):
                                 finished_at=timezone.now() - timezone.timedelta(hours=2))
         ids = [x['id'] for x in self.client.get('/api/tasks/').json()['tasks']]
         self.assertIn(t.pk, ids)
+
+    # brackets, uploads, gen-info, gauges, live progress
+    def test_forced_terms(self):
+        self.assertEqual(comfy.forced_terms('girl (blue hair) and ((glasses, red eyes)) (smile:1.5)'),
+                         [('blue hair', 1.2), ('glasses', 1.4), ('red eyes', 1.4), ('smile', 1.5)])
+        self.assertEqual(comfy.strip_forced('girl (blue hair), (smile:1.5)'), 'girl blue hair , smile')
+        self.assertEqual(comfy.forced_text([('blue hair', 1.2)]), '(blue hair:1.2)')
+        with mock.patch.object(comfy, '_ollama_json', side_effect=ValueError('x')):
+            p = comfy.plan_prompt('girl (blue hair)')
+        self.assertIn('blue hair', p['tags'])
+
+    def test_plan_puts_forced_terms_first_and_weighted(self):
+        d, _pg = self._plan({'description': 'hayasaka ai as a maid ((maid))'},
+                            plan={'characters': [], 'tags': ['1girl', 'maid'], 'negative': [], 'orientation': 'portrait',
+                                  'note': '', 'source': 'llm'}, picks={})
+        self.assertEqual(d['positive'], '(maid:1.4), 1girl')
+        self.assertEqual(d['forced'], ['maid'])
+
+    def test_upload_source_then_create_from_it(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        r = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('x.webp', _png((30, 20)), 'image/png')})
+        d = r.json()
+        self.assertTrue(d['ok'], d)
+        self.assertRegex(d['upload'], r'^ai_create/inputs/[0-9a-f]{32}\.png$')
+        self.assertEqual((d['width'], d['height']), (30, 20))
+        self.assertEqual(Post.objects.count(), 0)                                 # an input, not a post
+        bad = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('x.png', b'nope', 'image/png')})
+        self.assertEqual(bad.status_code, 400)
+        r, gen, i2i = self._create({'positive': '1girl', 'src_upload': d['upload'], 'denoise': 0.5})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(i2i.call_args[0][0], os.path.join(self.tmp, d['upload']))
+        new = Post.objects.get()
+        self.assertEqual((new.gen_info['source_upload'], new.source_photo_id), (d['upload'], None))
+        g = self.client.get(f'/api/post/{new.pk}/gen-info/').json()
+        self.assertEqual(g['source']['upload'], d['upload'])
+        self.assertEqual(len(g['images']), 1)
+        for bad_up in ('../../etc/passwd', 'ai_create/inputs/' + '0' * 32 + '.png'):
+            self.assertEqual(self._post('/api/comfy/create/', {'positive': 'x', 'src_upload': bad_up}).status_code, 404)
+
+    def test_gen_info_of_a_from_scratch_picture_has_no_source(self):
+        self._create({'positive': '1girl'})
+        g = self.client.get(f'/api/post/{Post.objects.get().pk}/gen-info/').json()
+        self.assertIsNone(g['source'])
+
+    def test_gpu_endpoint(self):
+        with mock.patch('gallery.ai_runtime.gpu_stats', return_value={'temp': 61.0, 'used_mb': 300.0, 'total_mb': 8192.0}), \
+             mock.patch.object(comfy, '_client', lambda timeout=10.0: httpx.Client(transport=httpx.MockTransport(
+                 lambda r: httpx.Response(200, json={'models': [{'name': 'm:4b', 'size_vram': 0}]})))):
+            d = self.client.get('/api/comfy/gpu/').json()
+        self.assertEqual((d['gpu']['temp'], d['ollama']), (61.0, [{'name': 'm:4b', 'gpu': False}]))
+
+    def test_progress_watcher_reads_websocket_frames(self):
+        import socket, threading
+        srv = socket.socket(); srv.bind(('127.0.0.1', 0)); srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def frame(obj):
+            data = json.dumps(obj).encode()
+            return bytes([0x81, len(data)]) + data if len(data) < 126 else bytes([0x81, 126]) + len(data).to_bytes(2, 'big') + data
+
+        def serve():
+            c, _ = srv.accept()
+            req = b''
+            while b'\r\n\r\n' not in req:
+                req += c.recv(1024)
+            c.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+            c.sendall(bytes([0x82, 3]) + b'abc')                                  # binary preview: ignored
+            c.sendall(frame({'type': 'progress', 'data': {'value': 1, 'max': 8, 'prompt_id': 'other'}}))
+            c.sendall(frame({'type': 'progress', 'data': {'value': 3, 'max': 8, 'prompt_id': 'p1'}}))
+            c.sendall(frame({'type': 'progress', 'data': {'value': 8, 'max': 8, 'prompt_id': 'p1', 'pad': 'x' * 200}}))
+            c.sendall(bytes([0x88, 0])); c.close()
+        threading.Thread(target=serve, daemon=True).start()
+        got, done = [], threading.Event()
+
+        def step(v, m):
+            got.append((v, m))
+            if v == m:
+                done.set()
+        w = comfy.ProgressWatcher({'comfy_url': f'http://127.0.0.1:{port}'}, step)
+        w.prompt_id = 'p1'
+        w.start()
+        self.assertTrue(done.wait(5))
+        w.stop(); srv.close()
+        self.assertEqual(got, [(3, 8), (8, 8)])
+        self.assertTrue(w.client_id.startswith('booru-'))
+
+    def test_create_task_reports_step_progress(self):
+        def fake_gen(*a, **kw):
+            kw['step'](4, 8)
+            return _png((40, 60)), {}
+        with mock.patch.object(comfy, 'generate_txt2img', side_effect=fake_gen), \
+             mock.patch.object(comfy, 'free_comfy', return_value=True), \
+             mock.patch.object(views, 'apply_ai_tags'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            self._post('/api/comfy/create/', {'positive': '1girl', 'count': 2})
+        t = Task.objects.get(kind='comfy_create')
+        self.assertEqual((t.done, t.total), (210, 210))

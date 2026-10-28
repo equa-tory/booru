@@ -533,7 +533,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
     <div class="scroll-container" id="scroll-container">
       {% for img in images %}
       <div class="scroll-item" data-photo-id="{{ img.pk }}">
-      {% if comfy_enabled and not img.is_video and not img.is_pdf and not img.is_gif %}<button type="button" class="ai-edit-btn" onclick="event.stopPropagation();openAiEdit(this)" ontouchend="event.stopPropagation()" title="AI edit: re-draw this image with your changes (new post)" aria-label="AI edit">&#9998;</button>{% endif %}
+      {% if comfy_enabled and not img.is_video and not img.is_pdf and not img.is_gif %}<a class="ai-edit-btn" href="/create/?photo={{ img.id }}{% if post.gen_info %}&amp;from={{ post.pk }}{% endif %}" onclick="event.stopPropagation()" ontouchend="event.stopPropagation()" title="✨ create with this picture as the source (add details / change it){% if post.gen_info %} — with the settings it was made with{% endif %}" aria-label="AI create from this picture">&#9998;</a>{% endif %}
       {% if img.is_video %}
       <video class="scroll-img" src="{{ img.media_url }}" controls loop playsinline preload="{% if images|length == 1 %}metadata{% else %}none{% endif %}"
              {% if img.thumb_url %}poster="{{ img.thumb_url }}"{% endif %}
@@ -590,7 +590,7 @@ input[type=range].size-slider { flex:1; accent-color:var(--accent); cursor:point
           <div>{{ gen_info.checkpoint }}</div>
           {% if gen_took %}<div><b>took</b> {{ gen_took }}{% if gen_timings %} ({{ gen_timings }}){% endif %}</div>{% endif %}
         </div>
-        {% if edit_source and edit_source.photo_id %}<button class="btn" style="margin-top:.4rem;font-size:.72rem;" onclick="location.href='/post/{{ edit_source.id }}/?aiedit={{ edit_source.photo_id }}&req={{ gen_info.request|urlencode }}&den={{ gen_info.denoise }}&from={{ post.pk }}'" title="open the source post with the AI edit box filled in again (same request, strength and LoRAs)">&#9998; edit again</button>{% endif %}
+        <a class="btn" style="margin-top:.4rem;font-size:.72rem;" href="/create/?from={{ post.pk }}" title="open ✨ create with everything this picture was made with (description, prompt, LoRAs, settings, source image)">&#9998; again in &#10024; create</a>
       </details>
       {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.6rem;">

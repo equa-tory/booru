@@ -207,6 +207,29 @@ def gpu_info():
         return None
 
 
+_stats_cache = {'t': 0.0, 'v': None}
+
+
+def gpu_stats():
+    """{'name','temp','used_mb','total_mb','util','power'} for the live gauges (create page),
+    cached 2 s per process so several open pages don't run nvidia-smi constantly; None
+    when unavailable."""
+    if _now() - _stats_cache['t'] < 2:
+        return _stats_cache['v']
+    v = None
+    try:
+        r = subprocess.run(['nvidia-smi', '--query-gpu=name,temperature.gpu,memory.used,memory.total,utilization.gpu,power.draw',
+                            '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=3)
+        name, temp, used, total, util, power = [x.strip() for x in r.stdout.strip().splitlines()[0].split(',')]
+        num = lambda x: float(x) if x.replace('.', '', 1).isdigit() else None     # "[N/A]" on some cards
+        v = {'name': name, 'temp': num(temp), 'used_mb': num(used), 'total_mb': num(total),
+             'util': num(util), 'power': num(power)}
+    except Exception:                        # noqa: BLE001
+        v = None
+    _stats_cache.update(t=_now(), v=v)
+    return v
+
+
 _last_idle_check = 0.0
 
 

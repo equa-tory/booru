@@ -365,18 +365,54 @@ def parse_plan(data):
             'orientation': orient, 'note': str(data.get('note') or '')[:300]}
 
 
+FORCE_WEIGHTS = {1: 1.2, 2: 1.4}
+_FORCED_RE = re.compile(r'(\({1,2})([^()]+?)(\){1,2})')
+
+
+def forced_terms(text):
+    """Bracketed parts of a description must end up in the prompt: "girl (blue hair)" ->
+    [('blue hair', 1.2)], "((red eyes, glasses))" -> [('red eyes', 1.4), ('glasses', 1.4)].
+    A part that already carries an explicit weight (`(x:1.5)`) keeps it."""
+    out, seen = [], set()
+    for m in _FORCED_RE.finditer(str(text or '')):
+        depth = min(len(m.group(1)), len(m.group(3)), 2)
+        inner, weight = m.group(2), FORCE_WEIGHTS[depth]
+        wm = re.match(r'^(.*):\s*([0-9]*\.?[0-9]+)\s*$', inner)
+        if wm:
+            inner, weight = wm.group(1), min(2.0, max(0.1, float(wm.group(2))))
+        for part in inner.split(','):
+            t = clean_tags([part])
+            if t and t[0] not in seen:
+                seen.add(t[0])
+                out.append((t[0], weight))
+    return out
+
+
+def strip_forced(text):
+    """The description with the bracket marks removed (words kept), for the LLM / fallback."""
+    return re.sub(r'\s+', ' ', re.sub(r':\s*[0-9]*\.?[0-9]+\s*\)', ')', str(text or '')).replace('(', ' ').replace(')', ' ')).strip()
+
+
+def forced_text(forced):
+    return ', '.join(f'({escape_tag(t)}:{w:g})' for t, w in forced)
+
+
 def plan_prompt(description, cfg=None, current_tags=None):
     """Description (+ the source picture's tags) -> plan dict + 'source' ('llm'/'fallback').
     Never raises: without a usable answer the description's comma parts become the tags."""
     cfg = cfg or config()
-    user = 'Request: ' + description.strip()
+    forced = [t for t, _w in forced_terms(description)]
+    description = strip_forced(description)
+    user = 'Request: ' + description
+    if forced:
+        user += '\nMust be in "tags": ' + ', '.join(forced)
     if current_tags:
         user = 'Source picture tags: ' + ', '.join(clean_tags(current_tags)[:60]) + '\n' + user
     try:
         plan = parse_plan(_ollama_json(cfg, PLAN_SYSTEM_PROMPT, user, PLAN_SCHEMA))
         plan['source'] = 'llm'
     except Exception as e:
-        plan = {'characters': [], 'tags': clean_tags(description.split(',')), 'negative': [],
+        plan = {'characters': [], 'tags': clean_tags(description.split(',') + forced), 'negative': [],
                 'orientation': 'portrait', 'source': 'fallback',
                 'note': f'Ollama gave no usable answer ({str(e)[:120]}) — your text was used as is'}
     return plan
@@ -620,11 +656,120 @@ def upload_image(path, cfg=None):
     return f'{sub}/{j["name"]}' if sub else j['name']
 
 
-def queue_prompt(wf, cfg=None):
+class ProgressWatcher:
+    """Reads ComfyUI's websocket (stdlib only: no websocket package in the venv) and calls
+    `on_step(value, max)` for the sampler steps of OUR prompt. ComfyUI sends progress only
+    to the client id that queued the prompt, so `queue_prompt` must use `self.client_id`.
+    Best effort: any error just ends the thread (the job itself never depends on it)."""
+
+    def __init__(self, cfg, on_step):
+        import threading
+        import uuid
+        self.cfg, self.on_step = cfg, on_step
+        self.client_id = 'booru-' + uuid.uuid4().hex[:12]
+        self.prompt_id = None
+        self._stop = threading.Event()
+        self._sock = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self, timeout=3.0):
+        self._thread.start()
+        self._ready.wait(timeout)              # connected before the prompt is queued, or no progress
+        return self
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._sock:
+                self._sock.close()
+        except OSError:
+            pass
+
+    def _run(self):
+        import base64
+        import socket
+        import struct
+        from urllib.parse import urlparse
+        try:
+            u = urlparse(self.cfg['comfy_url'])
+            s = socket.create_connection((u.hostname, u.port or 80), timeout=5)
+            self._sock = s
+            key = base64.b64encode(os.urandom(16)).decode()
+            s.sendall((f'GET /ws?clientId={self.client_id} HTTP/1.1\r\nHost: {u.hostname}:{u.port or 80}\r\n'
+                       f'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
+                       f'Sec-WebSocket-Version: 13\r\n\r\n').encode())
+            buf = b''
+            while b'\r\n\r\n' not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+            head, buf = buf.split(b'\r\n\r\n', 1)
+            if b' 101 ' not in head.split(b'\r\n', 1)[0]:
+                return
+            self._ready.set()
+            s.settimeout(1.0)
+
+            def read(n):
+                nonlocal buf
+                while len(buf) < n:
+                    if self._stop.is_set():
+                        raise EOFError
+                    try:
+                        chunk = s.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        raise EOFError
+                    buf += chunk
+                out, buf = buf[:n], buf[n:]
+                return out
+            while not self._stop.is_set():
+                b1, b2 = read(2)
+                op, n = b1 & 0x0F, b2 & 0x7F
+                if n == 126:
+                    n = struct.unpack('>H', read(2))[0]
+                elif n == 127:
+                    n = struct.unpack('>Q', read(8))[0]
+                mask = read(4) if b2 & 0x80 else None
+                data = read(n)
+                if mask:
+                    data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+                if op == 8:
+                    return
+                if op == 9:                    # ping -> masked pong
+                    m = os.urandom(4)
+                    s.sendall(bytes([0x8A, 0x80 | len(data)]) + m + bytes(c ^ m[i % 4] for i, c in enumerate(data)))
+                    continue
+                if op != 1:                    # binary = latent previews, ignored
+                    continue
+                try:
+                    msg = json.loads(data)
+                except ValueError:
+                    continue
+                d = msg.get('data') or {}
+                if msg.get('type') == 'progress' and (self.prompt_id is None or d.get('prompt_id') in (None, self.prompt_id)):
+                    try:
+                        self.on_step(int(d.get('value', 0)), int(d.get('max', 0)))
+                    except Exception:
+                        pass
+        except (OSError, EOFError, ValueError, struct.error):
+            pass
+        finally:
+            self._ready.set()
+            try:
+                if self._sock:
+                    self._sock.close()
+            except OSError:
+                pass
+
+
+def queue_prompt(wf, cfg=None, client_id='booru'):
     cfg = cfg or config()
     try:
         with _client(30.0) as c:
-            r = c.post(cfg['comfy_url'] + '/prompt', json={'prompt': wf, 'client_id': 'booru'})
+            r = c.post(cfg['comfy_url'] + '/prompt', json={'prompt': wf, 'client_id': client_id})
     except httpx.HTTPError as e:
         raise ComfyError(f'ComfyUI not reachable ({e.__class__.__name__})')
     if r.status_code != 200:
@@ -736,9 +881,9 @@ def unload_ollama(cfg=None):
         pass
 
 
-def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, progress=None, loras=()):
+def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, progress=None, loras=(), step=None):
     """Upload `src_path`, run the img2img workflow (with `loras` = [(name, strength)]),
-    return (png_bytes, workflow_used)."""
+    return (png_bytes, workflow_used). `step(value, max)` gets live sampler progress."""
     cfg = cfg or config()
     stat = status_light(cfg)
     if progress:
@@ -746,26 +891,33 @@ def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, 
     unload_ollama(cfg)
     name = upload_image(src_path, cfg)
     wf = build_img2img(name, positive, negative, seed, cfg, denoise, loras=loras, temp_node=stat['temp_node'])
-    return _run_workflow(wf, cfg, check, progress), wf
+    return _run_workflow(wf, cfg, check, progress, step), wf
 
 
-def generate_txt2img(positive, negative, seed, width, height, cfg=None, check=None, progress=None, loras=()):
+def generate_txt2img(positive, negative, seed, width, height, cfg=None, check=None, progress=None, loras=(), step=None):
     """Run the txt2img workflow (a NEW picture); returns (png_bytes, workflow_used)."""
     cfg = cfg or config()
     stat = status_light(cfg)
     unload_ollama(cfg)
     wf = build_txt2img(positive, negative, seed, cfg, width, height, loras=loras, temp_node=stat['temp_node'])
-    return _run_workflow(wf, cfg, check, progress), wf
+    return _run_workflow(wf, cfg, check, progress, step), wf
 
 
-def _run_workflow(wf, cfg, check, progress):
+def _run_workflow(wf, cfg, check, progress, step=None):
     problems = workflow_problems(wf)
     if problems:
         raise ComfyError('internal workflow error: ' + problems[0])
-    pid = queue_prompt(wf, cfg)
-    if progress:
-        progress('generating…')
-    desc = wait_for_result(pid, cfg, check=check, progress=progress)
+    watcher = ProgressWatcher(cfg, step).start() if step else None
+    try:
+        pid = queue_prompt(wf, cfg, watcher.client_id if watcher else 'booru')
+        if watcher:
+            watcher.prompt_id = pid
+        if progress:
+            progress('generating…')
+        desc = wait_for_result(pid, cfg, check=check, progress=progress)
+    finally:
+        if watcher:
+            watcher.stop()
     return fetch_output(desc, cfg)
 
 

@@ -3637,9 +3637,23 @@ def _save_generated(pngs, subdir, base, title, meta_tag, gen_info, src_post=None
 
 
 def post_gen_info(request, pk):
+    """A generated post's settings (+ its pictures and its source picture, for the create
+    page's preview / restore)."""
     post = get_object_or_404(Post, pk=pk)
-    return JsonResponse({'ok': True, 'gen_info': post.gen_info or None,
-                         'source_post': post.source_post_id, 'source_photo': post.source_photo_id})
+    gi = post.gen_info or None
+    src = None
+    if post.source_photo_id and post.source_photo:
+        sp = post.source_photo
+        src = {'photo_id': sp.id, 'url': sp.media_url, 'thumb': sp.thumb_url or sp.media_url}
+    elif gi and gi.get('source_upload') and _UPLOAD_RE.match(gi['source_upload']) \
+            and os.path.isfile(os.path.join(settings.MEDIA_ROOT, gi['source_upload'])):
+        u = _media_url(gi['source_upload'])
+        src = {'upload': gi['source_upload'], 'url': u, 'thumb': u}
+    images = [{'id': p.id, 'url': p.media_url, 'thumb': p.thumb_url or p.media_url}
+              for p in post.images.order_by('order', 'id') if not (p.is_video or p.is_pdf)][:12]
+    return JsonResponse({'ok': True, 'gen_info': gi, 'id': post.id, 'title': post.title,
+                         'source_post': post.source_post_id, 'source_photo': post.source_photo_id,
+                         'source': src, 'images': images})
 
 
 @require_POST
@@ -3779,7 +3793,7 @@ def create_page(request):
     try:
         p = Photo.objects.select_related('post').get(pk=int(request.GET['photo']))
         if not (p.is_video or p.is_pdf or p.is_gif):
-            src = {'id': p.id, 'thumb': p.thumb_url or p.media_url, 'post': p.post_id}
+            src = {'id': p.id, 'thumb': p.thumb_url or p.media_url, 'url': p.media_url, 'post': p.post_id}
     except (KeyError, ValueError, Photo.DoesNotExist):
         pass
     recent = (Post.objects.filter(tags__name__in=['ai_create', 'ai_edit'], tags__category='meta')
@@ -3803,11 +3817,93 @@ def _canon_characters(names):
     return list(dict.fromkeys(out))
 
 
-def _source_photo(body):
-    """(photo or None, error response or None) for an optional source image."""
+CREATE_INPUTS = 'ai_create/inputs'
+_UPLOAD_RE = re.compile(r'^ai_create/inputs/[0-9a-f]{32}\.png$')
+
+
+def _create_source(body):
+    """Optional source image of a creation: a library item (`photo_id`) or a dropped file
+    (`src_upload`, saved by `comfy_upload_source`). Returns (source dict or None, error
+    response or None); source = {'path', 'photo' (or None), 'upload' (or None)}."""
+    up = str(body.get('src_upload') or '')
+    if up:
+        if not _UPLOAD_RE.match(up) or not os.path.isfile(os.path.join(settings.MEDIA_ROOT, up)):
+            return None, _err('the uploaded source image is gone — drop it again', 404)
+        return {'path': os.path.join(settings.MEDIA_ROOT, up), 'photo': None, 'upload': up}, None
     if body.get('photo_id') in (None, '', 0, '0'):
         return None, None
-    return _editable_photo(body)
+    photo, err = _editable_photo(body)
+    if err:
+        return None, err
+    return {'path': photo.file_path, 'photo': photo, 'upload': None}, None
+
+
+def _source_tags(src):
+    """What the source picture shows now (tagger, + the post's tags for a library item)."""
+    if src['photo']:
+        return _edit_current_tags(src['photo'])
+    try:
+        res = run_ai_tagger(src['path'], src['path'])
+        return res.get('character', []) + res.get('general', [])
+    except Exception as e:
+        print(f'create: tagger failed for {src["upload"]}: {e}')
+        return []
+
+
+@require_POST
+def comfy_upload_source(request):
+    """A picture dropped on the create page -> MEDIA_ROOT/ai_create/inputs/<md5>.png (not a
+    post: it is only an input). The same picture always gets the same name."""
+    f = request.FILES.get('file')
+    if not f:
+        return _err('no file')
+    if f.size > 40 * 1024 * 1024:
+        return _err('the picture is too big (max 40 MB)')
+    import hashlib
+    import io
+    from PIL import Image, ImageOps
+    try:
+        with Image.open(f) as im:
+            im = ImageOps.exif_transpose(im)
+            if getattr(im, 'is_animated', False):
+                im.seek(0)
+            im = im.convert('RGBA') if im.mode in ('RGBA', 'LA', 'P') else im.convert('RGB')
+            if im.mode == 'RGBA':
+                bg = Image.new('RGB', im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[3])
+                im = bg
+            buf = io.BytesIO()
+            im.save(buf, 'PNG')
+            w, h = im.size
+    except Exception:
+        return _err('not a picture')
+    data = buf.getvalue()
+    rel = f'{CREATE_INPUTS}/{hashlib.md5(data).hexdigest()}.png'
+    path = os.path.join(settings.MEDIA_ROOT, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, 'wb') as out:
+            out.write(data)
+    return JsonResponse({'ok': True, 'upload': rel, 'url': _media_url(rel), 'width': w, 'height': h})
+
+
+def comfy_gpu(request):
+    """Live gauges for the create page: GPU temperature / VRAM / load / power, and where
+    the loaded Ollama models run (GPU or CPU)."""
+    from . import ai_runtime
+    ollama = []
+    try:
+        cfg = comfy.config()
+        with comfy._client(1.5) as c:
+            for m in c.get(cfg['ollama_url'] + '/api/ps').json().get('models', []):
+                ollama.append({'name': m.get('name', ''), 'gpu': (m.get('size_vram') or 0) > 0})
+    except Exception:
+        ollama = None
+    return JsonResponse({'ok': True, 'gpu': ai_runtime.gpu_stats(), 'ollama': ollama})
+
+
+def _media_url(rel):
+    return settings.MEDIA_URL + quote(rel)
 
 
 @require_POST
@@ -3819,18 +3915,20 @@ def comfy_plan(request):
     text = str(body.get('description') or '').strip()
     if not text:
         return _err('describe the picture')
-    photo, err = _source_photo(body)
+    src, err = _create_source(body)
     if err:
         return err
     cfg = comfy.config()
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
     t0 = time.time()
-    cur = _edit_current_tags(photo) if photo else None
+    cur = _source_tags(src) if src else None
     plan = comfy.plan_prompt(text, cfg, cur)
     chars = _canon_characters(plan['characters'])
-    if photo:
-        chars = list(dict.fromkeys(chars + _char_tags_for(photo, cur)))
+    if src and src['photo']:
+        chars = list(dict.fromkeys(chars + _char_tags_for(src['photo'], cur)))
+    elif cur:
+        chars = list(dict.fromkeys(chars + list(Tag.objects.filter(name__in=cur, category='character').values_list('name', flat=True))))
     try:
         catalog = comfy.lora_catalog(cfg)
     except Exception:
@@ -3862,11 +3960,16 @@ def comfy_plan(request):
         j['sel_groups'] = picks.get(it['name'], [])
         j['why'] = (it.get('reason') or 'your pick') + (' · ' + how_text[how[it['name']]] if len(it['groups']) > 1 else '')
         selected.append(j)
-    positive = comfy.join_prompt(chars, plan['tags'])
+    # "(blue hair)" in the description: forced in, weighted, first
+    forced = comfy.forced_terms(text)
+    gone = {comfy._norm(t) for t, _w in forced}
+    positive = comfy.join_prompt(comfy.forced_text(forced), [c for c in chars if comfy._norm(c) not in gone],
+                                 [t for t in plan['tags'] if comfy._norm(t) not in gone])
     return JsonResponse({
         'ok': True, 'positive': positive, 'negative': ', '.join(comfy.escape_tag(t) for t in plan['negative']),
         'orientation': plan['orientation'], 'note': plan['note'], 'source': plan['source'],
         'characters': chars, 'model': cfg['ollama_model'], 'seconds': round(time.time() - t0, 1),
+        'forced': [t for t, _w in forced],
         'selected': selected, 'suggested': [_lora_json(i) for i in sug if i['name'] not in taken],
     })
 
@@ -3883,7 +3986,7 @@ def comfy_create(request):
         return _err('no prompt — plan it first or type one')
     if not _comfy_enabled():
         return _err('AI edit is switched off in settings')
-    photo, err = _source_photo(body)
+    src, err = _create_source(body)
     if err:
         return err
     busy = _comfy_busy()
@@ -3920,18 +4023,21 @@ def comfy_create(request):
     triggers = comfy.trigger_text([w for l in loras for w in l['words']])
     positive = comfy.join_prompt(cfg['quality'], triggers, comfy.drop_terms(pos_text, triggers))
     negative = comfy.join_prompt(cfg['negative'], comfy.drop_terms(neg_text, triggers))
-    photo_id = photo.id if photo else None
+    photo_id = src['photo'].id if src and src['photo'] else None
+    src_path = src['path'] if src else None
+    src_upload = src['upload'] if src else None
+    total_units = count * 100 + 10          # progress: 100 per picture (sampler steps) + saving/tagging
 
     def work(task):
         from . import ai_runtime
         t0 = time.time()
-        task.total = count + 1; task.done = 0
+        task.total = total_units; task.done = 0
         task.save(update_fields=['total', 'done'])
         try:
             ai_runtime.force_unload()            # this worker's tagger sessions: the SDXL checkpoint needs the VRAM
         except Exception:
             pass
-        src = Photo.objects.select_related('post').get(pk=photo_id) if photo_id else None
+        photo = Photo.objects.select_related('post').get(pk=photo_id) if photo_id else None
         pngs = []
         for i in range(count):
             check_cancel(task)
@@ -3950,14 +4056,22 @@ def comfy_create(request):
             def progress(msg):
                 task.message = f'{label}: {msg}'
                 task.save(update_fields=['message'])
-            if src:
-                png, _wf = comfy.generate(src.file_path, positive, negative, seed + i, den, run_cfg,
-                                          check=check, progress=progress, loras=run_loras)
+
+            def step(value, mx, i=i, label=label):     # live sampler steps from ComfyUI's websocket
+                if mx <= 0:
+                    return
+                task._beat = time.time()
+                task.done = i * 100 + min(99, int(value * 100 / mx))
+                task.message = f'{label}: step {value}/{mx}'
+                task.save(update_fields=['done', 'message'])
+            if src_path:
+                png, _wf = comfy.generate(src_path, positive, negative, seed + i, den, run_cfg,
+                                          check=check, progress=progress, loras=run_loras, step=step)
             else:
                 png, _wf = comfy.generate_txt2img(positive, negative, seed + i, width, height, run_cfg,
-                                                  check=check, progress=progress, loras=run_loras)
+                                                  check=check, progress=progress, loras=run_loras, step=step)
             pngs.append(png)
-            task.done = i + 1
+            task.done = (i + 1) * 100
             task.save(update_fields=['done'])
         t_gen = time.time() - t0
         task.message = 'saving the new post…'
@@ -3965,11 +4079,11 @@ def comfy_create(request):
         new = _save_generated(pngs, 'ai_create', f'create_{seed}', 'AI: ' + (text or pos_text), 'ai_create', {
             'kind': 'create', 'request': text, 'positive': pos_text, 'negative': neg_text, 'seed': seed, 'count': count,
             'orientation': orientation, 'size': size, 'width': width, 'height': height, 'fast': fast,
-            'denoise': den if src else None, 'source_photo': src.id if src else None,
+            'denoise': den if src_path else None, 'source_photo': photo_id, 'source_upload': src_upload,
             'checkpoint': cfg['checkpoint'], 'steps': run_cfg['steps'], 'cfg': run_cfg['cfg'],
             'sampler': run_cfg['sampler'], 'scheduler': run_cfg['scheduler'], 'megapixels': cfg['megapixels'],
             'ollama_model': cfg['ollama_model'], 'loras': loras, 'triggers': triggers,
-        }, src.post if src else None, src)
+        }, photo.post if photo else None, photo)
         if cfg['free_after']:
             comfy.free_comfy(cfg)
         task.message = 'tagging the new post…'
@@ -3983,9 +4097,9 @@ def comfy_create(request):
         new.gen_info['seconds'] = int(total)
         new.gen_info['timings'] = {'generate': round(t_gen), 'tagging': round(time.time() - t_tag0), 'total': round(total)}
         new.save(update_fields=['gen_info'])
-        task.done = count + 1
+        task.done = total_units
         task.message = f'done in {int(total)}s → post #{new.id}'
         task.save(update_fields=['done', 'message'])
 
-    task = _start_task('comfy_create', work, total=count + 1, message='starting…', exclusive=True)
+    task = _start_task('comfy_create', work, total=total_units, message='starting…', exclusive=True)
     return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height})
