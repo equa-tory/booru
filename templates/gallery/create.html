@@ -134,7 +134,7 @@
         <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="the AI writes the prompt and picks LoRAs (for the painted area only, if something is painted) — check them, then generate">&#10024; plan</button>
         <button class="btn" id="cr-remove-btn" onclick="crRemove()" disabled title="paint over something on the source picture first; it is removed in one click (filled from its surroundings)">&#129533; remove painted</button>
         <button class="btn primary" id="cr-run-btn" onclick="crGo()" title="plans first if needed (the painted area only, if something is painted), then makes the picture">&#9889; generate</button>
-        <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the form (description, prompt, LoRAs, source); settings stay">&#10005;</button>
+        <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the description, prompt and LoRAs (the source picture and painting stay; settings stay)">&#10005;</button>
       </div>
       <div class="cr-status" id="cr-status"></div>
     </div>
@@ -526,8 +526,8 @@ function crLoadDraft(keepSource) {
 function crClearForm() {
   ['cr-desc', 'cr-pos', 'cr-neg', 'cr-seed'].forEach(id => crEl(id).value = '');
   crEl('cr-note').textContent = '';
-  crPick.clear(); crSetSource(null); crPlanned = false;
-  crSaveDraft(); crStatus('form cleared');
+  crPick.clear(); crPlanned = false;          // the source picture and its painting stay (✕ / clear in the picture's toolbar)
+  crSaveDraft(); crStatus('text, prompt and LoRAs cleared — the source picture and painting stay');
 }
 /* ── 🖌 remove: paint a mask over the source (canvas = the picture's size, max 1600 px) ── */
 let crPaintSrc = null, crErasing = false;
