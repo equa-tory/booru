@@ -57,6 +57,12 @@
   .cr-recent img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .cr-recent .n { position: absolute; left: 3px; top: 3px; font-family: var(--mono); font-size: .58rem; padding: .05rem .3rem;
     border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; }
+  .cr-paint-wrap { position: relative; margin-top: .5rem; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg3); }
+  .cr-paint-wrap img { width: 100%; height: auto; display: block; }
+  .cr-paint-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; touch-action: none; cursor: crosshair; }
+  .cr-paint-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin-top: .45rem; font-family: var(--mono); font-size: .72rem; color: var(--text-dim); }
+  .cr-paint-tools input[type=range] { flex: 1; min-width: 6rem; }
+  .cr-paint-tools .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .cr-h2 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 0 0 .5rem; }
 </style>
 {% include "gallery/_lora_picker_assets.html" %}
@@ -87,6 +93,20 @@
       <div id="cr-den-row" style="display:none;">
         <label class="ae-l" for="cr-den">how much may change: <b id="cr-den-val">0.55</b> <span style="opacity:.7;">(low = add details, high = re-draw)</span></label>
         <input type="range" id="cr-den" min="0.2" max="0.9" step="0.05" value="0.55" style="width:100%;" oninput="crEl('cr-den-val').textContent=(+this.value).toFixed(2)">
+      </div>
+      <div id="cr-paint-row" style="display:none;">
+        <div class="cr-actions"><button class="btn" id="cr-paint-btn" onclick="crPaintToggle()"
+             title="remove things from the picture: paint over them, everything else stays exactly the same">&#128396; paint what to remove</button></div>
+        <div id="cr-painter" style="display:none;">
+          <div class="cr-paint-wrap"><img id="cr-paint-img" alt=""><canvas id="cr-paint-cv"></canvas></div>
+          <div class="cr-paint-tools">
+            brush <input type="range" id="cr-brush" min="4" max="160" value="36">
+            <button class="btn" id="cr-erase" onclick="crPaintErase()" title="eraser: un-paint">eraser</button>
+            <button class="btn" onclick="crPaintClear()">clear</button>
+          </div>
+          <div class="cr-sub" style="margin:.4rem 0 0;">Paint over what should disappear (a bit past its edges). A light's glow and rays are removed automatically. Only the painted parts change.</div>
+          <div class="cr-actions"><button class="btn primary" id="cr-remove-btn" onclick="crRemove()">&#129533; remove painted</button></div>
+        </div>
       </div>
 
       <div class="cr-actions">
@@ -180,6 +200,9 @@ function crSetSource(s) {
   if (crSource) img.src = crSource.thumb || crSource.url;
   crEl('cr-src-x').style.display = crSource ? '' : 'none';
   crEl('cr-den-row').style.display = crSource ? '' : 'none';
+  crEl('cr-paint-row').style.display = crSource ? '' : 'none';
+  crEl('cr-painter').style.display = 'none';
+  crPaintSrc = null;
   crEl('cr-src-txt').textContent = !crSource ? 'no source — a new picture is drawn from scratch'
     : (crSource.photo_id ? 'library picture #' + crSource.photo_id : 'dropped picture') + ' — it will be re-drawn with your description (tap to replace)';
   const u = new URL(location.href); u.searchParams.delete('photo');
@@ -327,7 +350,7 @@ async function crTick() {
 async function crResumeRunning() {         // page opened while a job runs: show its progress
   try {
     const d = await (await fetch('/api/tasks/')).json();
-    const t = (d.tasks || []).find(x => (x.kind === 'comfy_create' || x.kind === 'comfy_edit') && x.status === 'running');
+    const t = (d.tasks || []).find(x => ['comfy_create', 'comfy_edit', 'ai_remove'].includes(x.kind) && x.status === 'running');
     if (t) crFollow(t.id);
   } catch (e) {}
 }
@@ -452,6 +475,60 @@ function crClearForm() {
   crPick.clear(); crSetSource(null); crPlanned = false;
   crSaveDraft(); crStatus('form cleared');
 }
+/* ── 🖌 remove: paint a mask over the source (canvas = the picture's size, max 1600 px) ── */
+let crPaintSrc = null, crErasing = false;
+function crPaintToggle() {
+  const p = crEl('cr-painter'), open = p.style.display === 'none';
+  p.style.display = open ? '' : 'none';
+  if (open && crSource && crPaintSrc !== crSource.url) {
+    crPaintSrc = crSource.url;
+    const img = crEl('cr-paint-img');
+    img.onload = () => {
+      const cv = crEl('cr-paint-cv'), k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+    };
+    img.src = crSource.url;
+  }
+}
+function crPaintErase() { crErasing = !crErasing; crEl('cr-erase').classList.toggle('on', crErasing); }
+function crPaintClear() { const cv = crEl('cr-paint-cv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); }
+(function painter() {
+  const cv = crEl('cr-paint-cv'), ctx = cv.getContext('2d');
+  let last = null;
+  const pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height, cv.width / r.width]; };
+  const stroke = (a, b) => {
+    ctx.globalCompositeOperation = crErasing ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = ctx.fillStyle = '#ff0000';
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.lineWidth = +crEl('cr-brush').value * b[2];
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  };
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); last = pt(e); stroke(last, last); });
+  cv.addEventListener('pointermove', e => { if (!last) return; const p = pt(e); stroke(last, p); last = p; });
+  ['pointerup', 'pointercancel'].forEach(ev => cv.addEventListener(ev, () => { last = null; }));
+})();
+function crPaintEmpty() {
+  const cv = crEl('cr-paint-cv');
+  if (!cv.width) return true;
+  const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+  for (let i = 3; i < d.length; i += 64) if (d[i]) return false;
+  return true;
+}
+async function crRemove() {
+  if (!crSource) { crStatus('pick a source picture first', true); return; }
+  if (crPaintEmpty()) { crStatus('paint over what should disappear first', true); return; }
+  const b = {description: crEl('cr-desc').value.trim(), mask: crEl('cr-paint-cv').toDataURL('image/png')};
+  if (crSource.photo_id) b.photo_id = crSource.photo_id; else b.src_upload = crSource.upload;
+  const btn = crEl('cr-remove-btn'); btn.disabled = true;
+  try {
+    const d = await crPost('/api/comfy/remove/', b);
+    if (d.ok) { watchTask(d.task_id); pollTasks(true); crStatus('removing… the rest of the picture stays as it is'); crFollow(d.task_id); }
+    else if (d._status === 409) { crStatus('⚠ another AI job is still running — wait for it (or stop it)', true); crFollow(d.task_id); }
+    else crStatus('⚠ ' + (d.error || 'error'), true);
+  } catch (e) { crStatus('⚠ request failed', true); }
+  finally { btn.disabled = false; }
+}
+
 function crSaveUi() {
   try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value})); } catch (e) {}
 }

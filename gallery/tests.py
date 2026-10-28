@@ -3330,3 +3330,62 @@ class ComfyCreateTests(TestCase):
                             '-pix_fmt', 'yuv420p', vid], check=True)
             d = up('clip.dat', open(vid, 'rb').read(), '')
             self.assertTrue(d['ok'], d); self.assertEqual((d['width'], d['height']), (64, 48))
+
+    # 🖌 remove (LaMa) — fake model, real masking / tiling / pasting
+    def test_remover_changes_only_the_painted_area(self):
+        from PIL import Image, ImageDraw
+        from gallery import remover
+        import io as _io
+        rng = np.random.default_rng(1)
+        arr = rng.integers(0, 120, (300, 400, 3), dtype=np.uint8)
+        path = os.path.join(self.tmp, 'scene.png'); Image.fromarray(arr).save(path)
+        mask = Image.new('L', (200, 150), 0)                            # painted at half size (browser canvas)
+        ImageDraw.Draw(mask).rectangle([50, 40, 70, 60], fill=255)
+
+        class FakeLama:
+            def run(self, _o, feed):
+                return [np.full((1, 3, 512, 512), 200.0, dtype=np.float32)]
+        with mock.patch('gallery.ai_runtime.get_model', return_value=FakeLama()):
+            out = np.asarray(Image.open(_io.BytesIO(remover.remove(path, mask))).convert('RGB'))
+        self.assertEqual(out.shape, arr.shape)                           # full resolution kept
+        self.assertTrue((out[90:110, 110:130] > 150).all())              # painted area filled
+        far = np.ones(arr.shape[:2], bool); far[60:140, 80:160] = False
+        self.assertTrue((out[far] == arr[far]).all())                    # everything else: original pixels
+        with self.assertRaises(ValueError):
+            remover.remove(path, Image.new('L', (10, 10), 0))
+
+    def test_remover_finds_lights_and_tiles_tall_objects(self):
+        from gallery import remover
+        img = np.full((400, 400, 3), 20.0); img[100:110, 200:210] = 255
+        m = np.zeros((400, 400), np.uint8); m[95:115, 195:215] = 255
+        (x, y, r), = remover._lights(img, m, (190, 90, 220, 120))
+        self.assertEqual((x // 10, y // 10), (20, 10))
+        self.assertEqual(remover._lights(np.full((400, 400, 3), 90.0), m, (190, 90, 220, 120)), [])   # not bright: no light
+        ts = remover.tiles((500, 100, 530, 1300), 2000, 1500)            # a pole: a column of squares
+        self.assertGreater(len(ts), 2)
+        self.assertTrue(all(t[2] - t[0] == t[3] - t[1] for t in ts))
+        self.assertLessEqual(min(t[1] for t in ts), 100); self.assertGreaterEqual(max(t[3] for t in ts), 1300)
+
+    def test_remove_endpoint(self):
+        import base64
+        from PIL import Image, ImageDraw
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        up = self.client.post('/api/comfy/upload-source/', {'file': SimpleUploadedFile('a', _png((60, 40)), '')}).json()
+        m = Image.new('RGBA', (30, 20), (0, 0, 0, 0)); ImageDraw.Draw(m).ellipse([5, 5, 15, 15], fill=(255, 0, 0, 255))
+        buf = _io.BytesIO(); m.save(buf, 'PNG')
+        data = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+        with mock.patch('gallery.remover.is_ready', return_value=True), \
+             mock.patch('gallery.remover.remove', return_value=_png((60, 40))) as rm, \
+             mock.patch.object(views, 'apply_ai_tags'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            r = self._post('/api/comfy/remove/', {'src_upload': up['upload'], 'mask': data, 'description': 'lamp'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(rm.call_args[0][0], os.path.join(self.tmp, up['upload']))
+        self.assertEqual(rm.call_args[0][1].getbbox()[:2], (5, 5))     # the painted (alpha) area is the mask
+        new = Post.objects.get()
+        self.assertEqual((new.gen_info['kind'], new.gen_info['source_upload']), ('remove', up['upload']))
+        self.assertTrue(Task.objects.get(kind='ai_remove').message.endswith(f'→ post #{new.pk}'))
+        empty = Image.new('RGBA', (30, 20), (0, 0, 0, 0)); buf = _io.BytesIO(); empty.save(buf, 'PNG')
+        self.assertEqual(self._post('/api/comfy/remove/', {'src_upload': up['upload'],
+                         'mask': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()}).status_code, 400)
+        self.assertEqual(self._post('/api/comfy/remove/', {'mask': data}).status_code, 400)        # no source

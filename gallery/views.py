@@ -3105,7 +3105,7 @@ def custom_concept_delete(request, pk):
 
 
 # ── AI models panel: status / download / delete / main selector / free VRAM ──
-COMFY_TASK_KINDS = ['comfy_edit', 'comfy_create']      # one ComfyUI job at a time (8 GB card)
+COMFY_TASK_KINDS = ['comfy_edit', 'comfy_create', 'ai_remove']      # one AI picture job at a time (8 GB card)
 AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply'] + COMFY_TASK_KINDS
 
 
@@ -3878,6 +3878,79 @@ def comfy_upload_source(request):
         with open(path, 'wb') as out:
             out.write(data)
     return JsonResponse({'ok': True, 'upload': rel, 'url': _media_url(rel), 'width': w, 'height': h})
+
+
+@require_POST
+def comfy_remove(request):
+    """🖌 remove: the painted parts of the source picture are erased and filled from their
+    surroundings (LaMa, gallery/remover.py) — nothing else changes, full resolution. Body:
+    photo_id | src_upload, mask = PNG data URL (white = remove, any size). Result = new post."""
+    import base64
+    import io
+    from PIL import Image
+    from . import remover
+    body = _json_body(request)
+    src, err = _create_source(body)
+    if err:
+        return err
+    if not src:
+        return _err('pick a source picture first')
+    data = str(body.get('mask') or '')
+    try:
+        mask = Image.open(io.BytesIO(base64.b64decode(data.split(',', 1)[-1]))).convert('L')
+    except Exception:
+        return _err('paint what to remove first')
+    if not mask.getbbox():
+        return _err('paint what to remove first')
+    busy = _comfy_busy()
+    if busy:
+        return busy
+    text = str(body.get('description') or '').strip()
+    photo_id = src['photo'].id if src['photo'] else None
+    src_path, src_upload = src['path'], src['upload']
+    mask_png = io.BytesIO(); mask.save(mask_png, 'PNG')
+
+    def work(task):
+        from . import ai_runtime
+        t0 = time.time()
+        if not remover.is_ready():
+            task.message = 'downloading the removal model (200 MB, once)…'
+            task.save(update_fields=['message'])
+            remover.download(lambda got, total: (setattr(task, 'message', f'downloading the removal model… {got * 100 // total}%'),
+                                                 task.save(update_fields=['message'])) if got % (20 << 20) < (1 << 20) else None)
+        task.message = 'removing…'
+        task.save(update_fields=['message'])
+
+        def progress(done, total):
+            task.total, task.done = total + 1, done
+            task.message = f'removing… part {done}/{total}'
+            task.save(update_fields=['total', 'done', 'message'])
+        png = remover.remove(src_path, Image.open(io.BytesIO(mask_png.getvalue())), progress=progress,
+                             check=lambda: check_cancel(task))
+        try:
+            ai_runtime.force_unload()
+        except Exception:
+            pass
+        check_cancel(task)
+        photo = Photo.objects.select_related('post').get(pk=photo_id) if photo_id else None
+        new = _save_generated([png], 'ai_create', 'remove', 'AI remove: ' + (text or 'painted parts'), 'ai_create', {
+            'kind': 'remove', 'request': text, 'positive': '', 'negative': '', 'source_photo': photo_id,
+            'source_upload': src_upload, 'method': 'lama',
+        }, photo.post if photo else None, photo)
+        try:
+            apply_ai_tags(new)
+        except Exception as e:
+            print(f'remove: tagging new post {new.id} failed: {e}')
+        total = time.time() - t0
+        new.gen_info['seconds'] = int(total)
+        new.gen_info['timings'] = {'generate': round(total), 'total': round(total)}
+        new.save(update_fields=['gen_info'])
+        task.done = task.total
+        task.message = f'done in {int(total)}s → post #{new.id}'
+        task.save(update_fields=['done', 'message'])
+
+    task = _start_task('ai_remove', work, total=1, message='starting…', exclusive=True)
+    return JsonResponse({'ok': True, 'task_id': task.id})
 
 
 @require_POST
