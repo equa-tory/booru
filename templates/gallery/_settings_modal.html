@@ -145,6 +145,8 @@
         <div class="set-field"><label for="ce-temp" title="Wait until the GPU is cooler than this (°C) before sampling. 0 = never wait. Needs the WaitForGPUTemperature node in ComfyUI.">max GPU temp °C (0 = off)</label><input type="number" id="ce-temp" min="0" max="110"></div>
         <label class="set-check" style="align-self:end;" title="Ask ComfyUI to unload its models when an edit is done, so the GPU is free for the AI tagger."><input type="checkbox" id="ce-free"> free GPU memory after each edit</label>
         <div class="set-field wide"><label for="ce-bases" title="Only LoRAs made for these base models are offered (they must fit the checkpoint). Empty = all.">LoRA base models</label><input type="text" id="ce-bases" spellcheck="false" autocomplete="off"></div>
+        <div class="set-field wide"><label for="ce-fast" title="Speed LoRA for '⚡ fast' on the create page (DMD2: few steps at cfg 1, lcm / sgm_uniform). Path as ComfyUI lists it. Empty = no fast mode.">&#9889; fast: speed LoRA</label><input type="text" id="ce-fast" spellcheck="false" autocomplete="off"></div>
+        <div class="set-field"><label for="ce-fast-steps" title="Steps in fast mode (DMD2: 4-8; 8 measured on the P4 ≈ 30 s at 0.8 MP)">&#9889; fast steps</label><input type="number" id="ce-fast-steps" min="1" max="30"></div>
         <div class="set-field wide"><label for="ce-quality" title="Added in front of every prompt.">quality tags (prefix)</label><textarea id="ce-quality" rows="2" spellcheck="false"></textarea></div>
         <div class="set-field wide"><label for="ce-neg" title="Always sent as the negative prompt (your own negative is added to it).">default negative prompt</label><textarea id="ce-neg" rows="3" spellcheck="false"></textarea></div>
       </div>
@@ -193,7 +195,8 @@ function openSettings() {
   loadComfy();
 }
 const CE_FIELDS = {comfy_url:'ce-comfy', ollama_url:'ce-ollama', steps:'ce-steps', cfg:'ce-cfg', denoise:'ce-den', megapixels:'ce-mp',
-                   max_temp:'ce-temp', quality:'ce-quality', negative:'ce-neg', lora_bases:'ce-bases'};
+                   max_temp:'ce-temp', quality:'ce-quality', negative:'ce-neg', lora_bases:'ce-bases',
+                   fast_lora:'ce-fast', fast_steps:'ce-fast-steps'};
 function _ceFill(sel, items, cur) {
   const list = (items || []).slice(); if (cur && !list.includes(cur)) list.unshift(cur);
   sel.innerHTML = list.map(x => `<option value="${x.replace(/"/g,'&quot;')}"${x === cur ? ' selected' : ''}>${x.replace(/</g,'&lt;')}</option>`).join('');

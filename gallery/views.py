@@ -3,6 +3,7 @@ import re
 import tempfile
 import json
 import random
+import time
 from urllib.parse import quote
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
@@ -899,7 +900,7 @@ def tasks_list(request):
     # a finished AI edit (≈4 min, carries the "open post #N" link) stays until dismissed, up to a day
     edit_cutoff = timezone.now() - timezone.timedelta(hours=24)
     qs = Task.objects.filter(Q(status='running') | Q(finished_at__gte=cutoff)
-                             | Q(kind='comfy_edit', finished_at__gte=edit_cutoff))[:20]
+                             | Q(kind__in=COMFY_TASK_KINDS, finished_at__gte=edit_cutoff))[:20]
     out = []
     for t in qs:
         out.append({
@@ -3099,7 +3100,8 @@ def custom_concept_delete(request, pk):
 
 
 # ── AI models panel: status / download / delete / main selector / free VRAM ──
-AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply', 'comfy_edit']
+COMFY_TASK_KINDS = ['comfy_edit', 'comfy_create']      # one ComfyUI job at a time (8 GB card)
+AI_TASK_KINDS = ['ai_tag', 'ai_multi', 'char_retag', 'model_clone', 'custom_train', 'custom_scan', 'custom_apply'] + COMFY_TASK_KINDS
 
 
 def ai_models_info(request):
@@ -3603,6 +3605,37 @@ def comfy_lora_preview(request):
     return resp
 
 
+def _comfy_busy():
+    """409 response when a ComfyUI job (edit or create) is running, else None."""
+    busy = Task.objects.filter(kind__in=COMFY_TASK_KINDS, status='running').first()
+    if busy:
+        return JsonResponse({'ok': False, 'busy': True, 'task_id': busy.id,
+                             'error': 'another AI edit / creation is still running'}, status=409)
+    return None
+
+
+def _save_generated(pngs, subdir, base, title, meta_tag, gen_info, src_post=None, src_photo=None):
+    """Write ComfyUI results to MEDIA_ROOT/<subdir>/YYYY-MM/<base>[_n].png and make ONE new
+    post of them (several pictures = one multi-image post) with gen_info + a meta tag."""
+    folder = os.path.join(settings.MEDIA_ROOT, subdir, timezone.now().strftime('%Y-%m'))
+    os.makedirs(folder, exist_ok=True)
+    paths = []
+    for png in pngs:
+        path, n = os.path.join(folder, base + '.png'), 1
+        while os.path.exists(path):
+            path = os.path.join(folder, f'{base}_{n}.png'); n += 1
+        with open(path, 'wb') as f:
+            f.write(png)
+        paths.append(path)
+    new = create_post_from_files(paths, title=title[:480])
+    new.source_post = src_post
+    new.source_photo = src_photo
+    new.gen_info = gen_info
+    new.save(update_fields=['source_post', 'source_photo', 'gen_info'])
+    add_tags_to_post(new, [meta_tag], category='meta')
+    return new
+
+
 def post_gen_info(request, pk):
     post = get_object_or_404(Post, pk=pk)
     return JsonResponse({'ok': True, 'gen_info': post.gen_info or None,
@@ -3625,10 +3658,9 @@ def comfy_edit(request):
         return _err('type what should change')
     if not _comfy_enabled():
         return _err('AI edit is switched off in settings')
-    busy = Task.objects.filter(kind='comfy_edit', status='running').first()
+    busy = _comfy_busy()
     if busy:
-        return JsonResponse({'ok': False, 'busy': True, 'task_id': busy.id,
-                             'error': 'another AI edit is still running'}, status=409)
+        return busy
     cfg = comfy.config()
     if body.get('ollama_model') and str(body['ollama_model']).strip() != cfg['ollama_model']:
         cfg = comfy.save_config({'ollama_model': str(body['ollama_model']).strip()})   # the box remembers the last choice
@@ -3704,28 +3736,15 @@ def comfy_edit(request):
         task.done = 2; task.message = 'saving the new post…'
         task.save(update_fields=['done', 'message'])
 
-        now = timezone.now()
-        folder = os.path.join(settings.MEDIA_ROOT, 'ai_edits', now.strftime('%Y-%m'))
-        os.makedirs(folder, exist_ok=True)
-        base = f'edit_{src_post.id if src_post else 0}_{photo.id}_{seed}'
-        path, n = os.path.join(folder, base + '.png'), 1
-        while os.path.exists(path):
-            path = os.path.join(folder, f'{base}_{n}.png'); n += 1
-        with open(path, 'wb') as f:
-            f.write(png)
-        title = ('AI edit of #%s: %s' % (src_post.id if src_post else '?', text))[:480]
-        new = create_post_from_files([path], title=title)
-        new.source_post = src_post
-        new.source_photo = photo
-        new.gen_info = {
-            'request': text, 'positive': pos_text, 'negative': neg_text, 'denoise': den, 'seed': seed,
-            'checkpoint': cfg['checkpoint'], 'steps': cfg['steps'], 'cfg': cfg['cfg'], 'sampler': cfg['sampler'],
-            'scheduler': cfg['scheduler'], 'megapixels': cfg['megapixels'], 'ollama_model': cfg['ollama_model'],
-            'note': note, 'seconds': int(_t.time() - t0), 'source_photo': photo.id,
-            'loras': loras, 'triggers': triggers,
-        }
-        new.save(update_fields=['source_post', 'source_photo', 'gen_info'])
-        add_tags_to_post(new, ['ai_edit'], category='meta')
+        new = _save_generated(
+            [png], 'ai_edits', f'edit_{src_post.id if src_post else 0}_{photo.id}_{seed}',
+            ('AI edit of #%s: %s' % (src_post.id if src_post else '?', text)), 'ai_edit', {
+                'request': text, 'positive': pos_text, 'negative': neg_text, 'denoise': den, 'seed': seed,
+                'checkpoint': cfg['checkpoint'], 'steps': cfg['steps'], 'cfg': cfg['cfg'], 'sampler': cfg['sampler'],
+                'scheduler': cfg['scheduler'], 'megapixels': cfg['megapixels'], 'ollama_model': cfg['ollama_model'],
+                'note': note, 'seconds': int(_t.time() - t0), 'source_photo': photo.id,
+                'loras': loras, 'triggers': triggers,
+            }, src_post, photo)
         if cfg['free_after']:
             comfy.free_comfy(cfg)
         task.done = 3; task.message = 'tagging the new post…'
@@ -3747,3 +3766,226 @@ def comfy_edit(request):
 
     task = _start_task('comfy_edit', work, total=4, message='starting…', exclusive=True)
     return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed})
+
+
+# ── ✨ create: describe a picture → prompt + LoRAs + trigger groups → ComfyUI ─────────
+CREATE_MAX_COUNT = 4
+
+
+def create_page(request):
+    """The ✨ create page. ?photo=<id> = start with that item as the source image,
+    ?from=<post id> = restore a generated post's settings ("again")."""
+    src = None
+    try:
+        p = Photo.objects.select_related('post').get(pk=int(request.GET['photo']))
+        if not (p.is_video or p.is_pdf or p.is_gif):
+            src = {'id': p.id, 'thumb': p.thumb_url or p.media_url, 'post': p.post_id}
+    except (KeyError, ValueError, Photo.DoesNotExist):
+        pass
+    recent = (Post.objects.filter(tags__name__in=['ai_create', 'ai_edit'], tags__category='meta')
+              .distinct().order_by('-id').prefetch_related('images')[:24])
+    return render(request, 'gallery/create.html', {
+        'comfy_enabled': _comfy_enabled(), 'src': src, 'recent': recent,
+        'cfg': comfy.config(), 'max_count': CREATE_MAX_COUNT,
+    })
+
+
+def _canon_characters(names):
+    """LLM character names ('hayasaka ai') -> the library's own character tags
+    ('hayasaka_ai', 'nakano_miku_(go-toubun_no_hanayome)'), most used first; a name the
+    library doesn't know stays as it is."""
+    out = []
+    for n in names:
+        key = re.sub(r'\s+', '_', n.strip().lower())
+        t = (Tag.objects.filter(category='character').filter(Q(name__iexact=key) | Q(name__istartswith=key + '_('))
+             .order_by('-count').values_list('name', flat=True).first())
+        out.append(t or key)
+    return list(dict.fromkeys(out))
+
+
+def _source_photo(body):
+    """(photo or None, error response or None) for an optional source image."""
+    if body.get('photo_id') in (None, '', 0, '0'):
+        return None, None
+    return _editable_photo(body)
+
+
+@require_POST
+def comfy_plan(request):
+    """Describe → plan: tags + characters from the LLM, LoRAs for the characters (auto)
+    and suggestions for the rest, then the LLM picks each selected LoRA's trigger groups.
+    `loras` = names the user already picked (kept, their groups re-picked)."""
+    body = _json_body(request)
+    text = str(body.get('description') or '').strip()
+    if not text:
+        return _err('describe the picture')
+    photo, err = _source_photo(body)
+    if err:
+        return err
+    cfg = comfy.config()
+    if body.get('ollama_model'):
+        cfg['ollama_model'] = str(body['ollama_model']).strip()
+    t0 = time.time()
+    cur = _edit_current_tags(photo) if photo else None
+    plan = comfy.plan_prompt(text, cfg, cur)
+    chars = _canon_characters(plan['characters'])
+    if photo:
+        chars = list(dict.fromkeys(chars + _char_tags_for(photo, cur)))
+    try:
+        catalog = comfy.lora_catalog(cfg)
+    except Exception:
+        catalog = []
+    terms = chars + plan['tags']
+    # concept LoRAs: only planned tags the user actually wrote — the planner's filler tags
+    # (smile, indoors, looking at viewer) matched unrelated pose LoRAs
+    said = ' ' + re.sub(r'[^a-z0-9]+', ' ', text.lower()) + ' '
+    typed = [t for t in plan['tags'] if ' ' + re.sub(r'[^a-z0-9]+', ' ', t.lower()).strip() + ' ' in said]
+    sug = comfy.suggest_loras(chars, [text] + typed, catalog, limit=12)
+    # auto-select one LoRA per character — of several for the same character, the one with a
+    # trigger group for the described outfit; concept LoRAs stay suggestions (looser matches)
+    chosen, taken = [], set()
+    for ct in chars:
+        reason = 'character: ' + comfy._char_name(ct)
+        cands = [it for it in sug if reason in it['reason'] and it['name'] not in taken]
+        if cands:
+            best = max(cands, key=lambda it: (comfy.match_groups(it, terms, text)[1], it['score'], len(it['groups'])))
+            chosen.append(best); taken.add(best['name'])
+    by_name = {i['name']: i for i in catalog}
+    for n in body.get('loras') or []:
+        if isinstance(n, str) and n in by_name and n not in taken and len(chosen) < comfy.MAX_LORAS:
+            chosen.append(by_name[n]); taken.add(n)
+    picks, how = comfy.pick_groups(text, chosen, cfg, terms) if chosen else ({}, {})
+    how_text = {'match': 'groups matched to the prompt', 'llm': 'groups picked by the AI', 'default': 'default groups'}
+    selected = []
+    for it in chosen:
+        j = _lora_json(it)
+        j['sel_groups'] = picks.get(it['name'], [])
+        j['why'] = (it.get('reason') or 'your pick') + (' · ' + how_text[how[it['name']]] if len(it['groups']) > 1 else '')
+        selected.append(j)
+    positive = comfy.join_prompt(chars, plan['tags'])
+    return JsonResponse({
+        'ok': True, 'positive': positive, 'negative': ', '.join(comfy.escape_tag(t) for t in plan['negative']),
+        'orientation': plan['orientation'], 'note': plan['note'], 'source': plan['source'],
+        'characters': chars, 'model': cfg['ollama_model'], 'seconds': round(time.time() - t0, 1),
+        'selected': selected, 'suggested': [_lora_json(i) for i in sug if i['name'] not in taken],
+    })
+
+
+@require_POST
+def comfy_create(request):
+    """Generate from a (planned / edited) prompt: txt2img, or img2img when a source image
+    is given. Background task `comfy_create`; `count` pictures become ONE new post."""
+    body = _json_body(request)
+    text = str(body.get('description') or '').strip()
+    pos_text = str(body.get('positive') or '').strip()
+    neg_text = str(body.get('negative') or '').strip()
+    if not pos_text:
+        return _err('no prompt — plan it first or type one')
+    if not _comfy_enabled():
+        return _err('AI edit is switched off in settings')
+    photo, err = _source_photo(body)
+    if err:
+        return err
+    busy = _comfy_busy()
+    if busy:
+        return busy
+    cfg = comfy.config()
+    if body.get('ollama_model'):
+        cfg['ollama_model'] = str(body['ollama_model']).strip()
+    try:
+        seed = int(body.get('seed'))
+        if seed < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        seed = random.randint(0, 2 ** 32 - 1)
+    try:
+        count = min(CREATE_MAX_COUNT, max(1, int(body.get('count') or 1)))
+    except (TypeError, ValueError):
+        count = 1
+    try:
+        den = min(comfy.DENOISE_MAX, max(comfy.DENOISE_MIN, float(body.get('denoise') or 0.55)))
+    except (TypeError, ValueError):
+        den = 0.55
+    orientation = body.get('orientation') if body.get('orientation') in comfy.SIZE_RATIOS else 'portrait'
+    size = body.get('size') if body.get('size') in comfy.SIZE_MP else 'normal'
+    width, height = comfy.size_for(orientation, size, cfg)
+    try:
+        loras = comfy.resolve_loras(body.get('loras') or [], comfy.lora_catalog(cfg)) if body.get('loras') else []
+        run_cfg, run_loras = cfg, [(l['name'], l['strength']) for l in loras]
+        fast = bool(body.get('fast'))
+        if fast:
+            run_cfg, run_loras = comfy.fast_setup(cfg, run_loras)
+    except comfy.ComfyError as e:
+        return _err(str(e))
+    triggers = comfy.trigger_text([w for l in loras for w in l['words']])
+    positive = comfy.join_prompt(cfg['quality'], triggers, comfy.drop_terms(pos_text, triggers))
+    negative = comfy.join_prompt(cfg['negative'], comfy.drop_terms(neg_text, triggers))
+    photo_id = photo.id if photo else None
+
+    def work(task):
+        from . import ai_runtime
+        t0 = time.time()
+        task.total = count + 1; task.done = 0
+        task.save(update_fields=['total', 'done'])
+        try:
+            ai_runtime.force_unload()            # this worker's tagger sessions: the SDXL checkpoint needs the VRAM
+        except Exception:
+            pass
+        src = Photo.objects.select_related('post').get(pk=photo_id) if photo_id else None
+        pngs = []
+        for i in range(count):
+            check_cancel(task)
+            gen_start = time.time()
+            label = f'picture {i + 1}/{count}' if count > 1 else 'picture'
+
+            def check():
+                check_cancel(task)
+                if time.time() - task._beat >= 10:
+                    task._beat = time.time()
+                    el = int(time.time() - gen_start)
+                    task.message = f'generating {label}… {el // 60}m {el % 60:02d}s'
+                    task.save(update_fields=['message'])
+            task._beat = 0
+
+            def progress(msg):
+                task.message = f'{label}: {msg}'
+                task.save(update_fields=['message'])
+            if src:
+                png, _wf = comfy.generate(src.file_path, positive, negative, seed + i, den, run_cfg,
+                                          check=check, progress=progress, loras=run_loras)
+            else:
+                png, _wf = comfy.generate_txt2img(positive, negative, seed + i, width, height, run_cfg,
+                                                  check=check, progress=progress, loras=run_loras)
+            pngs.append(png)
+            task.done = i + 1
+            task.save(update_fields=['done'])
+        t_gen = time.time() - t0
+        task.message = 'saving the new post…'
+        task.save(update_fields=['message'])
+        new = _save_generated(pngs, 'ai_create', f'create_{seed}', 'AI: ' + (text or pos_text), 'ai_create', {
+            'kind': 'create', 'request': text, 'positive': pos_text, 'negative': neg_text, 'seed': seed, 'count': count,
+            'orientation': orientation, 'size': size, 'width': width, 'height': height, 'fast': fast,
+            'denoise': den if src else None, 'source_photo': src.id if src else None,
+            'checkpoint': cfg['checkpoint'], 'steps': run_cfg['steps'], 'cfg': run_cfg['cfg'],
+            'sampler': run_cfg['sampler'], 'scheduler': run_cfg['scheduler'], 'megapixels': cfg['megapixels'],
+            'ollama_model': cfg['ollama_model'], 'loras': loras, 'triggers': triggers,
+        }, src.post if src else None, src)
+        if cfg['free_after']:
+            comfy.free_comfy(cfg)
+        task.message = 'tagging the new post…'
+        task.save(update_fields=['message'])
+        t_tag0 = time.time()
+        try:
+            apply_ai_tags(new)
+        except Exception as e:
+            print(f'create: tagging new post {new.id} failed: {e}')
+        total = time.time() - t0
+        new.gen_info['seconds'] = int(total)
+        new.gen_info['timings'] = {'generate': round(t_gen), 'tagging': round(time.time() - t_tag0), 'total': round(total)}
+        new.save(update_fields=['gen_info'])
+        task.done = count + 1
+        task.message = f'done in {int(total)}s → post #{new.id}'
+        task.save(update_fields=['done', 'message'])
+
+    task = _start_task('comfy_create', work, total=count + 1, message='starting…', exclusive=True)
+    return JsonResponse({'ok': True, 'task_id': task.id, 'seed': seed, 'width': width, 'height': height})

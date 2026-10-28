@@ -1,0 +1,12 @@
+{# LoRA picker markup; `p` = id prefix, driven by makeLoraPicker(p) from _lora_picker_assets.html #}
+<div style="display:flex;align-items:center;gap:.4rem;margin-top:.6rem;">
+  <label class="ae-l" for="{{ p }}-lora-q" style="margin:0;flex:1;">LoRA <span id="{{ p }}-lora-n"></span></label>
+  <button type="button" class="btn" id="{{ p }}-lora-detect" style="font-size:.7rem;padding:.2rem .55rem;" onclick="LP['{{ p }}'].detect()" title="{{ detect_title|default:'find LoRAs for the characters and words' }}">&#10024; detect</button>
+</div>
+<div id="{{ p }}-lora-sug" class="ae-chips"></div>
+<div style="position:relative;">
+  <input type="text" id="{{ p }}-lora-q" placeholder="search LoRA by name or tag…" autocomplete="off" spellcheck="false"
+         oninput="LP['{{ p }}'].search(this.value)" onfocus="LP['{{ p }}'].search(this.value)" onblur="LP['{{ p }}'].hideResults()">
+  <div id="{{ p }}-lora-res" class="ae-res" style="display:none;"></div>
+</div>
+<div id="{{ p }}-lora-sel"></div>

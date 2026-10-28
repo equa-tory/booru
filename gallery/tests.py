@@ -542,6 +542,9 @@ class TemplateJsSyntaxTests(TestCase):
         post = Post.objects.create()
         self._check(f'/post/{post.pk}/')
 
+    def test_create_page(self):
+        self._check('/create/')
+
 
 # ── AI runtime (CUDA/CPU fallback, idle unload) ─────────────────
 import types
@@ -2956,3 +2959,209 @@ class WipeAndSplitTests(TestCase):
         self.assertIn('wipePost()', html); self.assertIn('splitPostAll()', html)
         html = self.client.get('/').content.decode()
         self.assertIn('bulkWipe()', html); self.assertIn('bulkSplit()', html)
+
+
+# ── ✨ create: plan (LLM prompt + LoRAs + trigger groups) and generate ─────────
+class ComfyCreateTests(TestCase):
+    CAT = [
+        {'name': 'Illustrious/character/Hayasaka_Ai.safetensors', 'title': 'Hayasaka Ai', 'file': 'Hayasaka_Ai',
+         'folder': 'Illustrious/character', 'base': 'Illustrious', 'tags': ['hayasaka ai', 'character'],
+         'groups': ['hayasaka ai, side ponytail', 'school uniform, white shirt', 'maid, maid headdress'],
+         'kind': 'character', 'preview': ''},
+        {'name': 'Illustrious/concept/bikini_v2.safetensors', 'title': 'Bikini', 'file': 'bikini_v2',
+         'folder': 'Illustrious/concept', 'base': 'Illustrious', 'tags': ['bikini'],
+         'groups': ['bikini, swimsuit'], 'kind': 'other', 'preview': ''},
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        ov = override_settings(MEDIA_ROOT=self.tmp)
+        ov.enable(); self.addCleanup(ov.disable)
+        self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
+        comfy.save_config({'enabled': True})
+        p = mock.patch.object(comfy, 'lora_catalog', return_value=self.CAT)
+        p.start(); self.addCleanup(p.stop)
+
+    def _post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type='application/json')
+
+    # helpers in comfy.py
+    def test_txt2img_workflow(self):
+        cfg = comfy.config()
+        wf = comfy.build_txt2img('pos', 'neg', 9, cfg, 700, 1090, batch=2, loras=[('a.safetensors', 0.7)], temp_node=False)
+        self.assertEqual(comfy.workflow_problems(wf), [])
+        self.assertEqual(wf['4']['inputs'], {'width': 696, 'height': 1088, 'batch_size': 2})
+        self.assertEqual(wf['8']['inputs']['denoise'], 1.0)
+        self.assertEqual(wf['8']['inputs']['latent_image'], ['4', 0])
+        self.assertEqual(wf['20']['inputs']['lora_name'], 'a.safetensors')
+        self.assertEqual(wf['8']['inputs']['model'], ['20', 0])
+        self.assertNotIn('2', wf)                                              # no LoadImage
+
+    def test_fast_setup_and_sizes(self):
+        cfg = comfy.config()
+        fast, loras = comfy.fast_setup(cfg, [('x', 1.0)])
+        self.assertEqual((fast['cfg'], fast['steps'], fast['sampler']), (1.0, cfg['fast_steps'], cfg['fast_sampler']))
+        self.assertEqual(loras[-1], (cfg['fast_lora'], cfg['fast_strength']))
+        self.assertEqual(cfg['steps'], comfy.config()['steps'])                   # the saved settings are untouched
+        with self.assertRaises(comfy.ComfyError):
+            comfy.fast_setup(dict(cfg, fast_lora=''), [])
+        self.assertEqual(comfy.size_for('portrait', 'draft', cfg), (512, 768))
+        self.assertEqual(comfy.size_for('landscape', 'draft', cfg), (768, 512))
+        self.assertEqual(comfy.size_for('portrait', 'large', cfg), (832, 1216))
+        w, h = comfy.size_for('square', 'normal', cfg)
+        self.assertEqual((w, w % 64), (h, 0))
+
+    def test_parse_plan(self):
+        p = comfy.parse_plan({'characters': ['Hayasaka_Ai', 'nakano miku (go-toubun no hanayome)'],
+                              'tags': ['1girl', 'masterpiece', 'maid', 'hayasaka ai'], 'negative': 'hat, glasses',
+                              'orientation': 'sideways', 'note': 'n'})
+        self.assertEqual(p['characters'], ['hayasaka ai', 'nakano miku'])
+        self.assertEqual(p['tags'], ['1girl', 'maid'])                    # quality word and the character dropped
+        self.assertEqual((p['negative'], p['orientation']), (['hat', 'glasses'], 'portrait'))
+        with self.assertRaises(ValueError):
+            comfy.parse_plan({'characters': [], 'tags': ['best quality']})
+
+    def test_plan_prompt_falls_back_without_ollama(self):
+        with mock.patch.object(comfy, '_ollama_json', side_effect=httpx.ConnectError('down')):
+            p = comfy.plan_prompt('1girl, red dress, smile')
+        self.assertEqual((p['source'], p['tags']), ('fallback', ['1girl', 'red dress', 'smile']))
+
+    def test_group_picks_are_validated(self):
+        items = self.CAT
+        got = comfy.parse_group_picks({'picks': [{'lora': 1, 'groups': [3, 9, 0, 3]}, {'lora': 7, 'groups': [1]}]}, items)
+        self.assertEqual(got, {self.CAT[0]['name']: [2]})                  # out-of-range numbers / LoRAs dropped
+        q = comfy.groups_question('maid outfit', items)
+        self.assertIn('LoRA 1: Hayasaka Ai (character)', q); self.assertIn('  group 3: maid, maid headdress', q)
+
+    def test_pick_groups_match_first_then_llm_then_default(self):
+        with mock.patch.object(comfy, '_ollama_json') as oj:
+            got, how = comfy.pick_groups('hayasaka ai as a maid', self.CAT, terms=['1girl'])
+        oj.assert_not_called()                                              # the outfit matched: no LLM call
+        self.assertEqual((got[self.CAT[0]['name']], how[self.CAT[0]['name']]), ([0, 2], 'match'))
+        self.assertEqual((got[self.CAT[1]['name']], how[self.CAT[1]['name']]), ([0], 'default'))   # 1 group: not asked
+        with mock.patch.object(comfy, '_ollama_json', return_value={'picks': [{'lora': 1, 'groups': [2]}]}) as oj:
+            got, how = comfy.pick_groups('in winter clothes', self.CAT)
+        self.assertEqual((got[self.CAT[0]['name']], how[self.CAT[0]['name']]), ([0, 1], 'llm'))    # identity kept
+        self.assertNotIn('Bikini', oj.call_args[0][2])
+        with mock.patch.object(comfy, '_ollama_json', side_effect=ValueError('x')):
+            got, how = comfy.pick_groups('in winter clothes', self.CAT)
+        self.assertEqual((got[self.CAT[0]['name']], how[self.CAT[0]['name']]), ([0], 'default'))
+
+    def test_match_groups_uses_distinctive_words(self):
+        char = dict(self.CAT[0], groups=['hayasaka ai, blonde hair, side ponytail', 'hayasakamaid, blonde hair, maid headdress, apron',
+                                         'hayasakaschool, blonde hair, school uniform'])
+        self.assertEqual(comfy.match_groups(char, ['blonde hair', 'maid headdress']), ([0, 1], 1))
+        self.assertEqual(comfy.match_groups(char, ['blonde hair']), ([0], 0))      # shared by all groups: says nothing
+        self.assertEqual(comfy.match_groups(char, [], 'in her school uniform please'), ([0, 2], 1))
+        other = dict(self.CAT[1], groups=['bikini, swimsuit', 'micro bikini', 'one-piece swimsuit'])
+        self.assertEqual(comfy.match_groups(other, ['micro bikini', 'swimsuit']), ([0, 1], 1))
+
+    def test_generic_words_suggest_nothing(self):
+        filler = [{'name': f'f{i}', 'title': f'filler {i}', 'file': f'f{i}', 'folder': '', 'base': '', 'tags': [],
+                   'groups': ['1girl, solo, looking at viewer'], 'kind': 'other', 'preview': ''} for i in range(40)]
+        cat = self.CAT + filler
+        self.assertEqual(comfy.suggest_loras([], ['1girl', 'solo', 'looking at viewer'], cat), [])
+        self.assertEqual([i['file'] for i in comfy.suggest_loras([], ['1girl', 'bikini'], cat)], ['bikini_v2'])
+
+    # endpoints
+    def _plan(self, body, plan=None, picks=None):
+        picks = picks or {self.CAT[0]['name']: [0, 2]}
+        plan = plan or {'characters': ['hayasaka ai'], 'tags': ['1girl', 'maid', 'bikini'], 'negative': ['hat'],
+                        'orientation': 'landscape', 'note': 'n', 'source': 'llm'}
+        with mock.patch.object(comfy, 'plan_prompt', return_value=plan), \
+             mock.patch.object(comfy, 'pick_groups', return_value=(picks, {n: 'llm' for n in picks})) as pg:
+            return self._post('/api/comfy/plan/', body).json(), pg
+
+    def test_plan_endpoint(self):
+        add_tags_to_post(Post.objects.create(), ['hayasaka_ai'], category='character')
+        d, pg = self._plan({'description': 'hayasaka ai as a maid'})
+        self.assertEqual(d['suggested'], [])                              # planned "bikini" was never typed: no concept LoRA
+        d, pg = self._plan({'description': 'hayasaka ai as a maid, bikini'})
+        self.assertEqual(d['characters'], ['hayasaka_ai'])                 # the library's own tag name
+        self.assertEqual(d['positive'], 'hayasaka ai, 1girl, maid, bikini')
+        self.assertEqual((d['negative'], d['orientation']), ('hat', 'landscape'))
+        self.assertEqual([l['name'] for l in d['selected']], [self.CAT[0]['name']])     # character LoRA auto-selected
+        self.assertEqual(d['selected'][0]['sel_groups'], [0, 2])
+        self.assertEqual([l['name'] for l in d['suggested']], [self.CAT[1]['name']])    # concept: only suggested
+        self.assertEqual(self._post('/api/comfy/plan/', {'description': ' '}).status_code, 400)
+
+    def test_plan_keeps_loras_the_user_added(self):
+        d, pg = self._plan({'description': 'a beach', 'loras': [self.CAT[1]['name'], 'nope.safetensors']},
+                           plan={'characters': [], 'tags': ['beach'], 'negative': [], 'orientation': 'landscape',
+                                 'note': '', 'source': 'llm'}, picks={self.CAT[1]['name']: [0]})
+        self.assertEqual([l['name'] for l in d['selected']], [self.CAT[1]['name']])
+        self.assertEqual([i['name'] for i in pg.call_args[0][1]], [self.CAT[1]['name']])
+
+    def _create(self, body):
+        with mock.patch.object(comfy, 'generate_txt2img', return_value=(_png((40, 60)), {})) as gen, \
+             mock.patch.object(comfy, 'generate', return_value=(_png((40, 60)), {})) as i2i, \
+             mock.patch.object(comfy, 'free_comfy', return_value=True), \
+             mock.patch.object(views, 'apply_ai_tags'), mock.patch('gallery.ai_runtime.force_unload', return_value=0), \
+             mock.patch.object(views, '_start_task', side_effect=lambda kind, fn, **k: _run_now(kind, fn)):
+            return self._post('/api/comfy/create/', body), gen, i2i
+
+    def test_create_txt2img_makes_one_post_of_all_pictures(self):
+        r, gen, i2i = self._create({
+            'description': 'hayasaka ai as a maid', 'positive': 'hayasaka ai, 1girl, maid', 'negative': 'hat, side ponytail',
+            'seed': '100', 'count': 3, 'orientation': 'landscape', 'size': 'draft',
+            'loras': [{'name': self.CAT[0]['name'], 'strength': 1, 'words': ['hayasaka ai, side ponytail']}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((r.json()['width'], r.json()['height']), (768, 512))
+        self.assertEqual(gen.call_count, 3); i2i.assert_not_called()
+        self.assertEqual([c[0][2] for c in gen.call_args_list], [100, 101, 102])            # seed + i
+        pos, neg = gen.call_args[0][0], gen.call_args[0][1]
+        self.assertEqual(pos, comfy.config()['quality'] + ', hayasaka ai, side ponytail, 1girl, maid')   # no duplicate name
+        self.assertNotIn('side ponytail', neg.replace(comfy.config()['negative'], ''))     # trigger word wins over the negative
+        new = Post.objects.get()
+        self.assertEqual(new.images.count(), 3)
+        self.assertTrue(new.tags.filter(name='ai_create', category='meta').exists())
+        self.assertEqual((new.gen_info['kind'], new.gen_info['count'], new.gen_info['fast']), ('create', 3, False))
+        self.assertIn(os.sep + 'ai_create' + os.sep, new.images.first().file_path)
+        self.assertTrue(Task.objects.get(kind='comfy_create').message.endswith(f'→ post #{new.pk}'))
+
+    def test_create_fast_and_img2img_source(self):
+        src_post = Post.objects.create()
+        with open(os.path.join(self.tmp, 's.png'), 'wb') as f:
+            f.write(_png((64, 48)))
+        src = Photo.objects.create(post=src_post, order=0, rel_path='s.png', width=64, height=48)
+        r, gen, i2i = self._create({'description': 'more detail', 'positive': '1girl', 'photo_id': src.pk,
+                                    'denoise': '0.4', 'fast': True})
+        self.assertEqual(r.status_code, 200)
+        gen.assert_not_called()
+        args, kw = i2i.call_args
+        self.assertEqual((args[0], args[4]), (src.file_path, 0.4))
+        self.assertEqual((args[5]['cfg'], args[5]['steps']), (1.0, comfy.config()['fast_steps']))
+        self.assertEqual(kw['loras'][-1][0], comfy.config()['fast_lora'])
+        new = Post.objects.exclude(pk=src_post.pk).get()
+        self.assertEqual((new.source_post_id, new.source_photo_id, new.gen_info['fast']), (src_post.pk, src.pk, True))
+
+    def test_create_refusals(self):
+        self.assertEqual(self._post('/api/comfy/create/', {'description': 'x'}).status_code, 400)        # no prompt
+        t = Task.objects.create(kind='comfy_edit')                                                     # edits block creating
+        r = self._post('/api/comfy/create/', {'positive': 'x'})
+        self.assertEqual((r.status_code, r.json()['task_id']), (409, t.pk))
+        t.delete()
+        r = self._post('/api/comfy/create/', {'positive': 'x', 'loras': [{'name': 'nope'}]})
+        self.assertEqual(r.status_code, 400)
+
+    def test_page_lists_recent_and_takes_a_source(self):
+        with open(os.path.join(self.tmp, 's.png'), 'wb') as f:
+            f.write(_png((64, 48)))
+        post = Post.objects.create()
+        ph = Photo.objects.create(post=post, order=0, rel_path='s.png', width=64, height=48)
+        made = Post.objects.create(gen_info={'kind': 'create'})
+        with open(os.path.join(self.tmp, 'm.png'), 'wb') as f:
+            f.write(_png((64, 48)))
+        Photo.objects.create(post=made, order=0, rel_path='m.png', width=64, height=48, rel_thumb_path='m.png')
+        add_tags_to_post(made, ['ai_create'], category='meta')
+        html = self.client.get(f'/create/?photo={ph.pk}').content.decode()
+        self.assertIn(f'data-photo="{ph.pk}"', html)
+        self.assertIn(f'/create/?from={made.pk}', html)
+        self.assertIn("makeLoraPicker('cr'", html)
+
+    def test_finished_create_task_stays_listed(self):
+        t = Task.objects.create(kind='comfy_create', status='done', message='done → post #5',
+                                finished_at=timezone.now() - timezone.timedelta(hours=2))
+        ids = [x['id'] for x in self.client.get('/api/tasks/').json()['tasks']]
+        self.assertIn(t.pk, ids)

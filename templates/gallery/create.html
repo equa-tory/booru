@@ -1,0 +1,256 @@
+{% extends "gallery/base.html" %}
+{% block title %}create{% endblock %}
+
+{% block extra_head %}
+<style>
+  .cr-wrap { max-width: 720px; margin: 0 auto; padding: 1rem 16px 6rem; }
+  .cr-wrap h1 { font-size: 1.25rem; margin-bottom: .2rem; }
+  .cr-sub { color: var(--text-dim); font-size: .8rem; margin-bottom: 1rem; line-height: 1.45; }
+  .cr-wrap textarea, .cr-wrap input[type=text], .cr-wrap select {
+    width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+    padding: .45rem .55rem; font-family: var(--mono); font-size: .82rem; outline: none; box-sizing: border-box; }
+  .cr-wrap textarea { resize: vertical; }
+  .cr-wrap textarea:focus, .cr-wrap input:focus, .cr-wrap select:focus { border-color: var(--accent); }
+  .cr-wrap label.ae-l { display: block; font-family: var(--mono); font-size: .66rem; color: var(--text-dim); margin: .7rem 0 .2rem; }
+  .cr-card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); padding: .8rem; margin-bottom: .8rem; }
+  .cr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: .5rem; }
+  .cr-grid label.ae-l { margin-top: 0; }
+  .cr-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .7rem; }
+  .cr-actions .btn { flex: 1; min-width: 8rem; justify-content: center; }
+  .cr-src { display: flex; gap: .6rem; align-items: center; }
+  .cr-src img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; background: var(--bg3); }
+  .cr-check { display: flex; align-items: center; gap: .4rem; font-size: .8rem; margin-top: .55rem; cursor: pointer; }
+  .cr-status { font-family: var(--mono); font-size: .74rem; color: var(--text-dim); min-height: 1.2em; margin-top: .55rem; }
+  .cr-status.err { color: var(--danger, #e66); }
+  .cr-recent { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: .45rem; }
+  .cr-recent .it { position: relative; border-radius: 6px; overflow: hidden; background: var(--bg3); aspect-ratio: 3/4; }
+  .cr-recent img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cr-recent .again { position: absolute; right: 3px; bottom: 3px; font-family: var(--mono); font-size: .62rem; padding: .12rem .4rem;
+    border-radius: 999px; background: rgba(0,0,0,.65); color: #fff; text-decoration: none; }
+  .cr-recent .n { position: absolute; left: 3px; top: 3px; font-family: var(--mono); font-size: .6rem; padding: .05rem .3rem;
+    border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; }
+  .cr-h2 { font-family: var(--mono); font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 1.2rem 0 .5rem; }
+</style>
+{% include "gallery/_lora_picker_assets.html" %}
+{% endblock %}
+
+{% block content %}
+<div class="cr-wrap">
+  <h1>&#10024; create</h1>
+  <div class="cr-sub">Describe the picture. The AI writes the tags, picks LoRAs for the characters and chooses their trigger words; you can change everything before generating. With a source image it re-draws that picture (adds details) instead of starting from noise.</div>
+  {% if not comfy_enabled %}<div class="cr-card">AI edit / ComfyUI is switched off in &#9881; settings.</div>{% endif %}
+
+  <div class="cr-card">
+    <label class="ae-l" for="cr-desc" style="margin-top:0;">description (any language)</label>
+    <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a winter school uniform, snowing, smiling at the viewer"
+              onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
+    {% if src %}
+    <label class="ae-l">source image (img2img)</label>
+    <div class="cr-src" id="cr-src" data-photo="{{ src.id }}">
+      <a href="/post/{{ src.post }}/"><img src="{{ src.thumb }}" alt=""></a>
+      <div style="flex:1;min-width:0;">
+        <label class="ae-l" for="cr-den" style="margin-top:0;">how much may change: <b id="cr-den-val">0.55</b> <span style="opacity:.7;">(low = add details, high = re-draw)</span></label>
+        <input type="range" id="cr-den" min="0.2" max="0.9" step="0.05" value="0.55" style="width:100%;" oninput="document.getElementById('cr-den-val').textContent=(+this.value).toFixed(2)">
+      </div>
+      <button type="button" class="btn" onclick="crDropSource()" title="no source image (new picture)">&#10005;</button>
+    </div>
+    {% else %}
+    <div class="cr-sub" style="margin:.5rem 0 0;">Source image: open a post and use &#9998; → "open in &#10024; create" to start from a picture.</div>
+    {% endif %}
+    <div class="cr-actions">
+      <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="let the AI write the prompt and pick LoRAs; you can edit them before generating">&#10024; plan</button>
+      <button class="btn primary" id="cr-go-btn" onclick="crGo()" title="plan (if not done yet) and generate right away">&#9889; plan &amp; generate</button>
+    </div>
+    <div class="cr-status" id="cr-status"></div>
+  </div>
+
+  <div class="cr-card">
+    <div class="cr-grid">
+      <div><label class="ae-l" for="cr-orient">shape</label>
+        <select id="cr-orient"><option value="portrait">portrait</option><option value="square">square</option><option value="landscape">landscape</option></select></div>
+      <div><label class="ae-l" for="cr-size">size</label>
+        <select id="cr-size"><option value="draft">draft (0.4 MP)</option><option value="normal" selected>normal ({{ cfg.megapixels }} MP)</option><option value="large">large (1 MP)</option></select></div>
+      <div><label class="ae-l" for="cr-count">pictures</label>
+        <select id="cr-count">{% for n in "1234" %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select></div>
+      <div><label class="ae-l" for="cr-seed">seed</label>
+        <input type="text" id="cr-seed" inputmode="numeric" placeholder="random"></div>
+    </div>
+    <label class="cr-check" title="DMD2 speed LoRA: {{ cfg.fast_steps }} steps at cfg 1 instead of {{ cfg.steps }} at cfg {{ cfg.cfg }} — much quicker, the negative prompt is ignored">
+      <input type="checkbox" id="cr-fast" onchange="crSaveUi()"{% if cfg.fast_lora %} checked{% endif %}> &#9889; fast ({{ cfg.fast_steps }} steps, speed LoRA — about 3× quicker)</label>
+    <label class="ae-l" for="cr-model">prompt model (Ollama)</label>
+    <select id="cr-model"></select>
+    {% include "gallery/_lora_picker.html" with p="cr" detect_title="find LoRAs for the characters and words in the prompt" %}
+  </div>
+
+  <div class="cr-card">
+    <label class="ae-l" for="cr-pos" style="margin-top:0;">prompt (editable; quality words and the selected trigger words are added on generate)</label>
+    <textarea id="cr-pos" rows="5" placeholder="plan first, or type Danbooru tags yourself"></textarea>
+    <label class="ae-l" for="cr-neg">negative (added to the default negative)</label>
+    <textarea id="cr-neg" rows="2"></textarea>
+    <div class="cr-status" id="cr-note"></div>
+    <div class="cr-actions">
+      <button class="btn primary" id="cr-run-btn" onclick="crRun()">generate</button>
+    </div>
+  </div>
+
+  <div class="cr-h2">recent AI pictures</div>
+  <div class="cr-recent" id="cr-recent">
+    {% for p in recent %}{% with c=p.cover %}{% if c %}
+    <div class="it"><a href="/post/{{ p.id }}/"><img src="{{ c.thumb_url }}" loading="lazy" alt=""></a>
+      <span class="n">#{{ p.id }}{% if p.image_count > 1 %} ×{{ p.image_count }}{% endif %}</span>
+      {% if p.gen_info.kind == 'create' %}<a class="again" href="/create/?from={{ p.id }}{% if p.source_photo_id %}&amp;photo={{ p.source_photo_id }}{% endif %}" title="load this picture's settings">again</a>{% endif %}
+    </div>{% endif %}{% endwith %}{% empty %}<div class="cr-sub">nothing yet</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const crEl = id => document.getElementById(id);
+let crPlanned = false;
+const crPick = makeLoraPicker('cr', {detect: async () => {
+  const d = await crPost('/api/comfy/plan/', crBody(true));     // re-plan = fresh detection + group picks
+  if (d.ok) crApplyPlan(d, true);
+  return null;
+}});
+function crStatus(t, err) { const s = crEl('cr-status'); s.textContent = t || ''; s.classList.toggle('err', !!err); }
+function crSrc() { const s = crEl('cr-src'); return s ? +s.dataset.photo : null; }
+function crDropSource() {
+  const s = crEl('cr-src'); if (s) s.closest('.cr-src').remove();
+  const u = new URL(location.href); u.searchParams.delete('photo'); history.replaceState(null, '', u);
+}
+function crBody(forPlan) {
+  const b = {description: crEl('cr-desc').value.trim(), ollama_model: crEl('cr-model').value};
+  const src = crSrc(); if (src) { b.photo_id = src; if (crEl('cr-den')) b.denoise = crEl('cr-den').value; }
+  if (forPlan) { b.loras = crPick.list.map(l => l.name); return b; }
+  Object.assign(b, {positive: crEl('cr-pos').value.trim(), negative: crEl('cr-neg').value.trim(),
+    orientation: crEl('cr-orient').value, size: crEl('cr-size').value, count: crEl('cr-count').value,
+    fast: crEl('cr-fast').checked, loras: crPick.body()});
+  const seed = crEl('cr-seed').value.trim(); if (/^\d+$/.test(seed)) b.seed = seed;
+  return b;
+}
+async function crPost(url, body) {
+  const r = await apiPost(url, body);
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  d._status = r.status;
+  return d;
+}
+/* plan answer → prompt boxes, shape, LoRA rows (AI-picked groups) + suggestion chips */
+function crApplyPlan(d, lorasOnly) {
+  if (!lorasOnly) {
+    crEl('cr-pos').value = d.positive; crEl('cr-neg').value = d.negative;
+    if (d.orientation) crEl('cr-orient').value = d.orientation;
+  }
+  const keep = new Map(crPick.list.map(l => [l.name, l.strength]));
+  crPick.list = [];
+  for (const it of d.selected || []) crPick.add(it, null, keep.get(it.name), it.sel_groups, it.why);
+  crPick.suggest(d.suggested || []);
+  crEl('cr-note').textContent = (d.source === 'llm' ? d.model + ' (' + d.seconds + ' s): ' : '') + (d.note || '')
+    + ((d.characters || []).length ? ' · characters: ' + d.characters.join(', ') : '');
+  crPlanned = true;
+}
+async function crPlan() {
+  const b = crBody(true);
+  if (!b.description) { crStatus('describe the picture first', true); return false; }
+  const btn = crEl('cr-plan-btn'); btn.disabled = true;
+  const t0 = Date.now();
+  const tick = setInterval(() => crStatus('the AI is writing the prompt… ' + Math.round((Date.now() - t0) / 1000) + ' s'), 1000);
+  crStatus('the AI is writing the prompt…');
+  try {
+    const d = await crPost('/api/comfy/plan/', b);
+    if (!d.ok) { crStatus('⚠ ' + (d.error || 'error'), true); return false; }
+    crApplyPlan(d);
+    crStatus(d.source === 'llm' ? 'planned — check the prompt and LoRAs, then generate' : '⚠ ' + d.note, d.source !== 'llm');
+    return true;
+  } catch (e) { crStatus('⚠ request failed', true); return false; }
+  finally { clearInterval(tick); btn.disabled = false; }
+}
+async function crRun() {
+  const b = crBody(false);
+  if (!b.positive) { crStatus('no prompt — plan first or type tags', true); return; }
+  crSaveUi();
+  const btn = crEl('cr-run-btn'); btn.disabled = true;
+  try {
+    const d = await crPost('/api/comfy/create/', b);
+    if (d.ok) {
+      watchTask(d.task_id); pollTasks(true);
+      crStatus(`generating ${d.width}×${d.height} (seed ${d.seed})… the task card shows progress`);
+      crWatch(d.task_id);
+    } else if (d._status === 409) crStatus('⚠ another AI edit / creation is still running — wait for it (or stop it in the task card)', true);
+    else crStatus('⚠ ' + (d.error || 'error'), true);
+  } catch (e) { crStatus('⚠ request failed', true); }
+  finally { btn.disabled = false; }
+}
+async function crGo() {
+  if (!crPlanned || !crEl('cr-pos').value.trim()) { if (!(await crPlan())) return; }
+  crRun();
+}
+/* follow the task here too: progress line, then a link + thumbnail of the new post */
+function crWatch(id) {
+  const iv = setInterval(async () => {
+    try {
+      const d = await (await fetch('/api/tasks/')).json();
+      const t = (d.tasks || []).find(x => x.id === id);
+      if (!t) return;
+      if (t.status === 'running') { crStatus(t.message); return; }
+      clearInterval(iv);
+      const m = /post #(\d+)/.exec(t.message || '');
+      if (t.status === 'done' && m) {
+        crEl('cr-status').innerHTML = `done → <a href="/post/${m[1]}/" style="color:var(--accent);text-decoration:underline;">open post #${m[1]}</a>`;
+        crAddRecent(+m[1]);
+      } else crStatus('⚠ ' + (t.message || t.status), true);
+    } catch (e) {}
+  }, 3000);
+}
+async function crAddRecent(postId) {
+  try {
+    const d = await (await fetch('/api/posts/?ids=' + postId)).json();
+    const p = (d.posts || [])[0];
+    const thumb = p && p.thumb_url;
+    if (!thumb) return;
+    const div = document.createElement('div'); div.className = 'it';
+    div.innerHTML = `<a href="/post/${postId}/"><img src="${aeEsc(thumb)}" alt=""></a><span class="n">#${postId}</span><a class="again" href="/create/?from=${postId}">again</a>`;
+    crEl('cr-recent').prepend(div);
+  } catch (e) {}
+}
+function crSaveUi() {
+  try { localStorage.setItem('createUi', JSON.stringify({fast: crEl('cr-fast').checked, size: crEl('cr-size').value, count: crEl('cr-count').value})); } catch (e) {}
+}
+async function crInit() {
+  try {
+    const u = JSON.parse(localStorage.getItem('createUi') || '{}');
+    if ('fast' in u) crEl('cr-fast').checked = !!u.fast;
+    if (u.size) crEl('cr-size').value = u.size;
+    if (u.count) crEl('cr-count').value = u.count;
+  } catch (e) {}
+  ['cr-size', 'cr-count'].forEach(id => crEl(id).addEventListener('change', crSaveUi));
+  crEl('cr-desc').addEventListener('input', () => { crPlanned = false; });
+  try {
+    const d = await (await fetch('/api/comfy/status/')).json();
+    const cur = d.config.ollama_model, models = d.ollama.ok ? d.ollama.models.slice() : [];
+    if (cur && !models.includes(cur)) models.unshift(cur);
+    crEl('cr-model').innerHTML = models.map(m => `<option value="${aeEsc(m)}"${m === cur ? ' selected' : ''}>${aeEsc(m)}</option>`).join('');
+    if (!d.comfy.ok) crStatus('⚠ ' + (d.comfy.error || 'ComfyUI is not reachable'), true);
+    else if (!d.ollama.ok) crStatus('⚠ Ollama is not reachable — type the prompt yourself', true);
+  } catch (e) {}
+  // "again": restore a created post's settings
+  const from = new URLSearchParams(location.search).get('from');
+  if (from) {
+    try {
+      const g = ((await (await fetch(`/api/post/${encodeURIComponent(from)}/gen-info/`)).json()).gen_info) || {};
+      crEl('cr-desc').value = g.request || '';
+      crEl('cr-pos').value = g.positive || ''; crEl('cr-neg').value = g.negative || '';
+      if (g.orientation) crEl('cr-orient').value = g.orientation;
+      if (g.size) crEl('cr-size').value = g.size;
+      if (g.count) crEl('cr-count').value = g.count;
+      crEl('cr-fast').checked = !!g.fast;
+      if (g.denoise && crEl('cr-den')) { crEl('cr-den').value = g.denoise; crEl('cr-den-val').textContent = (+g.denoise).toFixed(2); }
+      await crPick.restore(g.loras || []);
+      crPlanned = !!g.positive;
+      crStatus('settings of post #' + from + ' loaded — new seed unless you type one');
+    } catch (e) { crStatus('could not load post #' + from, true); }
+  }
+}
+crInit();
+</script>
+{% endblock %}

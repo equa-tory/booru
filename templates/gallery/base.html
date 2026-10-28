@@ -429,6 +429,7 @@ input[type=range].size-slider::-moz-range-thumb {
     <button class="btn" id="ai-all-btn" onclick="aiTagAll()">✦ ai tag all</button>
     <button class="btn header-desktop" onclick="goRandom()">&#9684; random</button>
     <a class="btn header-desktop" href="/tags/edit/">&#9998; tags</a>
+    <a class="btn header-desktop" href="/create/" title="describe a picture → the AI writes the prompt, picks LoRAs + trigger words, ComfyUI draws it">&#10024; create</a>
     <button class="btn header-desktop" onclick="organizeSingles()" title="move loose root files and multi-image post folders into month/day folders (faster to browse on disk)">&#128193; tidy files</button>
     <!-- "fix folders" kept available but hidden from the top bar (run from
          console or re-enable here if needed). Hidden on phone too (no mobile
@@ -465,6 +466,7 @@ input[type=range].size-slider::-moz-range-thumb {
       <a class="btn" href="/duplicates/" onclick="startProgress()">&#9673; dupes</a>
       <button class="btn" onclick="if(typeof toggleSelectMode!=='undefined'){toggleSelectMode();closeMobMenu();}" id="mob-sel-btn">&#9745; select</button>
       <a class="btn" href="/tags/edit/">&#9998; edit tags</a>
+      <a class="btn" href="/create/">&#10024; create</a>
       <button class="btn" onclick="organizeSingles();closeMobMenu()">&#128193; tidy files</button>
       {% for l in quick_links %}<a class="btn quick-link" href="{{ l.url }}" target="_blank" rel="noopener noreferrer">{{ l.label }}</a>{% endfor %}
       <button class="btn" onclick="openSettings()">&#9881; settings</button>
@@ -1090,7 +1092,7 @@ function applyLiveScanBtn() {
 
 /* ── Background-task notifications ─────────────────────────────── */
 let _taskTimer = null, _hadRunning = false;
-const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', video_len:'Measuring video lengths', wipe:'Wiping posts', backup:'Backing up database', restore:'Restoring database'};
+const TASK_LABELS = {merge:'Merging posts', scan:'Scanning inbox', ai_tag:'AI tagging', ai_multi:'AI tagging multi-image posts', dupes:'Finding duplicates', sound_tag:'Detecting video audio', rebase_paths:'Rebasing file paths', gif:'Building GIF', char_retag:'Re-tagging characters', model_download:'Downloading AI model', model_clone:'Cloning default model', custom_train:'Training my model', custom_scan:'Indexing library with my model', custom_apply:'Applying learned tag', comfy_edit:'AI edit (ComfyUI)', comfy_create:'AI create (ComfyUI)', video_len:'Measuring video lengths', wipe:'Wiping posts', backup:'Backing up database', restore:'Restoring database'};
 function fmtElapsed(s) { const m = Math.floor(s/60), ss = s%60; return m ? `${m}m ${ss}s` : `${ss}s`; }
 function renderTasks(tasks) {
   const panel = document.getElementById('task-panel'); if (!panel) return;

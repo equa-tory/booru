@@ -39,6 +39,13 @@ DEFAULTS = {
     'negative': ('bad quality, worst quality, worst detail, sketch, censor, lowres, bad anatomy, '
                  'bad hands, jpeg artifacts, watermark, text, signature'),
     'lora_bases': 'Illustrious, NoobAI',   # LoRA base models that fit the checkpoint ('' = all)
+    # "⚡ fast": a distillation LoRA (DMD2) on top of the same checkpoint — few steps at cfg 1
+    # (no negative pass), ~5x quicker on the P4. Used when a job asks for it.
+    'fast_lora': 'speed/dmd2_sdxl_4step_lora_fp16.safetensors',
+    'fast_strength': 1.0,
+    'fast_steps': 8,
+    'fast_sampler': 'lcm',
+    'fast_scheduler': 'sgm_uniform',
 }
 DENOISE_MIN, DENOISE_MAX = 0.2, 0.9
 MAX_UPLOAD_MP = 4.0          # bigger sources are shrunk before upload; ComfyUI rescales to `megapixels` anyway
@@ -64,7 +71,7 @@ def config():
         for k, v in saved.items():
             if k in DEFAULTS and v not in (None, ''):
                 cfg[k] = v
-            elif k in ('quality', 'negative', 'lora_bases') and v == '':
+            elif k in ('quality', 'negative', 'lora_bases', 'fast_lora') and v == '':
                 cfg[k] = ''          # an empty quality prefix / negative is a valid choice
     return clean_config(cfg)
 
@@ -85,13 +92,15 @@ def clean_config(cfg):
     num('denoise', float, DENOISE_MIN, DENOISE_MAX)
     num('megapixels', float, 0.25, 2.5)
     num('max_temp', int, 0, 110)
+    num('fast_strength', float, 0.0, 2.0)
+    num('fast_steps', int, 1, 30)
     out['enabled'] = bool(out['enabled'])
     out['free_after'] = bool(out['free_after'])
     for k in ('comfy_url', 'ollama_url'):
         out[k] = str(out[k]).strip().rstrip('/') or DEFAULTS[k]
-    for k in ('ollama_model', 'checkpoint', 'sampler', 'scheduler'):
+    for k in ('ollama_model', 'checkpoint', 'sampler', 'scheduler', 'fast_sampler', 'fast_scheduler'):
         out[k] = str(out[k]).strip() or DEFAULTS[k]
-    for k in ('quality', 'negative', 'lora_bases'):
+    for k in ('quality', 'negative', 'lora_bases', 'fast_lora'):
         out[k] = str(out[k]).strip()
     return out
 
@@ -269,6 +278,176 @@ def to_prompt(request_text, current_tags, cfg=None):
             'denoise': d['denoise'], 'note': note, 'source': source}
 
 
+# ── ✨ create: a description becomes a full prompt (+ LoRA trigger groups) ─────────
+# Kept byte-identical between calls and placed first: Ollama then reuses the cached prefix.
+PLAN_SYSTEM_PROMPT = """You write prompts for an anime image model that understands Danbooru tags.
+The user describes a picture (any language). Answer with:
+- "characters": named characters as Danbooru names, lowercase, spaces instead of underscores, WITHOUT the series in brackets (e.g. "hayasaka ai", "nakano miku"). Empty when nobody is named.
+- "tags": Danbooru tags for everything else in the picture, most important first: count (1girl, 2girls, 1boy, solo), hair, eyes, outfit and its parts, expression, pose, action, objects, background, lighting, framing (upper body, full body, cowboy shot, close-up). 15 to 35 tags. Lowercase, spaces instead of underscores. Never quality tags.
+- "negative": things the user explicitly does NOT want (e.g. "no glasses" -> "glasses"). Usually empty.
+- "orientation": "portrait", "landscape" or "square" (people standing or a single character: portrait; scenery or several people side by side: landscape).
+- "note": one short sentence describing the picture.
+When a source picture is given, its tags describe it now; "tags" must describe the FINAL picture (keep what the user does not change).
+Examples:
+Request: hayasaka ai in a maid outfit smiling in a cafe
+{"characters": ["hayasaka ai"], "tags": ["1girl", "solo", "maid", "maid headdress", "maid apron", "black dress", "white apron", "frills", "smile", "looking at viewer", "standing", "holding tray", "cafe", "indoors", "table", "window", "sunlight", "cowboy shot"], "negative": [], "orientation": "portrait", "note": "Hayasaka Ai as a smiling maid in a cafe"}
+Request: two girls on a beach at sunset, no hats
+{"characters": [], "tags": ["2girls", "beach", "sunset", "ocean", "sand", "orange sky", "cloud", "swimsuit", "bikini", "barefoot", "smile", "holding hands", "wind", "long hair", "from side", "wide shot"], "negative": ["hat"], "orientation": "landscape", "note": "two girls holding hands on a beach at sunset"}
+Answer with JSON only."""
+
+PLAN_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'characters': {'type': 'array', 'items': {'type': 'string'}},
+        'tags': {'type': 'array', 'items': {'type': 'string'}},
+        'negative': {'type': 'array', 'items': {'type': 'string'}},
+        'orientation': {'type': 'string', 'enum': ['portrait', 'landscape', 'square']},
+        'note': {'type': 'string'},
+    },
+    'required': ['characters', 'tags', 'negative', 'orientation', 'note'],
+}
+
+GROUPS_SYSTEM_PROMPT = """You choose trigger words for LoRAs (add-ons of an anime image model).
+Each LoRA has numbered trigger-word groups. For a character LoRA, one group is usually the character itself (name, hair, eyes) and the others are outfits or variants.
+Pick, for every LoRA, the group numbers that fit the user's description:
+- a character LoRA: the group with the character's look, plus the ONE outfit/variant group the description asks for (none when no outfit is described or nothing fits);
+- any other LoRA: the groups whose words match the description (a style or concept LoRA with a single group: that group).
+Answer {"picks": [{"lora": <LoRA number>, "groups": [<group numbers>]}]} with JSON only."""
+
+GROUPS_SCHEMA = {
+    'type': 'object',
+    'properties': {'picks': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'lora': {'type': 'integer'}, 'groups': {'type': 'array', 'items': {'type': 'integer'}}},
+        'required': ['lora', 'groups']}}},
+    'required': ['picks'],
+}
+
+
+def _ollama_json(cfg, system, user, schema, timeout=180.0):
+    """One schema-constrained Ollama chat call -> parsed dict (raises on any problem)."""
+    body = {
+        'model': cfg['ollama_model'], 'stream': False, 'think': False, 'keep_alive': '2m',
+        'format': schema, 'options': {'temperature': 0.2, 'num_ctx': 4096},
+        'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+    }
+    with _client(timeout) as c:
+        r = c.post(cfg['ollama_url'] + '/api/chat', json=body)
+    if r.status_code != 200:
+        raise ComfyError(f'Ollama HTTP {r.status_code}: {r.text[:200]}')
+    text = ((r.json().get('message') or {}).get('content') or '').strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        m = re.search(r'\{.*\}', text, re.S)
+        if not m:
+            raise ValueError('no JSON in the model answer')
+        data = json.loads(m.group(0))
+    if not isinstance(data, dict):
+        raise ValueError('unexpected JSON')
+    return data
+
+
+def parse_plan(data):
+    """The planner's JSON -> {'characters','tags','negative','orientation','note'} (cleaned);
+    raises ValueError when it holds no tags and no characters."""
+    def as_list(v):
+        if isinstance(v, str):
+            v = v.split(',')
+        return clean_tags(v if isinstance(v, list) else [])
+    chars = [re.sub(r'\s*\(.*?\)\s*', ' ', c).strip() for c in as_list(data.get('characters'))]
+    chars = [c for c in dict.fromkeys(chars) if c][:4]
+    tags = [t for t in as_list(data.get('tags')) if t not in chars]
+    if not tags and not chars:
+        raise ValueError('the model returned no tags')
+    orient = data.get('orientation') if data.get('orientation') in SIZE_RATIOS else 'portrait'
+    return {'characters': chars, 'tags': tags, 'negative': as_list(data.get('negative'))[:MAX_NEGATIVE],
+            'orientation': orient, 'note': str(data.get('note') or '')[:300]}
+
+
+def plan_prompt(description, cfg=None, current_tags=None):
+    """Description (+ the source picture's tags) -> plan dict + 'source' ('llm'/'fallback').
+    Never raises: without a usable answer the description's comma parts become the tags."""
+    cfg = cfg or config()
+    user = 'Request: ' + description.strip()
+    if current_tags:
+        user = 'Source picture tags: ' + ', '.join(clean_tags(current_tags)[:60]) + '\n' + user
+    try:
+        plan = parse_plan(_ollama_json(cfg, PLAN_SYSTEM_PROMPT, user, PLAN_SCHEMA))
+        plan['source'] = 'llm'
+    except Exception as e:
+        plan = {'characters': [], 'tags': clean_tags(description.split(',')), 'negative': [],
+                'orientation': 'portrait', 'source': 'fallback',
+                'note': f'Ollama gave no usable answer ({str(e)[:120]}) — your text was used as is'}
+    return plan
+
+
+def groups_question(description, items):
+    """The user message for GROUPS_SYSTEM_PROMPT: numbered LoRAs with numbered groups."""
+    lines = ['Description: ' + description.strip(), '']
+    for i, it in enumerate(items, 1):
+        lines.append(f'LoRA {i}: {it["title"]}' + (' (character)' if it['kind'] == 'character' else ''))
+        for g, words in enumerate(it['groups'], 1):
+            lines.append(f'  group {g}: {words[:300]}')
+    return '\n'.join(lines)
+
+
+def parse_group_picks(data, items):
+    """{'picks': [{'lora': n, 'groups': [..]}]} (1-based) -> {lora name: [0-based group idx]};
+    out-of-range numbers are dropped, a LoRA with nothing valid is left out (caller falls back)."""
+    out = {}
+    for p in (data or {}).get('picks') or []:
+        try:
+            li = int(p.get('lora')) - 1
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not 0 <= li < len(items):
+            continue
+        n = len(items[li]['groups'])
+        idx = []
+        for g in p.get('groups') or []:
+            try:
+                g = int(g) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= g < n and g not in idx:
+                idx.append(g)
+        if idx:
+            out[items[li]['name']] = sorted(idx)
+    return out
+
+
+def pick_groups(description, items, cfg=None, terms=()):
+    """Which trigger groups fit the description, per LoRA. First `match_groups` (the
+    planned tags `terms` / the description against each group's distinctive words); only
+    LoRAs where that finds nothing go to the LLM, in ONE call; then `default_groups`.
+    Returns ({name: [idx]}, {name: 'match'|'llm'|'default'})."""
+    cfg = cfg or config()
+    out, how, ask = {}, {}, []
+    for it in items:
+        idx, score = match_groups(it, terms, description)
+        if score:
+            out[it['name']], how[it['name']] = idx, 'match'
+        elif len(it['groups']) > 1:
+            ask.append(it)
+    picks = {}
+    if ask:
+        try:
+            picks = parse_group_picks(_ollama_json(cfg, GROUPS_SYSTEM_PROMPT, groups_question(description, ask), GROUPS_SCHEMA), ask)
+        except Exception as e:
+            print(f'create: group pick failed: {e}')
+    for it in items:
+        if it['name'] in out:
+            continue
+        got = picks.get(it['name'])
+        how[it['name']] = 'llm' if got else 'default'
+        got = got or default_groups(it)
+        if it['kind'] == 'character' and it['groups'] and 0 not in got:
+            got = [0] + got                    # the identity group (as in default_groups) is never dropped
+        out[it['name']] = got
+    return out, how
+
+
 # ── the ComfyUI API workflow ────────────────────────────────────
 def build_img2img(image_name, positive, negative, seed, cfg=None, denoise=None, loras=(), temp_node=None):
     """ComfyUI API-format workflow (dict) for an img2img edit:
@@ -290,6 +469,25 @@ def build_img2img(image_name, positive, negative, seed, cfg=None, denoise=None, 
                          'megapixels': float(cfg['megapixels']), 'resolution_steps': 8}},
         '4': {'class_type': 'VAEEncode', 'inputs': {'pixels': ['3', 0], 'vae': ['1', 2]}},
     }
+    return _sample_chain(wf, ['4', 0], positive, negative, seed, cfg, den, loras, temp_node)
+
+
+def build_txt2img(positive, negative, seed, cfg=None, width=832, height=1216, batch=1, loras=(), temp_node=None):
+    """ComfyUI API workflow for a NEW picture (the ✨ create page): empty latent of
+    width×height (multiples of 8) -> the same LoRA chain / prompts / sampler as img2img at
+    denoise 1.0. `batch` pictures share one sampling run."""
+    cfg = cfg or config()
+    wf = {
+        '1': {'class_type': 'CheckpointLoaderSimple', 'inputs': {'ckpt_name': cfg['checkpoint']}},
+        '4': {'class_type': 'EmptyLatentImage',
+              'inputs': {'width': int(width) // 8 * 8, 'height': int(height) // 8 * 8, 'batch_size': int(batch)}},
+    }
+    return _sample_chain(wf, ['4', 0], positive, negative, seed, cfg, 1.0, loras, temp_node)
+
+
+def _sample_chain(wf, latent, positive, negative, seed, cfg, den, loras, temp_node):
+    """Shared tail of both workflows: LoRAs -> prompts -> [GPU temp wait] -> KSampler ->
+    VAE decode -> PreviewImage (node ids 5-10, LoRAs 20+)."""
     model, clip = ['1', 0], ['1', 1]
     for i, (name, strength) in enumerate(loras):
         nid = str(20 + i)
@@ -299,7 +497,6 @@ def build_img2img(image_name, positive, negative, seed, cfg=None, denoise=None, 
         model, clip = [nid, 0], [nid, 1]
     wf['5'] = {'class_type': 'CLIPTextEncode', 'inputs': {'text': positive, 'clip': clip}}
     wf['6'] = {'class_type': 'CLIPTextEncode', 'inputs': {'text': negative, 'clip': clip}}
-    latent = ['4', 0]
     if temp_node is None:
         temp_node = int(cfg['max_temp']) > 0
     if temp_node and int(cfg['max_temp']) > 0:
@@ -549,6 +746,19 @@ def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, 
     unload_ollama(cfg)
     name = upload_image(src_path, cfg)
     wf = build_img2img(name, positive, negative, seed, cfg, denoise, loras=loras, temp_node=stat['temp_node'])
+    return _run_workflow(wf, cfg, check, progress), wf
+
+
+def generate_txt2img(positive, negative, seed, width, height, cfg=None, check=None, progress=None, loras=()):
+    """Run the txt2img workflow (a NEW picture); returns (png_bytes, workflow_used)."""
+    cfg = cfg or config()
+    stat = status_light(cfg)
+    unload_ollama(cfg)
+    wf = build_txt2img(positive, negative, seed, cfg, width, height, loras=loras, temp_node=stat['temp_node'])
+    return _run_workflow(wf, cfg, check, progress), wf
+
+
+def _run_workflow(wf, cfg, check, progress):
     problems = workflow_problems(wf)
     if problems:
         raise ComfyError('internal workflow error: ' + problems[0])
@@ -556,7 +766,29 @@ def generate(src_path, positive, negative, seed, denoise, cfg=None, check=None, 
     if progress:
         progress('generating…')
     desc = wait_for_result(pid, cfg, check=check, progress=progress)
-    return fetch_output(desc, cfg), wf
+    return fetch_output(desc, cfg)
+
+
+def fast_setup(cfg, loras):
+    """"⚡ fast" job: (cfg with the fast steps/cfg 1/sampler, LoRA list + the speed LoRA).
+    Raises ComfyError when no speed LoRA is configured."""
+    if not cfg.get('fast_lora'):
+        raise ComfyError('no speed LoRA set (settings → AI edit → fast LoRA)')
+    fast = dict(cfg, steps=cfg['fast_steps'], cfg=1.0, sampler=cfg['fast_sampler'], scheduler=cfg['fast_scheduler'])
+    return fast, list(loras) + [(cfg['fast_lora'], cfg['fast_strength'])]
+
+
+SIZE_RATIOS = {'portrait': 2 / 3, 'square': 1.0, 'landscape': 3 / 2}
+SIZE_MP = {'draft': 0.4, 'normal': None, 'large': 1.0}      # None = cfg['megapixels']
+
+
+def size_for(orientation, quality, cfg):
+    """(width, height), multiples of 64, for an orientation and a size preset."""
+    ratio = SIZE_RATIOS.get(orientation, SIZE_RATIOS['portrait'])
+    mp = SIZE_MP.get(quality) or float(cfg['megapixels'])
+    w = (mp * 1_000_000 * ratio) ** 0.5
+    h = w / ratio
+    return max(512, int(round(w / 64)) * 64), max(512, int(round(h / 64)) * 64)
 
 
 def status_light(cfg):
@@ -672,6 +904,61 @@ def default_groups(item):
     return list(range(n))
 
 
+def _key_words(item):
+    """Key trigger words = the first 3 of each group (the rest are often generic: 1girl, solo, school uniform...)."""
+    return {w.strip().lower().replace('_', ' ') for g in item['groups'] for w in g.split(',')[:3]}
+
+
+_common_cache = {'id': None, 'words': frozenset()}
+
+
+def _common_key_words(catalog):
+    """Key words found in more than 3% of the LoRAs (1girl, solo, looking at viewer...): they
+    say nothing about a LoRA. A planned prompt is full of them, and matching them suggested
+    hundreds of unrelated LoRAs."""
+    if _common_cache['id'] != id(catalog):
+        from collections import Counter
+        df = Counter(w for it in catalog for w in _key_words(it))
+        limit = max(5, len(catalog) * 0.03)
+        _common_cache.update(id=id(catalog), words=frozenset(w for w, n in df.items() if n > limit))
+    return _common_cache['words']
+
+
+def _group_words(g):
+    return {_norm(w) for w in g.split(',') if w.strip()}
+
+
+def match_groups(item, terms, text=''):
+    """Deterministic trigger-group choice: score each group by its DISTINCTIVE words (left
+    out: words in more than half of the LoRA's groups, e.g. blonde hair / blue eyes of a
+    character) found among `terms` (planned tags) or inside `text` (the description).
+    Returns (indexes, best score): a character's identity group 0 plus its best other
+    group; any other LoRA: every group with a hit. Score 0 = nothing matched."""
+    groups = [_group_words(g) for g in item['groups']]
+    n = len(groups)
+    if not n:
+        return [], 0
+    from collections import Counter
+    seen = Counter(w for g in groups for w in g)
+    shared = {w for w, c in seen.items() if n >= 2 and c > n / 2}
+    termset = {_norm(t) for t in terms or []}
+    text = ' ' + re.sub(r'[^a-z0-9]+', ' ', str(text).lower()) + ' '
+    scores = []
+    for g in groups:
+        s = 0
+        for w in g - shared:
+            if w in termset or (len(w) > 3 and ' ' + w + ' ' in text):
+                s += 1
+        scores.append(s)
+    if item['kind'] == 'character':              # score = the best outfit/variant group (group 0 is the identity)
+        if n == 1:
+            return [0], 0
+        top = max(range(1, n), key=lambda i: (scores[i], -i))
+        return ([0, top] if scores[top] else [0]), scores[top]
+    best = max(scores)
+    return [i for i, s in enumerate(scores) if s], best
+
+
 def _char_name(tag):
     """'nakano_miku_(go-toubun_no_hanayome)' -> 'nakano miku'."""
     return re.sub(r'\(.*?\)', '', str(tag).replace('_', ' ')).strip()
@@ -700,15 +987,15 @@ def suggest_loras(char_tags, terms, catalog, limit=8):
             if toks <= hay:
                 bump(it, 100 + len(toks) + (5 if it['kind'] == 'character' else 0), 'character: ' + name)
     phrases = []
+    common = _common_key_words(catalog)
     for t in terms or []:
         t = re.sub(r'\s+', ' ', str(t).lower().replace('_', ' ')).strip()
-        if t and t not in GENERIC_TOKENS and t not in phrases:
+        if t and t not in GENERIC_TOKENS and t not in common and t not in phrases:
             phrases.append(t)
     for it in catalog:
         if it['kind'] == 'character':
             continue
-        # key trigger words = the first 3 of each group (the rest are often generic: 1girl, solo, school uniform...)
-        key_words = {w.strip().lower().replace('_', ' ') for g in it['groups'] for w in g.split(',')[:3]}
+        key_words = _key_words(it)
         tagset = {t.replace('_', ' ') for t in it['tags']}
         title_toks = set(_tokens(it['title'] + ' ' + it['file']))
         for ph in phrases:

@@ -1,0 +1,107 @@
+<style>
+/* LoRA picker (AI edit box on the post page, ✨ create page) — markup in _lora_picker.html */
+.ae-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin:.3rem 0; }
+.ae-chip { font-family:var(--mono); font-size:.68rem; background:var(--bg3); color:var(--text); border:1px solid var(--border);
+  border-radius:999px; padding:.22rem .55rem; cursor:pointer; display:inline-flex; align-items:center; gap:.3rem; max-width:100%; }
+.ae-chip img { width:18px; height:18px; border-radius:50%; object-fit:cover; }
+.ae-chip.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+.ae-chip .ae-why { color:var(--text-dim); }
+.ae-chip.on .ae-why { color:rgba(255,255,255,.75); }
+.ae-res { position:absolute; left:0; right:0; top:100%; z-index:5; background:var(--bg2); border:1px solid var(--border);
+  border-radius:0 0 6px 6px; max-height:240px; overflow-y:auto; box-shadow:0 4px 16px rgba(0,0,0,.5); }
+.ae-res div { display:flex; gap:.45rem; align-items:center; padding:.35rem .5rem; cursor:pointer; font-size:.74rem; border-bottom:1px solid var(--border); }
+.ae-res div:hover { background:var(--bg3); }
+.ae-res img, .ae-lrow img.ae-thumb { width:34px; height:34px; border-radius:6px; object-fit:cover; background:var(--bg3); flex:none; }
+.ae-res small, .ae-lrow small { color:var(--text-dim); font-family:var(--mono); font-size:.62rem; }
+.ae-lrow { border:1px solid var(--border); border-radius:8px; padding:.4rem .5rem; margin-top:.35rem; background:var(--bg3); }
+.ae-lrow .ae-ltop { display:flex; gap:.45rem; align-items:center; }
+.ae-lrow .ae-ltitle { flex:1; min-width:0; font-size:.76rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ae-lrow input[type=range] { width:5.5rem; flex:none; }
+.ae-lrow .ae-x { background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:1rem; padding:0 .2rem; }
+.ae-lrow .ae-ai { font-family:var(--mono); font-size:.6rem; color:var(--text-dim); margin-top:.15rem; }
+</style>
+<script>
+/* One LoRA picker per id prefix p (elements p-lora-n/-detect/-sug/-q/-res/-sel, see
+   _lora_picker.html): suggestions (chips), search, selected rows with strength and
+   trigger-word groups (chips). opts.detect() returns a suggestion list (or null). */
+const LP = {};
+function aeEsc(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+function loraShort(g) { const w = g.split(',').map(x => x.trim()).filter(Boolean); return w.slice(0, 3).join(', ') + (w.length > 3 ? ' +' + (w.length - 3) : ''); }
+function makeLoraPicker(p, opts) {
+  opts = opts || {};
+  const el = s => document.getElementById(p + '-lora-' + s);
+  const ref = `LP['${p}']`;
+  const me = LP[p] = {list: [], sug: [], left: [], res: [], max: 6, _t: null};
+  /* it = catalog item (name, title, kind, groups, default_groups, preview); selGroups =
+     group indexes (the AI's pick) or selWords = the exact group strings to select */
+  me.add = (it, selWords, strength, selGroups, why) => {
+    if (!it || me.list.some(l => l.name === it.name)) return;
+    if (me.list.length >= me.max) { toast('at most ' + me.max + ' LoRAs', 'err'); return; }
+    const groups = it.groups || [];
+    let sel = new Set(selGroups || it.default_groups || []);
+    if (selWords) sel = new Set(groups.map((g, i) => selWords.includes(g) ? i : -1).filter(i => i >= 0));
+    me.list.push({name: it.name, title: it.title, kind: it.kind, preview: it.preview || '', groups, why: why || it.why || '',
+                  strength: strength != null ? +strength : (it.strength != null ? +it.strength : (it.kind === 'character' ? 1.0 : 0.8)), sel});
+    me.render();
+  };
+  me.remove = i => { me.list.splice(i, 1); me.render(); };
+  me.group = (i, g) => { const s = me.list[i].sel; s.has(g) ? s.delete(g) : s.add(g); me.render(); };
+  me.strength = (i, v) => { me.list[i].strength = +v; const o = document.getElementById(`${p}-ls-${i}`); if (o) o.textContent = (+v).toFixed(2); };
+  me.clear = () => { me.list = []; me.sug = []; const q = el('q'); if (q) q.value = ''; me.render(); };
+  me.render = () => {
+    el('n').textContent = me.list.length ? '(' + me.list.length + ')' : '';
+    el('sel').innerHTML = me.list.map((l, i) => `<div class="ae-lrow">
+      <div class="ae-ltop">${l.preview ? `<img class="ae-thumb" src="${aeEsc(l.preview)}" loading="lazy" alt="">` : ''}
+        <div class="ae-ltitle" title="${aeEsc(l.name)}">${aeEsc(l.title)}<br><small>${l.kind === 'character' ? 'character · ' : ''}${l.groups.length} trigger group(s)</small></div>
+        <input type="range" min="0" max="1.5" step="0.05" value="${l.strength}" oninput="${ref}.strength(${i}, this.value)" title="strength">
+        <small id="${p}-ls-${i}">${(+l.strength).toFixed(2)}</small>
+        <button type="button" class="ae-x" onclick="${ref}.remove(${i})" title="remove">&#10005;</button></div>
+      ${l.groups.length ? `<div class="ae-chips">${l.groups.map((g, gi) => `<button type="button" class="ae-chip${l.sel.has(gi) ? ' on' : ''}" title="${aeEsc(g)}" onclick="${ref}.group(${i}, ${gi})">${aeEsc(loraShort(g))}</button>`).join('')}</div>` : ''}
+      ${l.why ? `<div class="ae-ai">${aeEsc(l.why)}</div>` : ''}
+    </div>`).join('');
+    me.suggest();
+  };
+  me.suggest = list => {
+    if (list) me.sug = list;
+    const left = me.left = me.sug.filter(it => !me.list.some(l => l.name === it.name));
+    el('sug').innerHTML = left.map((it, i) => `<button type="button" class="ae-chip" title="${aeEsc(it.title + (it.reason ? ' — ' + it.reason : ''))}" onclick="${ref}.add(${ref}.left[${i}])">
+      ${it.preview ? `<img src="${aeEsc(it.preview)}" loading="lazy" alt="">` : ''}+ ${aeEsc(it.title.length > 34 ? it.title.slice(0, 33) + '…' : it.title)}${it.reason ? ` <span class="ae-why">${aeEsc(it.reason)}</span>` : ''}</button>`).join('');
+  };
+  me.detect = async quiet => {
+    if (!opts.detect) return;
+    const btn = el('detect'); if (btn) btn.disabled = true;
+    try {
+      const list = await opts.detect();
+      if (list) { me.suggest(list); if (!quiet && !list.length) toast('no matching LoRA found — try the search'); }
+    } catch (e) { if (!quiet) toast('LoRA detection failed', 'err'); }
+    finally { if (btn) btn.disabled = false; }
+  };
+  me.search = q => {
+    clearTimeout(me._t);
+    me._t = setTimeout(async () => {
+      const box = el('res');
+      try {
+        const d = await (await fetch('/api/comfy/loras/?q=' + encodeURIComponent(q.trim()))).json();
+        me.res = d.loras || [];
+        box.innerHTML = me.res.map((it, i) => `<div onmousedown="event.preventDefault();${ref}.pick(${i})">
+          ${it.preview ? `<img src="${aeEsc(it.preview)}" loading="lazy" alt="">` : '<img alt="">'}<span>${aeEsc(it.title)}<br><small>${aeEsc(it.folder)} · ${it.groups.length} group(s)</small></span></div>`).join('')
+          || `<div style="cursor:default;">${d.ok === false ? aeEsc(d.error || 'LoRA list unavailable') : 'no LoRA found'}</div>`;
+        box.style.display = '';
+      } catch (e) { box.style.display = 'none'; }
+    }, 220);
+  };
+  me.pick = i => { me.add(me.res[i]); el('q').value = ''; el('res').style.display = 'none'; };
+  me.hideResults = () => setTimeout(() => { el('res').style.display = 'none'; }, 200);
+  /* saved = gen_info.loras ([{name, title, strength, words}]): look each up again so all groups show */
+  me.restore = async saved => {
+    for (const l of saved || []) {
+      let it = null;
+      try { it = ((await (await fetch('/api/comfy/loras/?name=' + encodeURIComponent(l.name))).json()).loras || [])[0]; } catch (e) {}
+      me.add(it || {name: l.name, title: l.title || l.name, kind: 'other', groups: l.words || [], default_groups: []}, l.words || [], l.strength);
+    }
+  };
+  /* what the server wants: [{name, strength, words: [selected group strings]}] */
+  me.body = () => me.list.map(l => ({name: l.name, strength: l.strength, words: [...l.sel].sort((a, c) => a - c).map(g => l.groups[g])}));
+  return me;
+}
+</script>
