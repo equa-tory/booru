@@ -1614,27 +1614,72 @@ function recentSearchesRow() {
 }
 
 /* ── Mobile tag sheet ────────────────────────────────── */
-let _sheetTags = [], _sheetSugItems = [], _sheetSugTimer = null;
+let _sheetTags = [], _sheetSugItems = [], _sheetSugTimer = null, _sheetTagsP = null;
+/* the whole tag list (6,000+): kept 10 min in sessionStorage across page loads and fetched
+   quietly after each page load, so opening the sheet never waits for the network */
+const SHEET_TAGS_KEY = 'sheetTagsCache', SHEET_TAGS_TTL = 10 * 60 * 1000;
+function loadSheetTags(force) {
+  if (_sheetTags.length && !force) return Promise.resolve(_sheetTags);
+  if (!force) {
+    try {
+      const c = JSON.parse(sessionStorage.getItem(SHEET_TAGS_KEY) || 'null');
+      if (c && Date.now() - c.t < SHEET_TAGS_TTL && c.tags.length) { _sheetTags = c.tags; return Promise.resolve(_sheetTags); }
+    } catch (e) {}
+  }
+  if (!_sheetTagsP) _sheetTagsP = fetch('/api/tags/').then(r => r.json()).then(d => {
+    _sheetTags = d.tags || [];
+    try { sessionStorage.setItem(SHEET_TAGS_KEY, JSON.stringify({t: Date.now(), tags: _sheetTags})); } catch (e) {}
+    return _sheetTags;
+  }).finally(() => { _sheetTagsP = null; });
+  return _sheetTagsP;
+}
+window.addEventListener('load', () => setTimeout(() => {
+  if (document.getElementById('sheet-tag-list')) loadSheetTags().catch(() => {});
+}, 1500));
 async function openTagSheet() {
   document.body.style.overflow = 'hidden';   // prevent body scroll + iOS pull-to-refresh
-  if (!_sheetTags.length) {
-    const r2 = await fetch('/api/tags/');
-    _sheetTags = (await r2.json()).tags;
-  }
   // prefill with the tags already in the current search
   const cur = new URLSearchParams(window.location.search).getAll('tag');
   const inp = document.getElementById('sheet-search');
   inp.value = cur.length ? cur.join(' ') + ' ' : '';
-  renderSheetTags(_sheetTags);
-  await renderSheetQuick();
-  openModal('tag-sheet-backdrop');
+  openModal('tag-sheet-backdrop');           // open FIRST; the list and chips fill in right after
   inp.focus();
+  renderSheetQuick();
+  if (_sheetTags.length || sessionStorage.getItem(SHEET_TAGS_KEY)) { await loadSheetTags(); renderSheetTags(_sheetTags); }
+  else {
+    document.getElementById('sheet-tag-list').innerHTML = '<div style="padding:1rem;color:var(--text-dim);font-family:var(--mono);font-size:.8rem;">loading tags…</div>';
+    try { await loadSheetTags(); } catch (e) {}
+    renderSheetTags(_sheetTags);
+  }
+  if (inp.value.trim()) onSheetInput(inp.value);
 }
 function closeTagSheet() { closeModal('tag-sheet-backdrop'); hideSheetSug(); document.body.style.overflow = ''; }
 
+/* only SHEET_PAGE rows are in the page at a time; more are added as the list scrolls near its end
+   (6,000+ rows at once = ~34,000 elements, which made the sheet and every keystroke slow) */
+const SHEET_PAGE = 150;
+let _sheetShown = [], _sheetN = 0, _sheetIO = null;
 function renderSheetTags(tags) {
   const el = document.getElementById('sheet-tag-list');
-  el.innerHTML = tags.map(t => `
+  _sheetShown = tags; _sheetN = 0; el.innerHTML = '';
+  if (!_sheetIO && 'IntersectionObserver' in window) {
+    _sheetIO = new IntersectionObserver(en => { if (en.some(x => x.isIntersecting)) sheetMoreTags(); }, {root: el, rootMargin: '600px 0px'});
+  }
+  sheetMoreTags();
+}
+function sheetMoreTags() {
+  const el = document.getElementById('sheet-tag-list');
+  const old = el.querySelector('.sheet-more'); if (old) { if (_sheetIO) _sheetIO.unobserve(old); old.remove(); }
+  const next = _sheetShown.slice(_sheetN, _sheetN + SHEET_PAGE);
+  _sheetN += next.length;
+  el.insertAdjacentHTML('beforeend', sheetTagRows(next));
+  if (_sheetN < _sheetShown.length) {
+    el.insertAdjacentHTML('beforeend', `<div class="sheet-more" style="padding:.6rem;text-align:center;color:var(--text-dim);font-size:.75rem;" onclick="sheetMoreTags()">${_sheetShown.length - _sheetN} more…</div>`);
+    if (_sheetIO) _sheetIO.observe(el.querySelector('.sheet-more'));
+  }
+}
+function sheetTagRows(tags) {
+  return tags.map(t => `
     <div class="sheet-tag-item" data-name="${t.name}">
       <span class="tag-fav-btn ${t.fav ? 'active' : ''}"
             onclick="sheetToggleFav('${t.name}', this)">&#9829;</span>
@@ -1740,9 +1785,11 @@ function onSheetInput(val) {
   const inp = document.getElementById('sheet-search');
   const tok = searchTokenAt(val, inp ? inp.selectionStart : null);
   const last = tok ? tok.query.toLowerCase() : '';
-  document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
-    el.style.display = (!last || el.dataset.name.includes(last)) ? '' : 'none';
-  });
+  // filter the DATA and redraw the first rows (touching 6,000 DOM rows per keystroke froze phones)
+  clearTimeout(window._sheetFilterT);
+  window._sheetFilterT = setTimeout(() => {
+    if (_sheetTags.length) renderSheetTags(last ? _sheetTags.filter(t => t.name.includes(last)) : _sheetTags);
+  }, 60);
   clearTimeout(_sheetSugTimer);
   if (!tok) { cancelTagSug('sheet'); hideSheetSug(); return; }
   _sheetSugTimer = setTimeout(async () => {
@@ -1847,12 +1894,6 @@ function closeUploadModal() {
 document.addEventListener('DOMContentLoaded', () =>
   attachDragDismiss(document.querySelector('#upload-modal .modal'), closeUploadModal));
 
-function filterSheetTags(q) {  // kept for back-compat (unused)
-  q = (q||'').toLowerCase();
-  document.querySelectorAll('#sheet-tag-list .sheet-tag-item').forEach(el => {
-    el.style.display = el.dataset.name.includes(q) ? '' : 'none';
-  });
-}
 
 /* ── Drag a panel/sheet down to dismiss it ─────────────────────
    One implementation for the upload modal, the tag sheet, the "more" menu and

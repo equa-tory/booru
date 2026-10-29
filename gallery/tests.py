@@ -2689,7 +2689,7 @@ class PhoneJumpButtonsTests(TestCase):
     def setUp(self):
         self.client.post('/login/', {'password': settings.GALLERY_PASSWORD})
 
-    def test_markup_and_mode_toggle_lives_in_the_bar(self):
+    def test_markup_and_no_mode_toggle_in_the_bar(self):
         post = Post.objects.create()
         html = self.client.get(f'/post/{post.pk}/').content.decode()
         nav = html.split('id="mini-nav"')[1].split('id="mini-bar"')[0]
@@ -2699,7 +2699,7 @@ class PhoneJumpButtonsTests(TestCase):
         self.assertIn("jumpDetail('top')", nav); self.assertIn("jumpDetail('bottom')", nav)
         bar = html.split('id="mini-bar"')[1]
         top_row = bar.split('mini-row-bottom')[0]
-        self.assertIn('id="mini-mode-btn"', top_row)                                    # scroll/paged toggle: top row of the panel
+        self.assertNotIn('id="mini-mode-btn"', top_row)                                 # no scroll/paged icon next to the heart
         self.assertIn('body.minimal-ui.mini-jump-on #mode-toggle-fixed { display:none !important; }', html)
 
     def test_jump_is_instant_and_aims_at_the_items(self):

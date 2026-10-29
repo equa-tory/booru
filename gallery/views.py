@@ -9,6 +9,7 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse, HttpResponseNotModified, StreamingHttpResponse
 from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
+from django.views.decorators.gzip import gzip_page
 from django.db import transaction
 from django.db.models import Q, Case, When, IntegerField, FloatField, F, Count, Max, Value, OuterRef, Subquery
 from django.db.models.functions import Coalesce, Greatest, Least, Mod
@@ -2110,6 +2111,7 @@ def tag_search(request):
                                     'category': t.category} for t in tags]})
 
 
+@gzip_page          # ~500 KB of JSON -> ~80 KB: the phone tag sheet's whole list
 def tags_all(request):
     # Same ordering the desktop sidebar uses: pinned first, then by category
     # rank (meta, char, art, gen, ai), then alphabetically by name — so the
