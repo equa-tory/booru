@@ -1101,11 +1101,20 @@ def lora_catalog(cfg=None, force=False):
     LoRA Manager API (100 per page), cached 10 minutes per process. Without LoRA Manager,
     ComfyUI's plain /models/loras names are used (no tags, no trigger words)."""
     cfg = cfg or config()
-    key = (cfg['comfy_url'], cfg['lora_bases'])
+    revision = prefs.get('comfy_lora_revision', 0)
+    key = (cfg['comfy_url'], cfg['lora_bases'], revision)
     now = time.time()
     if not force and _catalog_cache['items'] is not None and _catalog_cache['key'] == key and now - _catalog_cache['t'] < CATALOG_TTL:
         return _catalog_cache['items']
     items = []
+    if force:
+        # Listing only reads LoRA Manager's cache; scan new folders first.
+        with _client(120.0) as c:
+            r = c.get(cfg['comfy_url'] + '/api/lm/loras/scan')
+            if r.status_code not in (200, 404, 405):
+                raise ComfyError(f'LoRA scan HTTP {r.status_code}')
+            if r.status_code == 200 and r.json().get('status') != 'success':
+                raise ComfyError('LoRA scan did not complete')
     try:
         with _client(20.0) as c:
             page = 1
@@ -1129,8 +1138,12 @@ def lora_catalog(cfg=None, force=False):
             items = []
     bases = {b.strip().lower() for b in cfg['lora_bases'].split(',') if b.strip()}
     if bases:
-        items = [i for i in items if not i['base'] or i['base'].lower() in bases]
+        items = [i for i in items if not i['base'] or i['base'].lower() == 'unknown' or i['base'].lower() in bases]
     items.sort(key=lambda i: i['title'].lower())
+    if force:
+        # Other gunicorn workers must discard their old catalogs too.
+        revision = prefs.update('comfy_lora_revision', lambda n: n + 1, default=0)
+        key = (cfg['comfy_url'], cfg['lora_bases'], revision)
     _catalog_cache.update(t=now, key=key, items=items)
     return items
 

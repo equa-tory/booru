@@ -101,19 +101,30 @@ function makeLoraPicker(p, opts) {
     } catch (e) { if (!quiet) toast('LoRA detection failed', 'err'); }
     finally { if (btn) btn.disabled = false; }
   };
-  me.search = q => {
+  me.search = (q, refresh = false) => {
+    if (el('refresh').disabled) return;
     clearTimeout(me._t);
+    if (refresh) el('refresh').disabled = true;
     me._t = setTimeout(async () => {
       const box = el('res');
       try {
-        const d = await (await fetch('/api/comfy/loras/?q=' + encodeURIComponent(q.trim()))).json();
+        const response = await fetch('/api/comfy/loras/?q=' + encodeURIComponent(q.trim()) + (refresh ? '&refresh=1' : ''), {cache: 'no-store'});
+        const d = await response.json();
+        if (!response.ok || d.ok === false) throw new Error(d.error || 'LoRA list unavailable');
         me.res = d.loras || [];
         box.innerHTML = me.res.map((it, i) => `<div onmousedown="event.preventDefault();${ref}.pick(${i})">
           ${it.preview ? `<img src="${aeEsc(it.preview)}" loading="lazy" alt="">` : '<img alt="">'}<span>${aeEsc(it.title)}<br><small>${aeEsc(it.folder)} · ${it.groups.length} group(s)</small></span></div>`).join('')
           || `<div style="cursor:default;">${d.ok === false ? aeEsc(d.error || 'LoRA list unavailable') : 'no LoRA found'}</div>`;
         box.style.display = '';
-      } catch (e) { box.style.display = 'none'; }
-    }, 220);
+        if (refresh) {
+          me.suggest(me.res);
+          toast('LoRA catalog refreshed (' + d.total + ') — search by name or tag');
+        }
+      } catch (e) {
+        box.style.display = 'none';
+        if (refresh) toast('LoRA refresh failed: ' + e.message, 'err');
+      } finally { if (refresh) el('refresh').disabled = false; }
+    }, refresh ? 0 : 220);
   };
   me.pick = i => { me.add(me.res[i]); el('q').value = ''; el('res').style.display = 'none'; };
   me.hideResults = () => setTimeout(() => { el('res').style.display = 'none'; }, 200);

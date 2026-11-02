@@ -2351,6 +2351,8 @@ class ComfyLoraTests(TestCase):
         self.pages = 0
 
         def handler(req):
+            if req.url.path == '/api/lm/loras/scan':
+                return httpx.Response(200, json={'status': 'success'})
             if req.url.path == '/api/lm/loras/list':
                 self.pages += 1
                 return httpx.Response(200, json=LM_PAGES[int(req.url.params['page']) - 1])
@@ -2376,9 +2378,39 @@ class ComfyLoraTests(TestCase):
         comfy.lora_catalog(force=True)
         self.assertEqual(self.pages, 4)
 
+    def test_refresh_scans_new_folders_before_listing(self):
+        scanned = False
+        original = self.handler
+
+        def handler(req):
+            nonlocal scanned
+            if req.url.path == '/api/lm/loras/scan':
+                scanned = True
+                return httpx.Response(200, json={'status': 'success'})
+            if req.url.path == '/api/lm/loras/list' and scanned:
+                return httpx.Response(200, json={'items': [
+                    _lm_item('Illustrious/test', 'Yor', 'Yor Forger', base='Unknown')], 'total_pages': 1})
+            return original(req)
+
+        self.handler = handler
+        self.assertFalse(any(i['file'] == 'Yor' for i in comfy.lora_catalog()))
+        self.assertEqual([i['name'] for i in comfy.lora_catalog(force=True)],
+                         ['Illustrious/test/Yor.safetensors'])
+
+    def test_catalog_reloads_when_another_worker_refreshes(self):
+        comfy.lora_catalog()
+        prefs.update('comfy_lora_revision', lambda n: n + 1, default=0)
+        comfy.lora_catalog()
+        self.assertEqual(self.pages, 4)
+
+    def test_failed_scan_is_reported(self):
+        self.handler = lambda req: httpx.Response(500)
+        with self.assertRaises(comfy.ComfyError):
+            comfy.lora_catalog(force=True)
+
     def test_catalog_falls_back_to_plain_names(self):
         def no_lm(req):
-            if req.url.path == '/api/lm/loras/list':
+            if req.url.path in ('/api/lm/loras/list', '/api/lm/loras/scan'):
                 return httpx.Response(404)
             return httpx.Response(200, json=['Illustrious/character/x.safetensors', 'y.safetensors'])
         self.handler = no_lm
@@ -2971,6 +3003,104 @@ class WipeAndSplitTests(TestCase):
 
 
 # ── ✨ create: plan (LLM prompt + LoRAs + trigger groups) and generate ─────────
+class SavedDescriptionFolderTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for the saved-description UI test')
+    def test_folders_save_move_filter_and_reload_legacy_descriptions(self):
+        import subprocess
+        with open(os.path.join(settings.BASE_DIR, 'templates/gallery/create.html'), encoding='utf-8') as f:
+            template = f.read()
+        self.assertIn('<div id="cr-saved" onmouseenter=', template)
+        start = template.index('let crSaved =')
+        source = template[start:template.index('function crSaveUi()', start)]
+        program = r'''
+const assert = require('assert');
+const elements = {};
+const crEl = id => elements[id] ||= {value: '', textContent: '', innerHTML: '', style: {}, dispatchEvent() {},
+  getBoundingClientRect() {return {left: 20, bottom: 100}}, offsetWidth: 520, offsetHeight: 300};
+const window = {innerWidth: 1000, innerHeight: 800};
+const crPick = {list: [], max: 6, render() {}, add(it, words, strength) {
+  this.list.push({...it, strength, sel: new Set(it.groups.map((g, i) => words.includes(g) ? i : -1).filter(i => i >= 0))});
+}};
+const aeEsc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const toast = () => {}, crStatus = () => {};
+let folderName = 'Characters <friends>', fail = false;
+const prompt = () => folderName, confirm = () => true;
+const stored = {createPrompts: [{id: 'old', name: 'Original', text: 'old description'}]};
+const fetch = async () => ({json: async () => ({prefs: structuredClone(stored)})});
+const crPost = async (url, body) => {
+  if (fail) return {ok: false, error: 'offline'};
+  stored[body.key] = structuredClone(body.value);
+  return {ok: true};
+};
+''' + source + r'''
+(async () => {
+  await crSavedLoad();
+  assert.strictEqual(crEl('cr-sv-popover').hidden, true);
+  assert(!crEl('cr-saved').innerHTML.includes('crSavedUse(0)'));
+  assert(crEl('cr-saved').innerHTML.includes('onmouseenter="crSavedOpenFolder'));
+  assert.strictEqual(crSavedFolderOf(crSaved[0]), '');
+  await crSavedNewFolder();
+  const folder = crSavedFolders[0].id;
+  assert.strictEqual(crSavedFolder, folder);
+  assert(crEl('cr-saved').innerHTML.includes('Characters &lt;friends>'));
+  crSavedOpenFolder('');
+  assert.strictEqual(crEl('cr-sv-popover').hidden, false);
+  assert(crEl('cr-sv-popover').innerHTML.includes('Original'));
+  crSavedOpenFolder('', {getBoundingClientRect: () => ({left: 980, bottom: 790})});
+  assert.strictEqual(crEl('cr-sv-popover').style.left, '468px');
+  assert.strictEqual(crEl('cr-sv-popover').style.top, '488px');
+  await crSavedMove(0, folder);
+  assert.strictEqual(stored.createPrompts[0].folder, folder);
+  assert(!crEl('cr-sv-popover').innerHTML.includes('class="nm"'));
+  crSavedOpenFolder(folder);
+  assert(crEl('cr-sv-popover').innerHTML.includes('crSavedUse(0)'));
+  crSavedUse(0);
+  assert.strictEqual(crEl('cr-desc').value, 'old description');
+  crSavedUse(0);
+  assert.strictEqual(crEl('cr-desc').value, '');
+  crEl('cr-desc').value = 'new description';
+  crSavedAdd();
+  assert.strictEqual(crSavedEdit.folder, folder);
+  crEl('cr-sv-name').value = 'New';
+  crEl('cr-sv-text').value = 'new description';
+  crEl('cr-sv-folder').value = folder;
+  await crSavedCommit();
+  assert.strictEqual(stored.createPrompts[0].folder, folder);
+  crSavedOpenFolder('');
+  await crSavedMove(1, '');
+  assert(crEl('cr-sv-popover').innerHTML.includes('crSavedUse(1)'));
+  assert(!crEl('cr-sv-popover').innerHTML.includes('crSavedUse(0)'));
+  crSavedClose();
+  assert.strictEqual(crEl('cr-sv-popover').hidden, true);
+  crSavedOpenFolder('');
+  await crSavedLoad();
+  assert.strictEqual(crSaved.length, 2);
+  assert.strictEqual(crSavedFolders[0].id, folder);
+  assert.strictEqual(crSaved[1].text, 'old description');
+  fail = true;
+  await crSavedMove(1, folder);
+  assert.strictEqual(crSaved[1].folder, '');
+  crSavedAdd();
+  crEl('cr-sv-name').value = 'Retry';
+  crEl('cr-sv-text').value = 'retry text';
+  crEl('cr-sv-folder').value = folder;
+  await crSavedCommit();
+  assert.strictEqual(crSaved.length, 2);
+  assert.strictEqual(crSavedEdit.text, 'retry text');
+  crSavedClose();
+  assert.strictEqual(crEl('cr-sv-popover').hidden, false);
+  assert(!crEl('cr-sv-popover').innerHTML.includes('crSavedUse('));
+  crSavedEdit = null;
+  fail = false;
+  await crSavedDelete(0);
+  assert.strictEqual(stored.createPrompts.length, 1);
+  assert.strictEqual(stored.createPrompts[0].id, 'old');
+})().catch(e => {console.error(e); process.exitCode = 1});
+'''
+        result = subprocess.run(['node', '-e', program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class ComfyCreateTests(TestCase):
     CAT = [
         {'name': 'Illustrious/character/Hayasaka_Ai.safetensors', 'title': 'Hayasaka Ai', 'file': 'Hayasaka_Ai',
@@ -3096,11 +3226,21 @@ class ComfyCreateTests(TestCase):
         self.assertEqual(self._post('/api/comfy/plan/', {'description': ' '}).status_code, 400)
 
     def test_plan_keeps_loras_the_user_added(self):
-        d, pg = self._plan({'description': 'a beach', 'loras': [self.CAT[1]['name'], 'nope.safetensors']},
+        d, pg = self._plan({'description': 'a beach', 'loras': [self.CAT[1]['name'], 'nope.safetensors'], 'detect_loras': True},
                            plan={'characters': [], 'tags': ['beach'], 'negative': [], 'orientation': 'landscape',
                                  'note': '', 'source': 'llm'}, picks={self.CAT[1]['name']: [0]})
         self.assertEqual([l['name'] for l in d['selected']], [self.CAT[1]['name']])
         self.assertEqual([i['name'] for i in pg.call_args[0][1]], [self.CAT[1]['name']])
+
+    def test_plan_with_existing_loras_never_picks_trigger_groups(self):
+        with mock.patch.object(comfy, 'suggest_loras') as suggest:
+            d, pg = self._plan({'description': 'hayasaka ai as a maid', 'loras': [self.CAT[0]['name']]})
+        self.assertTrue(d['ok'])
+        self.assertIn('maid', d['positive'])
+        self.assertEqual(d['selected'], [])
+        self.assertEqual(d['suggested'], [])
+        pg.assert_not_called()
+        suggest.assert_not_called()
 
     def _create(self, body):
         with mock.patch.object(comfy, 'generate_txt2img', return_value=(_png((40, 60)), {})) as gen, \

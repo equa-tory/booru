@@ -4335,15 +4335,18 @@ def comfy_plan(request):
     cfg = comfy.config()
     if body.get('ollama_model'):
         cfg['ollama_model'] = str(body['ollama_model']).strip()
-    return JsonResponse(dict(ok=True, **_make_plan(text, src, cfg, bool(src and body.get('area')), body.get('loras') or [])))
+    keep_loras = body.get('loras') or []
+    select_loras = not keep_loras or body.get('detect_loras') is True
+    return JsonResponse(dict(ok=True, **_make_plan(text, src, cfg, bool(src and body.get('area')),
+                                                 keep_loras, select_loras=select_loras)))
 
 
-def _make_plan(text, src, cfg, area, keep_loras):
+def _make_plan(text, src, cfg, area, keep_loras, select_loras=True):
     """Description (+ source) → {'positive','negative','orientation','note','source','characters',
     'model','seconds','forced','selected','suggested'}: tags + characters from the LLM, LoRAs for
     the characters (auto) and suggestions for the rest, the trigger groups picked per LoRA.
-    `keep_loras` = names the user already picked (kept, their groups re-picked); `area` = only a
-    painted area is redrawn."""
+    `keep_loras` = names the user already picked; `select_loras=False` skips LoRA and trigger
+    group selection entirely. `area` = only a painted area is redrawn."""
     body = {'area': area, 'loras': keep_loras}
     t0 = time.time()
     cur = _source_tags(src) if src else None
@@ -4354,7 +4357,7 @@ def _make_plan(text, src, cfg, area, keep_loras):
     elif cur:
         chars = list(dict.fromkeys(chars + list(Tag.objects.filter(name__in=cur, category='character').values_list('name', flat=True))))
     try:
-        catalog = comfy.lora_catalog(cfg)
+        catalog = comfy.lora_catalog(cfg) if select_loras else []
     except Exception:
         catalog = []
     if src and plan['characters']:
@@ -4373,7 +4376,7 @@ def _make_plan(text, src, cfg, area, keep_loras):
     # (smile, indoors, looking at viewer) matched unrelated pose LoRAs
     said = ' ' + re.sub(r'[^a-z0-9]+', ' ', text.lower()) + ' '
     typed = [t for t in plan['tags'] if ' ' + re.sub(r'[^a-z0-9]+', ' ', t.lower()).strip() + ' ' in said]
-    sug = comfy.suggest_loras(chars, [text] + typed, catalog, limit=12)
+    sug = comfy.suggest_loras(chars, [text] + typed, catalog, limit=12) if select_loras else []
     # auto-select one LoRA per character — of several for the same character, the one with a
     # trigger group for the described outfit; concept LoRAs stay suggestions (looser matches)
     chosen, taken = [], set()
@@ -4473,12 +4476,12 @@ def comfy_create(request):
     total_units = count * 100 + 10          # progress: 100 per picture (sampler steps) + saving/tagging
 
     def plan_in_job(task):
-        """No prompt was sent: write it now (like ✨ plan), keep the user's own LoRA rows as they
-        are, add the plan's picks, take its shape; then rebuild everything that depends on it."""
+        """Write a missing prompt, preserving existing LoRAs and their trigger words.
+        Only auto-select LoRAs when none were supplied; rebuild generation inputs afterward."""
         nonlocal pos_text, neg_text, loras, orientation, width, height, run_cfg, run_loras, triggers, positive, negative
         task.message = 'writing the prompt…'
         task.save(update_fields=['message'])
-        p = _make_plan(text, src, cfg, mask is not None, [l['name'] for l in loras])
+        p = _make_plan(text, src, cfg, mask is not None, [l['name'] for l in loras], select_loras=not loras)
         check_cancel(task)
         pos_text, neg_text = p['positive'], neg_text or p['negative']
         mine = {l['name'] for l in loras}

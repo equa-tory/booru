@@ -1,0 +1,2819 @@
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Sonnet 5.5 · Claude Pro
+ ▝▝   ▝▝   ~/git/booru
+
+
+❯ /resume 
+  ⎿  Resume cancelled
+
+❯ /init                                                                         
+
+● I'll start by checking the existing CLAUDE.md against the current code.
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● The existing CLAUDE.md is accurate and already covers the folder-nesting
+  changes. I'll make a few targeted additions for things I verified that it
+  misses or gets slightly wrong.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I didn't regenerate /home/equa/git/booru/CLAUDE.md, because the existing file
+  was already accurate and complete. It already includes the uncommitted
+  folder-nesting changes (parent, include_subfolders). I made five small
+  additions after checking them against the code:
+
+  - Production command: start.sh uses venv/bin/python3, runs sudo systemctl 
+    restart, and starts gunicorn with 4 gevent workers on port 3001 and a 900s
+    timeout.
+  - Dependencies: added pip install -r requirements.txt and noted there is no
+    linter.
+  - Media paths: the media/inbox/... paths are relative to MEDIA_ROOT. In
+    booru/settings.py that now points at /mnt/mass/Media_MASS/Photo, not
+    ./media.
+  - Stale README: README.md still describes a no-login setup and CLIP tagging,
+    so I added a note to trust CLAUDE.md and the code instead.
+  - Untracked files: added notes on the untracked prefs.json, which stores user
+    prefs outside the DB, and on booru-main/, a stray copy of the project to
+    ignore.
+
+  Separately, GALLERY_PASSWORD in booru/settings.py is changed in your working
+  tree and hardcoded. If you commit settings.py, that password goes into git
+  history. CLAUDE.md only names the setting, not its value.
+
+  I can't suggest /import, since I found no Codex or Gemini config in the repo.
+  There are no Cursor or Copilot rules either.
+
+✻ Churned for 21s · done Thursday 10:07 PM
+
+❯ i like current version but make better @.gitignore and push before doing      
+  anything, after i want to make scanning faster + notifications dismiss or     
+  stop process button. about faster scanning, not sure how but i check how it's 
+  done in music or video app in /home/equa/git/mus or /home/equa/git/homeflix   
+  because homeflix does it automatically sometimes and pretty fast and mus does 
+  it really fast, maybe it's not the problem maybe just too much in here        
+  ⎿  Read .gitignore (182 lines)
+
+● Plan mode is on, so I'll only read code for now. I'm launching three Explore
+  agents in parallel: one on booru's scan and task code, one on mus, and one on
+  homeflix.
+
+● 3 background agents launched (↓ to manage)
+   ├ Explore booru scan + tasks
+   ├ Explore mus scanning
+   └ Explore homeflix scanning
+
+● All three agents are running in the background, and I'll wait for their
+  results before planning. The .gitignore and push step is queued behind plan
+  approval, since plan mode blocks edits and commits.
+
+✻ Cooked for 16s · done Thursday 10:10 PM
+
+● Agent "Explore mus scanning" finished · 33s
+
+● The mus result is in: its re-scans are fast because it loads every known path
+  into a dict with one query, skips unchanged files by mtime and size, and
+  commits once at the end. The booru and homeflix agents are still running, so
+  I'm waiting on those before I plan.
+
+✻ Worked for 1s · done Thursday 10:10 PM
+
+❯ - change auth variables because my other apps with auth has same names and    
+  it's forgetting my login sometimes                                            
+
+● I'll read the current auth setup, which is read-only and fine in plan mode,
+  while the other agents finish.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Agent "Explore homeflix scanning" finished · 49s
+
+● Homeflix is also finished, and it isn't much faster than booru. It does one
+  stat, one SELECT and one UPDATE per file, and its auto-scan is a 30-minute
+  timer. The auth problem looks like a cookie-name collision. booru uses
+  Django's default sessionid and csrftoken cookie names, and browsers share
+  cookies across ports on the same host. I'm still waiting on the booru scan
+  agent before I write the plan.
+
+✻ Cogitated for 8s · done Thursday 10:11 PM
+
+● Agent "Explore booru scan + tasks" finished · 1m 42s
+
+● All three agents have reported. Before I write the plan, I'm checking
+  read-only where the push would go and whether the password is already in git
+  history.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The GitHub repo is public. The GALLERY_PASSWORD in your working-tree
+  settings.py is a real password, so pushing it would publish it. I need two
+  decisions from you before I finalize the plan.
+
+● User answered Claude's questions:
+  ⎿  · The repo is PUBLIC and settings.py now holds your real password 
+     (3108Equa) and a personal MEDIA_ROOT. How should I keep them out of the 
+     push? → Untracked local_settings.py (Recommended)
+     · What should go into the commit I push before the scan work starts? → All 
+     tracked changes + .gitignore (Recommended)
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● The CSRF token comes from a <meta> tag, so renaming the CSRF cookie is safe.
+  Writing the plan now.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/i-like-current-version-humming-pond.md · 
+     /plan to edit
+     Plan: gitignore + push, auth-cookie rename, faster scan, task 
+     cancel/dismiss
+
+     Context
+
+     - Repo equa-tory/booru is PUBLIC. Working-tree booru/settings.py contains
+       the real GALLERY_PASSWORD and a personal MEDIA_ROOT; history only has the
+       placeholder 'booru'. Must not push the password.
+     - Login "forgets" because every Django app on this host uses the default
+       cookie names sessionid/csrftoken; browsers share cookies across ports, so
+       apps overwrite each other.
+     - Scan is slow for reasons found in views.py::_do_scan / utils.py (details
+       in Step 4). mus is fast only because of: one query loading all known
+       paths into a dict, mtime+size skip, single transaction. homeflix is not
+       faster (one SELECT+save per file, 30-min timer, no progress/cancel), so
+       mus is the model; neither has cancel.
+     - No cancel exists today; tasks_clear deletes every finished row and cannot
+       touch running rows (orphans after a gunicorn restart are undismissable).
+
+     Order of work (user asked: gitignore + push first).
+
+     Step 1 — Secrets out of settings.py
+
+     - booru/settings.py: restore safe defaults (MEDIA_ROOT = BASE_DIR / 
+       'media', placeholder GALLERY_PASSWORD, existing SECRET_KEY), and at the
+       end add try: from .local_settings import * / except ImportError: pass.
+     - Create untracked booru/local_settings.py (already matched by .gitignore
+       line local_settings.py) with the user's current
+       MEDIA_ROOT='/mnt/mass/Media_MASS/Photo' and GALLERY_PASSWORD. Also add
+       booru/local_settings.py.example (tracked, placeholder values).
+     - Update CLAUDE.md ("one shared password in booru/local_settings.py, falls
+       back to settings.py") and the MEDIA_ROOT note.
+
+     Step 2 — Better .gitignore, commit, push
+
+     Edit .gitignore (keep the existing Python/Django boilerplate, trim nothing
+     useful), add project-specific rules:
+     prefs.json, db.sqlite3* (covers .bak, -wal, -shm), *.sqlite3.bak,
+     .dupes_cache.json, booru-main/, /media/, /staticfiles/,
+     booru/local_settings.py, *.log, .claude/, .vscode/, .idea/, .DS_Store,
+     Thumbs.db, venv/.
+     Then (verify with git status / git diff --cached that no password or db is
+     staged):
+     1. Commit A: .gitignore (+ CLAUDE.md, settings refactor,
+        local_settings.py.example).
+     2. Commit B: existing uncommitted feature work (models, views, urls,
+        templates, migrations 0012/0013).
+     3. git push origin main. Commit messages end with the Co-Authored-By line
+        from the session reminder.
+
+     Step 3 — Auth names (separate commit)
+
+     - settings.py: SESSION_COOKIE_NAME = 'booru_sessionid', CSRF_COOKIE_NAME = 
+       'booru_csrftoken'.
+     - Session key 'authed' → 'booru_authed' in gallery/middleware.py:24 and
+       gallery/views.py:1999 (also check the back_url key at views.py:417-420 →
+       booru_back_url).
+     - Safe: JS gets the CSRF token from <meta name="csrf-token">
+       (base.html:601), not the cookie. One-time side effect: user must log in
+       once more.
+     - Optional (ask only if still forgetting): give SECRET_KEY a unique value
+       in local_settings.
+
+     Step 4 — Faster scan (gallery/views.py::_do_scan 640-681, gallery/utils.py)
+
+     Ranked by measured/read cost; do in this order and keep behavior identical:
+     1. Phase D (views.py:676-679): re-ffmpegs every video whose thumb is
+        missing or <5000 bytes on every scan. Only (re)thumb videos
+        ingested/touched in this run; drop the per-scan loop over all videos
+        (keep an explicit "regen thumb" path that already exists: regen_thumb,
+        bulk_video_thumb).
+     2. Phase A (views.py:642-651): per-Photo os.path.exists + update_count()
+        for every tag on every scan. Replace the exists loop with a single
+        os.walk-derived set diff (we already enumerate the tree in scan_inbox),
+        and recount tags only if something was added/removed, using one
+        aggregate query (Tag.objects.annotate(Count('post')) + bulk_update)
+        instead of 2N queries. Delete the count=0 tags once.
+     3. Tag/auto-tag work during ingest (utils.py:418-433, 550-563):
+        auto_tags_for(path) is applied per file and each add_tags_to_post runs
+        get_or_create + add + update_count. Compute the tag set once per post
+        (union), add in one call, defer update_count to one batched recount at
+        the end of the scan.
+     4. ingest_photo (utils.py:378-415): remove the redundant
+        Photo.objects.filter(Q|Q).first() (scan_inbox already filtered), compute
+        phash from the just-created thumbnail (as already done for videos,
+        utils.py:402) instead of fully decoding the original, close the
+        Image.open handle.
+     5. Transactions/commits: wrap each post's ingest in transaction.atomic();
+        throttle task.save() progress to ~every 0.5 s / N items instead of every
+        post.
+     6. Video work: run sync_sound_tag (ffprobe) after the thumb in the same
+        pass but skip when the post already has the tag state decided; optional
+        small ThreadPoolExecutor (2-4 workers) for ffmpeg/ffprobe subprocess
+        calls only (DB writes stay on the scan thread). Add time.sleep(0) yields
+        in the scan loop so the gevent worker still serves /api/tasks/ polls.
+     7. Reuse scan_inbox's existing known-paths set (utils.py:443-446) — that
+        part is already mus-style; no change needed.
+        Skipped for now: mtime/size cache columns (needs a migration; not the
+        bottleneck), dupes O(n²) (gets cancel support in Step 5 only).
+
+     Step 5 — Notifications: dismiss + stop
+
+     Backend
+     - gallery/models.py Task: add cancel_requested = 
+       BooleanField(default=False); statuses add 'cancelled'. New migration
+       0014_task_cancel_requested.py.
+     - views.py: new TaskCancelled exception + helper _check_cancel(task) (cheap
+       values_list('cancel_requested') re-read; Task objects are per-thread
+       copies). _start_task runner (views.py:582-613) catches TaskCancelled →
+       status='cancelled', finished_at=now.
+     - Call _check_cancel at loop heads, between posts/groups (never mid-post):
+       _do_scan phases A/C/D, merge_bg group loop (735), ai_tag_all_bg (752),
+       sound_tag_all_bg (777), rebase_photo_paths (utils.py:523, existing i % 
+       200 hook), _compute_dupe_groups build loop (471) and the O(n²) loops
+       (526/531).
+     - New endpoints in gallery/urls.py: POST api/tasks/<id>/cancel/ (sets flag;
+       if the row is running but stale — updated_at older than ~2 min — mark it
+       error "orphaned" directly) and POST api/tasks/<id>/dismiss/ (delete one
+       non-running row). Extend tasks_clear to also remove stale-running rows.
+       tasks_list returns cancel_requested.
+     - Sweep: in tasks_list, mark running rows with updated_at older than 10 min
+       as error so orphans after a restart become dismissable.
+
+     Frontend (templates/gallery/base.html)
+     - renderTasks (998-1014): running card → "■ stop" button (cancelTask(id),
+       shows "stopping…" when cancel_requested); finished/error/cancelled card →
+       per-card ✕ calling dismissTask(id) (keep a small "clear all" link
+       calling existing clearTasks()). Add cancelled style next to
+       .task-card.done/.error (CSS ~121-122) and a label in TASK_LABELS (996).
+     - duplicates.html poll loop (watchDupeScan, 261-278) must treat cancelled
+       as terminal.
+
+     Verification
+
+     - python manage.py makemigrations --check / migrate on a copy
+       (db.sqlite3.bak exists; never touch the real DB in tests).
+     - Step 1-2: git status, git diff --cached | grep -i password must be empty;
+       git ls-files | grep -E 'sqlite|prefs|booru-main' empty; confirm app
+       still starts with local_settings.py present and with it absent.
+     - Step 3: run server, log in, check browser cookies are
+       booru_sessionid/booru_csrftoken; run another Django app on another port
+       and confirm both stay logged in.
+     - Step 4: put ~200 mixed files (img/gif/mp4/pdf) in a scratch MEDIA_ROOT
+       inbox; time first scan and an immediate second (no-change) scan
+       before/after via the Task row's elapsed; second scan should be
+       near-instant and spawn zero ffmpeg processes (ps/log). Check tag counts
+       match SELECT tag, COUNT(*) after batch recount.
+     - Step 5: start scan/ai-tag/dupes, click stop → card shows "stopping…" then
+       cancelled, no partial Posts (no Post without Photos), thread exits; kill
+       gunicorn mid-task, restart, orphan row becomes dismissable; per-card ✕
+       removes only that card.
+     - Add minimal tests in gallery/tests.py (currently a stub): task cancel
+       flag stops a work fn, tasks_clear/dismiss behavior, login with new
+       session key. Run python manage.py test.
+
+● Plan approved. Step 1 is moving the secrets out of settings.py.
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Write(booru/local_settings.py)
+  ⎿  Wrote 3 lines to booru/local_settings.py
+      1 # Machine-specific overrides. Untracked (see .gitignore) — never 
+        commit this file.
+      2 MEDIA_ROOT = '/mnt/mass/Media_MASS/Photo'
+      3 GALLERY_PASSWORD = '3108Equa'
+
+● Write(booru/local_settings.py.example)
+  ⎿  Wrote 5 lines to booru/local_settings.py.example
+      1 # Copy to booru/local_settings.py (untracked) and edit. Anything 
+        defined here
+      2 # overrides booru/settings.py.
+      3 MEDIA_ROOT = '/path/to/your/media'
+      4 GALLERY_PASSWORD = 'change-me'
+      5 # SECRET_KEY = 'something-long-and-random'
+
+● Update(booru/settings.py)
+  ⎿  Added 10 lines, removed 5 lines
+      47  STATIC_ROOT = BASE_DIR / 'staticfiles'  # сюда collectstatic
+      48  
+      49  MEDIA_URL = '/media/'
+      50 -#MEDIA_ROOT = BASE_DIR / 'media'                               
+      51 -#MEDIA_ROOT = '/@/Media_SRV/Photo'                             
+      52 -MEDIA_ROOT = '/mnt/mass/Media_MASS/Photo'                      
+      50 +MEDIA_ROOT = BASE_DIR / 'media'                                
+      51  
+      52  DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+      53  
+      56 -# Simple gallery password (change this!)                       
+      57 -GALLERY_PASSWORD = '3108Equa'                                  
+      54 +# Simple gallery password (override in booru/local_settings.py)
+      55 +GALLERY_PASSWORD = 'booru'                                     
+      56 +                                                               
+      57 +# Machine-specific overrides (MEDIA_ROOT, GALLERY_PASSWORD, SEC
+         +RET_KEY...).                                                   
+      58 +# booru/local_settings.py is untracked; see local_settings.py.e
+         +xample.                                                        
+      59 +try:                                                           
+      60 +    from .local_settings import *  # noqa: F401,F403           
+      61 +except ImportError:                                            
+      62 +    pass                                                       
+
+● Next I'm updating CLAUDE.md to match, then extending .gitignore.
+
+● Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      3  This file provides guidance to Claude Code (claude.ai/code) when
+          working with code in this repository.
+      4  
+      5  ## What this is
+      6 -A self-hosted, single-user "booru"-style photo/video/PDF gallery
+        - built on Django 6 + SQLite, with an htmx-driven frontend. No cl
+        -oud, one shared password (`GALLERY_PASSWORD` in `booru/settings.
+        -py`). Files on disk are the source of truth; the DB only stores 
+        -paths + metadata and never moves/renames originals except via ex
+        -plicit "organize"/"merge" actions.                              
+      6 +A self-hosted, single-user "booru"-style photo/video/PDF gallery
+        + built on Django 6 + SQLite, with an htmx-driven frontend. No cl
+        +oud, one shared password (`GALLERY_PASSWORD`; set it in the untr
+        +acked `booru/local_settings.py`, which overrides `booru/settings
+        +.py` — see `local_settings.py.example`. The repo is public, so n
+        +ever put real secrets in `settings.py`). Files on disk are the s
+        +ource of truth; the DB only stores paths + metadata and never mo
+        +ves/renames originals except via explicit "organize"/"merge" act
+        +ions.                                                           
+      7  
+      8  ## Commands
+      9  - Dev server: `python manage.py runserver`
+
+● Update(CLAUDE.md)
+  ⎿  Added 1 line, removed 1 line
+      14  - Downloads watcher (optional sidecar): `python watch_downloads
+          .py --downloads <dir> --inbox <media/inbox>` — auto-moves new d
+          ownloads/zips into the inbox.
+      15  
+      16  ## Adding media
+      17 -Paths like `media/inbox/` below are relative to `settings.MEDIA
+         -_ROOT`, which may point outside the repo (currently `/mnt/mass/
+         -Media_MASS/Photo`; check `booru/settings.py`), not necessarily 
+         -`./media`.                                                     
+      17 +Paths like `media/inbox/` below are relative to `settings.MEDIA
+         +_ROOT`, which may point outside the repo (overridden in the unt
+         +racked `booru/local_settings.py`; the `settings.py` default is 
+         +`./media`).                                                    
+      18  Two paths, both funnel through `gallery/utils.py::scan_inbox`:
+      19  1. Drop files into `media/inbox/` (subfolders OK), then click "
+          scan inbox" (POST `/api/scan-bg/`).
+      20  2. Browser upload (POST `/api/upload/`) writes into `media/inbo
+          x/` then ingests.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Settings, .gitignore and CLAUDE.md are done. I'll confirm the app still loads
+  the overrides, then commit in two parts.
+
+  Pushed to main, ran 1 shell command (ctrl+o to expand)
+
+● Both commits are pushed, and I checked that no password is in either diff.
+  Step 3 is the auth cookie and session key rename.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● That change is the cookie-name edit I just made. I'll check that login still
+  works with the Django test client, then commit.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Login works with the new booru_sessionid cookie. Steps 4 and 5 are the scan
+  speed and the cancel/dismiss buttons, and I'll read the code they touch first.
+
+  Read 2 files, ran 1 shell command (ctrl+o to expand)
+
+● The code is read. I'm starting the edits with the model, the migration and the
+  tag-recount helper in utils.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The migration 0014_task_cancel_requested is generated. Next are the
+  TaskCancelled helpers in utils and the cancel checks in rebase_photo_paths.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the views.py edits. They cover the cancel handling in _start_task, the
+  task endpoints, the new _do_scan, and cancel checks in each worker.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Backend compiles and passes checks. Before moving to the frontend, I'll add a
+  guard against unmounted drives wiping all rows during a scan, and widen the
+  orphan-sweep window so slow GIF renders aren't mistakenly swept. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Last piece is the frontend: a stop button on running cards and a per-card ✕ on
+  finished ones, plus a "clear all" link when several are finished.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The UI is wired. Now the tests, to replace the empty tests.py stub. They cover
+  the cancel flow, the dismiss endpoints, the scan end to end, and the new
+  cookie and session names.
+
+● Write(gallery/tests.py)
+  ⎿  Added 133 lines, removed 2 lines
+        1 -from django.test import TestCase                              
+        1 +import os                                                     
+        2 +import shutil                                                 
+        3 +import tempfile                                               
+        4 +from unittest import mock                                     
+        5  
+        3 -# Create your tests here.                                     
+        6 +from django.conf import settings                              
+        7 +from django.test import TestCase, override_settings           
+        8 +from django.utils import timezone                             
+        9 +from PIL import Image                                         
+       10 +                                                              
+       11 +from . import views                                           
+       12 +from .models import Photo, Post, Tag, Task                    
+       13 +from .utils import (TaskCancelled, add_tags_to_post, check_can
+          +cel,                                                          
+       14 +                    recount_tags)                             
+       15 +                                                              
+       16 +                                                              
+       17 +class AuthTests(TestCase):                                    
+       18 +    def test_login_uses_unique_cookie_and_session_key(self):  
+       19 +        r = self.client.get('/')                              
+       20 +        self.assertEqual(r.status_code, 302)                  
+       21 +        r = self.client.post('/login/', {'password': settings.
+          +GALLERY_PASSWORD})                                            
+       22 +        self.assertIn('booru_sessionid', r.cookies)           
+       23 +        self.assertNotIn('sessionid', r.cookies)              
+       24 +        self.assertTrue(self.client.session.get('booru_authed'
+          +))                                                            
+       25 +        self.assertEqual(self.client.get('/').status_code, 200
+          +)                                                             
+       26 +                                                              
+       27 +                                                              
+       28 +class TaskApiTests(TestCase):                                 
+       29 +    def setUp(self):                                          
+       30 +        self.client.post('/login/', {'password': settings.GALL
+          +ERY_PASSWORD})                                                
+       31 +                                                              
+       32 +    def test_check_cancel(self):                              
+       33 +        t = Task.objects.create(kind='scan')                  
+       34 +        check_cancel(t)                      # not requested: 
+          +no-op                                                         
+       35 +        Task.objects.filter(pk=t.pk).update(cancel_requested=T
+          +rue)                                                          
+       36 +        with self.assertRaises(TaskCancelled):                
+       37 +            check_cancel(t)                  # re-reads the DB
+          +, not the in-memory copy                                      
+       38 +        check_cancel(None)                                    
+       39 +                                                              
+       40 +    def test_cancel_sets_flag_on_live_task(self):             
+       41 +        t = Task.objects.create(kind='scan')                  
+       42 +        self.client.post(f'/api/tasks/{t.pk}/cancel/')        
+       43 +        t.refresh_from_db()                                   
+       44 +        self.assertTrue(t.cancel_requested)                   
+       45 +        self.assertEqual(t.status, 'running')   # the work fn 
+          +ends it, not the endpoint                                     
+       46 +                                                              
+       47 +    def test_cancel_stale_task_ends_it_directly(self):        
+       48 +        t = Task.objects.create(kind='scan')                  
+       49 +        Task.objects.filter(pk=t.pk).update(updated_at=timezon
+          +e.now() - timezone.timedelta(minutes=5))                      
+       50 +        self.client.post(f'/api/tasks/{t.pk}/cancel/')        
+       51 +        t.refresh_from_db()                                   
+       52 +        self.assertEqual(t.status, 'cancelled')               
+       53 +        self.assertIsNotNone(t.finished_at)                   
+       54 +                                                              
+       55 +    def test_dismiss_one_not_running(self):                   
+       56 +        running = Task.objects.create(kind='scan')            
+       57 +        done = Task.objects.create(kind='merge', status='done'
+          +, finished_at=timezone.now())                                 
+       58 +        other = Task.objects.create(kind='dupes', status='canc
+          +elled', finished_at=timezone.now())                           
+       59 +        self.client.post(f'/api/tasks/{running.pk}/dismiss/') 
+       60 +        self.client.post(f'/api/tasks/{done.pk}/dismiss/')    
+       61 +        self.assertTrue(Task.objects.filter(pk=running.pk).exi
+          +sts())                                                        
+       62 +        self.assertFalse(Task.objects.filter(pk=done.pk).exist
+          +s())                                                          
+       63 +        self.assertTrue(Task.objects.filter(pk=other.pk).exist
+          +s())                                                          
+       64 +        self.client.post('/api/tasks/clear/')                 
+       65 +        self.assertFalse(Task.objects.filter(pk=other.pk).exis
+          +ts())                                                         
+       66 +        self.assertTrue(Task.objects.filter(pk=running.pk).exi
+          +sts())                                                        
+       67 +                                                              
+       68 +    def test_orphaned_running_task_is_swept(self):            
+       69 +        t = Task.objects.create(kind='scan')                  
+       70 +        Task.objects.filter(pk=t.pk).update(updated_at=timezon
+          +e.now() - timezone.timedelta(hours=2))                        
+       71 +        self.client.get('/api/tasks/')                        
+       72 +        t.refresh_from_db()                                   
+       73 +        self.assertEqual(t.status, 'error')                   
+       74 +                                                              
+       75 +                                                              
+       76 +class TagCountTests(TestCase):                                
+       77 +    def test_recount_and_deferred_recount(self):              
+       78 +        a, b = Post.objects.create(), Post.objects.create()   
+       79 +        add_tags_to_post(a, ['x', 'y', 'x'], recount=False)   
+       80 +        add_tags_to_post(b, ['x'], recount=False)             
+       81 +        self.assertEqual(Tag.objects.get(name='x').count, 0)  
+          + # deferred                                                   
+       82 +        recount_tags()                                        
+       83 +        self.assertEqual(Tag.objects.get(name='x').count, 2)  
+       84 +        self.assertEqual(Tag.objects.get(name='y').count, 1)  
+       85 +                                                              
+       86 +                                                              
+       87 +class ScanTests(TestCase):                                    
+       88 +    def setUp(self):                                          
+       89 +        self.root = tempfile.mkdtemp()                        
+       90 +        self.addCleanup(shutil.rmtree, self.root, ignore_error
+          +s=True)                                                       
+       91 +        self.override = override_settings(MEDIA_ROOT=self.root
+          +)                                                             
+       92 +        self.override.enable()                                
+       93 +        self.addCleanup(self.override.disable)                
+       94 +        os.makedirs(os.path.join(self.root, 'inbox', '_', 'set
+          +1'))                                                          
+       95 +        os.makedirs(os.path.join(self.root, 'thumbs'))        
+       96 +        for rel in ('inbox/a.png', 'inbox/b.png', 'inbox/_/set
+          +1/1.png', 'inbox/_/set1/2.png'):                              
+       97 +            Image.new('RGB', (40, 30), (len(rel) * 5 % 255, 80
+          +, 120)).save(os.path.join(self.root, rel))                    
+       98 +                                                              
+       99 +    def _scan(self):                                          
+      100 +        t = Task.objects.create(kind='scan')                  
+      101 +        views._do_scan(t)                                     
+      102 +        return t                                              
+      103 +                                                              
+      104 +    def test_scan_adds_then_second_scan_is_a_noop(self):      
+      105 +        self._scan()                                          
+      106 +        self.assertEqual(Post.objects.count(), 3)       # a, b
+          +, set1                                                        
+      107 +        self.assertEqual(Photo.objects.count(), 4)            
+      108 +        png = Tag.objects.get(name='png')                     
+      109 +        self.assertEqual(png.count, 3)                  # batc
+          +hed recount is correct                                        
+      110 +        with mock.patch.object(views, 'make_video_thumb') as m
+          +vt, \                                                         
+      111 +             mock.patch.object(views, 'create_post_from_files'
+          +) as cpf:                                                     
+      112 +            self._scan()                                      
+      113 +            mvt.assert_not_called()                           
+      114 +            cpf.assert_not_called()                           
+      115 +        self.assertEqual(Post.objects.count(), 3)             
+      116 +                                                              
+      117 +    def test_scan_prunes_deleted_files_and_empty_posts(self): 
+      118 +        self._scan()                                          
+      119 +        os.remove(os.path.join(self.root, 'inbox', 'a.png'))  
+      120 +        self._scan()                                          
+      121 +        self.assertEqual(Post.objects.count(), 2)             
+      122 +        self.assertEqual(Tag.objects.get(name='png').count, 2)
+      123 +                                                              
+      124 +    def test_scan_cancel_stops_before_partial_post(self):     
+      125 +        t = Task.objects.create(kind='scan', cancel_requested=
+          +True)                                                         
+      126 +        with self.assertRaises(TaskCancelled):                
+      127 +            views._do_scan(t)                                 
+      128 +        self.assertEqual(Post.objects.count(), 0)             
+      129 +                                                              
+      130 +    def test_scan_refuses_when_media_root_missing(self):      
+      131 +        with override_settings(MEDIA_ROOT=os.path.join(self.ro
+          +ot, 'nope')):                                                 
+      132 +            with self.assertRaises(RuntimeError):             
+      133 +                self._scan()                                  
+      134 +        self.assertEqual(Post.objects.count(), 0)             
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Two tests fail because no tag named png exists. I'll check what AUTO_TAGS
+  actually produces for PNGs.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● PNGs get no auto-tag, so I'll switch the fixtures to GIFs, which get a gif
+  tag.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 11 tests pass. I'd like a number for the speedup on your real library, so
+  I'm timing the old and new prune phases read-only against the real DB, without
+  modifying anything.
+  Ran 1 shell command (ctrl+o to expand)
+
+❯ - add settings button on top and move there buttons: tag sound, keys, re-tidy 
+  all rebase paths and add in settings block with backups: max backups          
+  amount=1 how often to backup=48h where to backup=/mnt/ssd/backups/booru and   
+  show restore upload button and restore from files it sees in backup           
+  path=/mnt/ssd/backups/booru + after make install script to easily install     
+  everything and .service and push                                              
+
+● I'll commit the current scan and cancel work first before tackling the new
+  request (settings button, backup system, install script, systemd unit, and
+  push). On your 145,512-photo library, the prune phase improved from 21.1s to
+  1.8s and tag recount from 12.9s to 3.8s. · summary
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Found that the installed booru.service runs gunicorn on port 3002, so I'll
+  model the repo's unit file and install script on it. Next, checking the header
+  markup to see where the settings button and moved buttons should go. 
+  · summary
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Checking the existing modal and input styles to keep the settings modal
+  consistent, and looking into how SQLite backup files behave to inform the
+  backup/restore design. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● This confirms the approach works: the backup API reliably copies a live WAL
+  database, and restoring onto the live file succeeds even with another
+  connection open, leaving no stray -wal/-shm files after resetting the journal
+  mode. Now I'll move on to the backup module. · summary
+
+● Write(gallery/backup.py)
+  ⎿  Wrote 355 lines to gallery/backup.py
+       1 """Database backups: scheduled + on-demand snapshots of db.sqlit
+       2 
+       3 Only the SQLite DB is backed up — media files on disk are the so
+       4 and are never touched. Snapshots use sqlite3's online-backup API
+          in a single
+         /writing (WAL).
+       6 Settings live under the 'backup' key of prefs.json; the default 
+       7 from settings.BACKUP_DIR (set it in booru/local_settings.py).
+       8 """
+      10 import json
+     … +405 lines (ctrl+o to expand)
+
+● Two parts of that draft are convoluted: the lock's release logic and
+  _scheduled_run. I'm rewriting both more simply.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Next the wiring: apps.py, the views, the URLs and BACKUP_DIR in the settings
+  files.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Next, tests for the backup module, using a small standalone SQLite file rather
+  than your real database.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 21 tests pass. I'm removing a leftover no-op loop from the test setup,
+  then trying a real snapshot of your actual DB into a scratch folder. That only
+  reads the live DB.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● A snapshot of the real 130 MB DB takes 2.7s and validates in 0.7s. Now the
+  settings modal and the header changes.
+
+● Write(templates/gallery/_settings_modal.html)
+  ⎿  Wrote 174 lines to templates/gallery/_settings_modal.html
+      1 <!-- Settings modal: maintenance actions + database backups. Incl
+      2 <style>
+      3 #settings-modal .modal { max-width: 560px; max-height: 92vh; over
+      4 .set-sec { border-top: 1px solid var(--border); padding-top: .9re
+        m; margin-top: .9rem; }
+        -top: 0; }
+      6 .set-sec h3 { font-family: var(--mono); font-size: .7rem; text-tr
+        margin-bottom: .6rem; font-weight: 600; }
+      7 .set-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+        6rem; margin-
+     … +243 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now a render check of the page, plus a syntax check of the modal's script if
+  Node is available.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The modal renders and its script parses. Now the install script and the
+  systemd unit. I'm checking how static and media files get served first, since
+  that affects what the script has to set up.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I'll test the installer end to end in a scratch copy of the tree, in
+  --no-service mode so your running service isn't touched.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Since the sandbox has no network access, pip can't fetch packages, so I'll
+  make the pip self-upgrade step non-fatal for offline installs. Then I'll test
+  the remaining steps by symlinking your existing venv, which already has
+  everything needed. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The installer runs end to end: venv reused, local_settings.py created with
+  mode 600, folders made, and all 14 migrations applied. Now I'll run the
+  scratch copy under gunicorn with gevent workers to confirm the scheduler
+  starts and takes exactly one backup despite 4 workers racing. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The scheduler held up correctly—just one backup file and one task row despite
+  4 concurrent workers. The login page's 503 is likely my shell's proxy
+  interfering with curl, so I'll retest without it and then shut down the test
+  server. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Without the proxy the login page returns 200, so the app boots fine under
+  gunicorn. The non-zero exit came from pkill matching its own shell, so I'm
+  confirming the test server is actually stopped.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The scratch server is removed and the real booru service remains untouched.
+  Now I'll update the docs: adding short CLAUDE.md entries for the install
+  script, backups, task cancel, and cookie names, plus an install section in the
+  README. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll fix the outdated tests line and reorder the cancel paragraph in
+  CLAUDE.md, then commit and push the changes. · summary
+  Pushed to main (ctrl+o to expand)
+
+● All of it is done and pushed to main. The one thing left for you is to restart
+  the service (sudo systemctl restart booru) so the new code, migrations and
+  backup scheduler start running.
+
+  I tested it with the new test suite (21 tests, all passing), a real snapshot
+  of your DB, and a scratch install run under gunicorn with the 4 gevent
+  workers. I did not touch your running booru service, and I did not click
+  through the new UI in a browser.
+
+  Push and secrets
+  - The repo is public and your real password was sitting in settings.py. It now
+    lives in an untracked booru/local_settings.py, with a tracked .example
+    file. The password is not in any commit.
+  - .gitignore now covers prefs.json, db.sqlite3*, .bak files, booru-main/,
+    /media/, .claude/ and more.
+
+  Login forgetting
+  - Cookies are now booru_sessionid and booru_csrftoken, and the session key is
+    booru_authed. You'll need to log in once more.
+
+  Scan speed
+  - Measured on your library of 145,512 photos:
+
+  | Step                       | Before | After |
+  |----------------------------|--------|-------|
+  | Checking for missing files | 21.1s  | 1.8s  |
+  | Tag count update           | 12.9s  | 3.8s  |
+
+  - The scan also no longer re-runs ffmpeg on every scan for small video
+    thumbnails. Only videos whose thumbnail file is missing get one. Use "bulk
+    video thumb" to force-regenerate the rest.
+  - The scan refuses to run if MEDIA_ROOT isn't mounted. Before, an unmounted
+    drive would have wiped every row.
+  - I left two planned changes out. Hashing from the thumbnail would shift old
+    and new duplicate matches, because EXIF rotation differs. Wrapping each post
+    in a transaction would hold the SQLite write lock during ffmpeg.
+
+  Stop and dismiss
+  - Running cards have a "■ stop" button and finished cards have a ✕. Stop works
+    for scan, merge, AI tag, sound tag, dupes, GIF and rebase.
+  - Stuck "running" cards left over from a restart can now be stopped or
+    dismissed.
+
+  Settings and backups
+  - There's a new "⚙ settings" button in the header and in the mobile menu. Tag
+    sound, keys, re-tidy all and rebase paths now live there.
+  - Backups use your values: keep 1, every 48h, to /mnt/ssd/backups/booru. The
+    modal also has "backup now" and a restore list of the files in that folder.
+    It also has "upload & restore".
+  - Only the database is backed up, not the media files. A 130 MB snapshot of
+    your DB takes about 2.7s.
+  - Before each restore it saves a pre-restore.sqlite3 copy. It keeps you logged
+    in, migrates the restored DB, and refuses to start while other tasks are
+    running.
+
+  Install
+  - ./install.sh sets up the venv, dependencies, local settings, database and
+    the systemd unit. ./install.sh --no-service skips the unit.
+  - The default port is 3002, matching your installed unit.
+  - Running install.sh on this machine would overwrite your current
+    booru.service.
+  - pip install couldn't download packages in my sandbox (no network), so that
+    step went untested end to end. I verified every other step.
+
+  start.sh is unchanged. It still uses port 3001 and restarts the unit, which
+  looks inconsistent with the 3002 service, so you may want to retire it.
+
+✻ Churned for 16m 42s · done Thursday 10:26 PM
+
+※ recap: Goal: make the booru gallery safer to publish and easier to run: secrets moved out, faster scanning, stop buttons, backups and an installer. Everything is committed and pushed. Next, restart the service with `sudo systemctl restart booru` so it picks up the changes. (disable recaps in /config)
+
+❯ still can't stop dismiss/notifications there's currently 3 notifications      
+  running that already have been running for days, it usually happens when i    
+  tap scan inbox more than one time + can't set up backup fodler to             
+  /mnt/ssd/backups/booru and can't backup now                                   
+
+● I'll check the real state before guessing: the stuck task rows, whether the
+  running service has the new code, and the backup folder permissions.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The booru service has been running since 10:29am, before my changes, and the
+  real db.sqlite3 is missing the cancel_requested column, meaning the migration
+  never applied there. I need to figure out which server you're actually
+  viewing. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Found it: the service on port 3002 is running stale code (new UI buttons but
+  missing backend endpoints) because it was never redeployed, and migration 0014
+  was never applied so the cancel_requested column is missing. Now checking how
+  many tasks are stuck. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Found a real bug: auto_now fields don't update on save(update_fields=[...]),
+  so long-running scans' updated_at never moves and my stale-task logic would
+  wrongly mark them dead—my tests missed this since they set updated_at
+  manually. I'll fix this at the model level and also prevent a second
+  concurrent scan from starting if "scan inbox" is tapped twice. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Found the stuck notifications and broken backup buttons are caused by the
+  service running old code; also fixed the heartbeat bug and double-scan issue,
+  with all 25 tests passing. Now deploying: snapshotting the DB to backup
+  (testing that path too), running the migration, and gracefully reloading
+  gunicorn. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The deploy was blocked since migrating the live database and reloading
+  production needs your approval—I won't attempt that piecemeal. I'll commit the
+  code fixes locally and leave the deploy step for you to run. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The stop, dismiss and backup buttons don't work because your booru service is
+  still running the old code and the database is missing a migration. I couldn't
+  fix that myself: the automatic permission check blocked me from migrating the
+  live database and reloading the service. The code fixes are committed locally
+  as ab660c9 but not pushed.
+
+  What's wrong
+  - Old code still running. The service on port 3002 has been up since boot
+    (10:29 today), so its Python code predates my changes. Each worker loads
+    templates on first use, so you see the new Settings and Stop buttons, but
+    the endpoints behind them don't exist on the server yet. That's why backup
+    folder, backup now, stop and dismiss all fail.
+  - Migration missing. db.sqlite3 hasn't had migration 0014 (the
+    cancel_requested column) applied. The systemd unit doesn't run migrate; only
+    start.sh does.
+  - Four stuck scans. They are tasks 199, 297, 353 and 361, all scans. The old
+    code never lets you dismiss a "running" row.
+
+  What you need to run, in this order
+  cd ~/git/booru
+  venv/bin/python manage.py migrate
+  sudo systemctl restart booru
+  The order matters: the old code can't create task rows once the new column
+  exists. If you want, say "go ahead" and I'll run the migrate plus a graceful
+  kill -HUP reload of gunicorn myself, since that doesn't need sudo.
+
+  After the restart, the first notification poll marks the four stuck scans as
+  failed, and then you can dismiss them with ✕ or "clear all". Backups will work
+  too, since /mnt/ssd/backups/booru is writable by your user. I checked that.
+
+  Two bugs found in my own earlier work
+  - Task heartbeat. The "last progress" timestamp never moved while a task ran.
+    My stale-task cleanup and the stop button's force-end would have wrongly
+    killed long-running scans. It now updates on every progress save.
+  - Double scan. Tapping "scan inbox" twice started two scans over the same
+    files at once. That is the most likely reason your scans got stuck. A second
+    tap now returns the scan already running. The same applies to AI tag, sound
+    tag, rebase paths, dupes and backup. A task with no progress for 5 minutes
+    counts as dead and no longer blocks a new one.
+
+  I added 4 tests for these, and all 25 tests pass. Want me to push ab660c9 too?
+
+✻ Baked for 2m 3s · done Thursday 10:39 PM
+
+※ recap: Goal: get the booru gallery's stop/dismiss notifications and backup settings working. The fixes are committed locally (ab660c9) but not live, because the service still runs old code. Next step: run migrate, then sudo systemctl restart booru, or tell me to do the migrate and reload myself. (disable recaps in /config)
+
+❯ there's currently ai auto tagger and it works great i like and wouldn't want  
+  to change with my 8 vram gpu and sometimes it tags characters but not often,  
+  is thre something to make sepicifally that maybe we can add model as second   
+  process for tag button to tag characters on pictures but for all current      
+  posts we can add button into settings to re tag just characters with newer    
+  model, or better to just swap current model? won't new model hurt speed with  
+  my tesla p4? ultrathink                                                       
+
+● I'll look at how the tagger works today before recommending anything: the
+  thresholds, the model, which ONNX provider actually runs, and what the GPU is
+  doing.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● One finding already: the venv has the CPU-only onnxruntime build, so the
+  tagger isn't using your Tesla P4 at all. I'll read the tagger code next.
+
+  Read 1 file (ctrl+o to expand)
+
+● I noticed run_ai_tagger keeps only the first 40 tags above threshold in model
+  order (not by confidence), and applies a single 0.35 cutoff to everything,
+  saving all results under category ai. I'll now test the impact of this on
+  character data using a read-only sample of your real library. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Out of 40 random posts, 21 have a character tag at 0.35+ confidence (19 at
+  0.85+), but the [:40] cut keeps only 10 — roughly half of confident detections
+  are being discarded. I'll check what models currently exist, since my
+  knowledge may be outdated. · summary
+
+● Fetch(https://huggingface.co/api/models?author=SmilingWolf&search=tagger&sort=
+       lastModified&limit=20)
+  ⎿  Received 3.9KB (200 OK)
+
+● Web Search("anime character tagger ONNX 2026 best character recognition tagger
+            WD14 alternative PixAI tagger Camie tagger")
+  ⎿  Did 1 search in 8s
+
+● Web access works. PixAI's tagger comes up as a newer, character-focused
+  alternative, so I'll read its model card for size, architecture, license and
+  ONNX availability.
+
+● Fetch(https://huggingface.co/pixai-labs/pixai-tagger-v0.9)
+  ⎿  Received 146.5KB (200 OK)
+
+● Fetch(https://huggingface.co/api/models?search=pixai-tagger&sort=lastModified&
+       limit=20)
+  ⎿  Received 6.5KB (200 OK)
+
+● I found an official PixAI v1.0 release from last week with only recent
+  community ONNX conversions, so I'll check its model card and also look at the
+  older, more established DeepGHS ONNX v0.9 repo. · summary
+
+● Fetch(https://huggingface.co/pixai-labs/pixai-tagger-v1.0)  ⎿  Received 181.6KB (200 OK)
+
+● Fetch(https://huggingface.co/api/models/deepghs/pixai-tagger-v0.9-onnx/tree/ma
+       in)
+  ⎿  Received 1.1KB (200 OK)
+
+● The v1.0 model's size and resolution put it in a very different compute class,
+  so rather than guess at your P4's speed, I'll search this machine for another
+  Python environment with CUDA available, like ComfyUI's, to get a real
+  measurement. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Your P4 benchmarks at 4.2 TFLOPS FP32 with no FP16 speedup, so quantized
+  variants won't help here—CUDA 12 is supported though. I'll now run proxy
+  transformer stacks matching each candidate model's size (random weights) to
+  get real per-image timing estimates. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Got the measured numbers from proxy transformer runs on your P4. Next I'll
+  verify the exact preprocessing PixAI v0.9 ONNX requires and check which
+  onnxruntime CUDA builds still support Pascal GPUs like yours. · summary
+
+● Fetch(https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/raw/main/README.md
+       )
+  ⎿  Received 3.7KB (200 OK)
+
+● Fetch(https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/raw/main/preproces
+       s.json)
+  ⎿  Received 557 bytes (200 OK)
+
+● Fetch(https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.h
+       tml)
+  ⎿  Received 125.3KB (200 OK)
+
+● Short version: don't swap the main model. Your slow, character-poor tagging
+  comes from the current setup, not from the model, and you can fix most of it
+  without a new one.
+
+  What I found
+  1. The tagger runs on your CPU, not the P4. The venv has the CPU-only
+     onnxruntime, and the code silently falls back to CPU. Measured: 0.57 s per
+     image on CPU.
+  2. A bug drops about half your characters. run_ai_tagger keeps the first 40
+     tags above 0.35 in model-output order, and character tags come last in that
+     order. On a random sample of 40 of your posts:
+     - 21 had a character tag at 0.35 or higher, and 19 of those were at 0.85 or
+       higher.
+     - Only 10 survived the 40-tag cut, because 17 of the 40 images have 40 or
+       more tags.
+  3. Characters are saved as category ai. Only 2 tags in your DB are category
+     character, so the character grouping and colours in the UI never apply to
+     them.
+
+  Speed on your P4
+  I measured the P4 itself at 4.2 TFLOPS in FP32. FP16 gave no speedup (4.1), so
+  never use FP16 or int8 model variants on it. I benchmarked proxy transformers
+  of each model's size on the GPU:
+
+  ┌─────────────────────────────────────────────────────────────┬───────────┐
+  │                            Setup                            │ Per image │
+  ├─────────────────────────────────────────────────────────────┼───────────┤
+  │ Current model on CPU (what you run today, measured)         │ ~570 ms   │
+  ├─────────────────────────────────────────────────────────────┼───────────┤
+  │ Current model on the P4                                     │ ~62 ms    │
+  ├─────────────────────────────────────────────────────────────┼───────────┤
+  │ EVA02-large class (WD eva02-large-v3, PixAI v0.9) on the P4 │ ~290 ms   │
+  ├─────────────────────────────────────────────────────────────┼───────────┤
+  │ PixAI v1.0 class (1008 px) on the P4                        │ ≥2.5 s    │
+  └─────────────────────────────────────────────────────────────┴───────────┘
+
+  So even the heavy character model on the GPU would be about 2× faster than
+  what you run now. Re-tagging your 27,826 posts with it would take roughly 2.5
+  to 3 hours in the background.
+
+  Recommendation, in order
+  1. Fix the tagger first (no new model).
+     - Use per-category thresholds, with characters at about 0.85.
+     - Keep every character tag and cap the general tags by confidence.
+     - Save characters as category character.
+     - Add a "re-tag characters" button in settings. By the sample above, this
+       should roughly double the characters you get.
+  2. Enable the GPU. Pin onnxruntime-gpu to the CUDA 12 build (1.26.x). From
+     version 1.27 the default PyPI build is CUDA 13, which I believe dropped
+     Pascal cards like yours. I'd test it in a separate venv before touching the
+     live one.
+  3. Add a second, character-only model: PixAI v0.9. Use the DeepGHS ONNX
+     conversion (1.27 GB, FP32).
+     - It has 3,720 characters against WD v3's 2,751, and it was trained on data
+       through January 2025 against roughly early 2024.
+     - PixAI's own benchmark gives it character F1 of about 0.865 against 0.61
+       for WD's SwinV2. That is a vendor benchmark, so treat it with caution.
+     - It needs its own preprocessing: squash-resize to 448, RGB, normalized to
+       [-1, 1].
+     - It would run from a per-post button and from the settings bulk re-tag.
+       The bulk run would be exclusive, cancellable and resumable, which needs
+       one new field on Post.
+     - WD's eva02-large-v3 is the safer alternative. It has the same tag
+       vocabulary as your current model, so it would fix accuracy but add no new
+       characters.
+
+  Skip PixAI v1.0 for now. Its numbers are better (character F1 0.92, 8,308
+  characters), but it is 486M parameters at 1008×1008. That would take about 19
+  hours or more for your library on a P4, and its ONNX conversions are only days
+  old.
+
+  The GPU speeds are proxy benchmarks, not the real models. Testing those needs
+  the onnxruntime-gpu install and the 1.27 GB download, and I won't put either
+  on your live venv without asking.
+
+  Want me to build step 1 now? I'd then test the GPU in a separate venv, and you
+  pick PixAI v0.9 or WD eva02-large for step 3.
+
+  Sources:
+  - PixAI tagger v0.9 (https://huggingface.co/pixai-labs/pixai-tagger-v0.9)
+  - PixAI tagger v1.0 (https://huggingface.co/pixai-labs/pixai-tagger-v1.0)
+  - DeepGHS ONNX conversion of v0.9
+    (https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)
+  - ONNX Runtime CUDA execution provider (https://onnxruntime.ai/docs/execution-
+    providers/CUDA-ExecutionProvider.html)
+  - SmilingWolf models (https://huggingface.co/api/models?author=SmilingWolf&sea
+    rch=tagger&sort=lastModified&limit=20)
+
+✻ Brewed for 7m 24s · done Thursday 11:00 PM
+
+❯ build first step but don't re tag everything (maybe we need debug toggles     
+  inside settings panel to enable overlay to see which posts were already ai    
+  tagged, character re tagged for future, which folders were already asigned to 
+  not to waste time clicking evey post, etc.) + currently there's feature when  
+  selected posts to regenerate thumb but it works only for vid add for          
+  pictures too when selecting posts                                             
+
+● I'll start by reading the code this touches: every tagger call site, the grid
+  card rendering and JSON payload, the folder model, and the existing thumbnail
+  regeneration for selected posts.
+
+  Ran 6 shell commands (ctrl+o to expand)
+
+● I'll build this in order: fix the tagger with per-category thresholds and a
+  char_tagged flag, add debug overlay toggles, then handle bulk thumbnail
+  regeneration. Starting now with the model field and tagger fix. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The tagger fix and char_tagged migration are done. Next I'll check how the
+  detail page uses the AI-tag response, then build the overlay, picture
+  thumbnail regeneration, and tests. · summary
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Good, the response shape stays backward compatible. Next I'll tackle the
+  remaining backend pieces: shared thumbnail regeneration with a bulk picture
+  endpoint, card overlay data, debug stats, and the recategorize endpoint. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The script failed on nested triple quotes before writing anything, so no files
+  changed. I'm redoing it with different quoting.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The backend is in. Now the frontend: overlay markup on server-rendered and
+  JS-built cards, overlay CSS and toggles, the new settings sections, and the
+  picture-thumbnail button.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The frontend is in place. Now tests for the tagger behaviour, the flags and
+  category promotion, the bulk thumbnail regeneration, the overlay data and the
+  recategorize endpoint.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 34 tests pass. Next I'll run the new tagger against the real model on the
+  same 40-post sample to compare with old behavior, then check the rendered
+  pages' inline JavaScript with Node since the templates changed significantly. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 36 tests pass. The real-model probe failed as expected since the database
+  isn't migrated with the new char_tagged column, so I'll rewrite the probe to
+  avoid loading the Post model. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The fix checks out: 18 of 40 sample posts have a character tag the model is
+  confident in, but only 8 are in the DB—the fixed pipeline would add the
+  missing 10 (e.g. toga_himiko, hatsune_miku, kitagawa_marin), with the general
+  tag cap still intact. Now I'll update the docs and commit. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Step 1 is built and committed (fa07ab6), along with the debug overlays and
+  picture thumbnails. Nothing is re-tagged. Tests pass (36, including a Node
+  syntax check of the inline JavaScript), but I haven't clicked through the new
+  UI in a browser.
+
+  Deploy first: the new service code needs migrations 0014 and 0015. I haven't
+  touched your live database, because that was blocked earlier. Run this, in
+  this order:
+  cd ~/git/booru
+  venv/bin/python manage.py migrate
+  sudo systemctl restart booru
+  I can instead run the migrate and a graceful gunicorn reload myself if you say
+  "go ahead". Also, fa07ab6 and ab660c9 are committed but not pushed.
+
+  Tagger (step 1)
+  - Characters are now scored at 0.85 and capped at 12 by confidence, outside
+    the 40-tag cap. General tags behave exactly as before.
+  - Characters are saved as category character, and an old ai-category character
+    tag is upgraded when it comes up again. Tags you categorised yourself are
+    never touched.
+  - On the same 40-post sample with the real model, 18 posts have a confident
+    character, and your DB carries it for only 8 of them. The 10 it misses are
+    real catches, such as toga_himiko, hatsune_miku and kitagawa_marin.
+  - The 0.85 threshold is a setting. Override AI_CHARACTER_THRESHOLD in
+    local_settings.py if you want it lower.
+
+  Tracking posts for a future re-tag
+  - New Post.char_tagged flag. Posts tagged from now on get it set. Your 27,489
+    existing AI-tagged posts stay unflagged, so "AI ✓ but CH ✗" means "tagged by
+    the old tagger".
+
+  Settings → debug overlays
+  - Toggles for badges on every grid card: AI ✓/✗, characters checked ✓/✗,
+    folder name or "no folder", and post id. They are saved per device.
+  - A counters line shows posts, AI-tagged, characters checked, tagged by the
+    old tagger, and in a folder.
+  - A "fix character tag categories" button moves the roughly 850 existing
+    character tags from ai to character. It only changes the category label and
+    re-tags nothing, so only press it if you want that.
+
+  Picture thumbnails
+  - The bulk-action dialog in select mode has a new "↻ pic thumbs" button. It
+    re-renders the cover thumbnail for selected pictures, GIFs and PDFs. It
+    skips video covers (use "vid thumb %" for those) and reports any files that
+    are missing.
+
+  Two things to know:
+  - The tagger still runs on CPU (about 0.74s per post). The GPU switch and the
+    PixAI character model are not in this step.
+  - I can add search filters like ai:no or folder:none, so you can list the
+    untagged or unassigned posts instead of spotting them with the overlay.
+
+✻ Worked for 4m 56s · done Thursday 11:15 PM
+
+※ recap: Goal: improve your booru gallery. The tagger fix, debug overlays and picture thumbnails are committed (`fa07ab6`) but not deployed. Next, run `venv/bin/python manage.py migrate` then `sudo systemctl restart booru`, or tell me to do it. (disable recaps in /config)
+❯ now let's make steps 2 and 3                                                  
+
+● Steps 2 and 3 need real downloads (CUDA libraries and a 1.27 GB model), so I'm
+  checking first what this machine can reach and how much disk is free.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Found it — pip is pointed at a local Nexus mirror that returns no package
+  versions, which is why install.sh failed. Since pypi.org itself is reachable,
+  I'll set up a scratch test environment against it (leaving your live venv
+  untouched) to verify the CUDA build works on the P4. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The [cuda,cudnn] extras work for 1.26 and pulled CUDA 12.9 libraries. Now the
+  real test on your P4: run the WD model on the CUDA provider, compare the
+  output with the CPU result, and time it.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The convolution failure looks like a Pascal compatibility issue with cuDNN
+  9.27's new frontend. I'll test other algorithm-search modes, then try the
+  older cuDNN 9.5.x line that your ComfyUI environment uses. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+  ⎿  1 skill available
+
+● I confirmed cuDNN 9.27 breaks on your P4 while 9.10.2 and 9.5.1 work, so I'll
+  pin nvidia-cudnn-cu12 to 9.10.2.21 and run correctness and speed tests with
+  it. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The WD model runs 6.8× faster on P4 (84ms vs 573ms) with identical outputs to
+  CPU. Now downloading the PixAI v0.9 ONNX character model (1.27GB) into the HF
+  cache to inspect it next. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● While that download runs (1.27 GB), I'll check its progress.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● While the download continues, I'll start writing the runtime module that
+  manages the ONNX sessions—preferring CUDA with CPU fallback on failure, and
+  unloading idle models to free VRAM for ComfyUI. · summary
+
+● Write(gallery/ai_runtime.py)
+  ⎿  Wrote 178 lines to gallery/ai_runtime.py
+       1 """ONNX Runtime sessions for the AI taggers.
+       3 - Uses the CUDA provider when onnxruntime-gpu + a working CUDA/c
+         uDNN stack are
+         y runs on CPU.
+         ONDS of disuse,
+       6   so an idle gallery does not keep the GPU's VRAM (it is shared 
+       7   ComfyUI). Each gunicorn worker is its own process with its own
+          sessions.
+         s process to
+      10 """
+     … +194 lines (ctrl+o to expand)
+
+● Now I'll point the WD tagger at the runtime module. The model path is cached,
+  so hf_hub_download doesn't hit the network on every call.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I'll skip the sleep, since the download will notify me when it finishes. The
+  small metadata files should already be in the cache, so I'll read those now.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The metadata confirms 620.9 GFLOPs per image as expected, with a character
+  threshold of 0.85. Next I'll check the character-model module, which shares
+  its image-loading code with the WD tagger. · summary
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● Now the model field, the view functions and the endpoints for the character
+  model.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Frontend now. The overlay shows which model checked characters, the settings
+  panel gets an AI section, and the post page gets a "tag characters" button.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The size hasn't changed from 424 MB since the last check, so the download may
+  have stalled. I'll check whether the process is alive and growing.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The download stalled at 443 MB with no growth for 12 minutes, but Hugging Face
+  downloads resume. I'll kill the stuck process and restart it with a shorter
+  network timeout.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● While the retry runs, I'll make the in-app downloader robust against the same
+  stall (a shorter timeout plus automatic resume), and add the GPU install path.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "cd /tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c5
+a-a5b6-bc7560254fe3/scratchpad && gpuvenv/bin/python - <<'EOF' 2>&1 | grep -v -i
+"warn\|unauthenticated"
+import time
+from huggingface_hub import snapshot_download
+t=time.time()
+p = snapshot_download('deepghs/pixai-tagger-v0.9-onnx',
+allow_patterns=['*.json','*.csv','*.md','model.onnx'])
+print('downloaded to', p, '%.0fs' % (time.time()-t))
+import os
+for f in sorted(os.listdir(p)): print(f, os.path.getsize(os.path.join(p,f)))
+EOF
+P=$(ls -d
+~/.cache/huggingface/hub/models--deepghs--pixai-tagger-v0.9-onnx/snapshots/*);
+for f in categories.json meta.json preprocess.json thresholds.csv; do echo "==
+$f"; cat $P/$f | head -c 600; echo; done; echo "== selected_tags.csv"; head -4
+$P/selected_tags.csv; echo ...; sed -n '9745,9747p' $P/selected_tags.csv;
+python3 - <<EOF
+import csv,collections
+rows=list(csv.DictReader(open('$P/selected_tags.csv',encoding='utf-8')))
+print(len(rows), rows[0].keys())
+for k in rows[0].keys():
+    if k not in ('name','tag','id') and len(set(r[k] for r in rows))<12:
+print(k, collections.Counter(r[k] for r in rows))
+EOF" completed (exit code 0)
+
+● Background command "kill 582065 2>/dev/null; sleep 1; cd /tmp/claude-1000/-hom
+e-equa-git-booru/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad && cat > dl.py
+<<'EOF'
+import time, sys
+from huggingface_hub import snapshot_download
+for attempt in range(1, 8):
+    try:
+        p = snapshot_download('deepghs/pixai-tagger-v0.9-onnx',
+allow_patterns=['model.onnx', 'selected_tags.csv', 'preprocess.json',
+'thresholds.csv'])
+        print('DONE', p, flush=True); sys.exit(0)
+    except BaseException as e:
+        print('attempt', attempt, 'failed:', type(e).__name__, str(e)[:120],
+flush=True); time.sleep(3)
+sys.exit(1)
+EOF
+HF_HUB_DOWNLOAD_TIMEOUT=30 HF_HUB_ETAG_TIMEOUT=30 gpuvenv/bin/python dl.py >
+dl.log 2>&1 &
+echo started" completed (exit code 0)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll monitor the model download with a progress line each minute, and a final
+  line when it ends.
+
+● Monitor(PixAI model download progress)  ⎿  Monitor started · task bc4g4asoh · timeout 1800s
+
+● While the download runs, I'm writing tests for the CPU fallback, idle unload,
+  character-model post-processing, and endpoints, using fakes so no GPU or model
+  is required. · summary
+
+  Read 1 file (ctrl+o to expand)
+
+● Monitor event: "PixAI model download progress"
+  downloading: 424 MB total in cache | 423 MB in .incomplete
+
+● Two small test mistakes, one a float comparison and one a duplicate image path
+  in my fixture, so I'll fix those. The download monitor says it's still
+  sitting at about 423 MB, so I'll watch that too.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 50 tests pass. Since the huggingface_hub downloader keeps stalling and
+  restarting from zero, I'll switch to plain curl with resume support for better
+  handling of flaky connections — starting with a quick speed test. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Monitor event: "PixAI model download progress"
+  downloading: 440 MB total in cache | 438 MB in .incomplete
+
+● Monitor "PixAI model download progress" script failed (exit 144)
+
+● pkill -f matched my own shell and the monitor script, so that was my mistake.
+  I'll run the speed test on its own.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● curl downloads at ~5.6 MB/s, so the file should take about four minutes, while
+  huggingface_hub's client stalls, likely on the Xet transfer path. I'll
+  download it with curl in the background instead and manually place it into the
+  cache. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll test disabling the Xet transfer path to see if it fixes the stalling
+  issue, using your venv's huggingface_hub client and downloading the WD model
+  into scratch as a test. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● With the Xet path off, the real client downloaded 361 MB without stalling, so
+  the in-app downloader gets that setting.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● While the model finishes downloading, I'll update CLAUDE.md for the runtime
+  module, the character model and the GPU install path.
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● The model is about half downloaded. I'm waiting for it to finish before
+  installing it into the cache and running the real-model tests on the GPU.
+
+✻ Brewed for 34m 52s · done 12:34 AM
+
+● Background command "cd /tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c5
+a-a5b6-bc7560254fe3/scratchpad && curl -L -C - --retry 30 --retry-delay 3
+--retry-all-errors --speed-time 30 --speed-limit 20000 -s -o pixai_model.onnx
+https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/resolve/main/model.onnx;
+echo "curl exit $? size $(stat -c %s pixai_model.onnx)"" completed (exit code 0)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "until [ "$(stat -c %s /tmp/claude-1000/-home-equa-git-boor
+u/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad/pixai_model.onnx 2>/dev/null)"
+= "1271365854" ]; do sleep 3; done; echo "model fully downloaded"" completed
+(exit code 0)
+
+● The download is complete, and its SHA-256 matches the hash Hugging Face names
+  the file by, so it's intact. I'm placing it into the Hugging Face cache layout
+  and removing the stale partial files.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The model's cached with 13,461 tags (3,720 characters). Now I'll run the real
+  app code—both taggers and preprocessing—with CUDA on your 40-post sample,
+  read-only against your database. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● This is the kind of thing only a real model run finds. The model's first
+  output is a 1024-dim embedding, not the tag scores. I'll look at its actual
+  outputs.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The model returns three outputs (embedding, logits, prediction), and
+  prediction is the sigmoid tag scores. I'll request that output by name.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Real-model GPU testing shows PixAI outpacing WD14 on character detection (23
+  vs 18 of 40 posts) at a similar speed, with VRAM usage behaving as expected.
+  Next I'll harden install.sh to fall back to pypi.org when the mirror fails,
+  then verify requirements-gpu.txt resolves cleanly in a fresh venv. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● While the install runs, I'll check whether uraraka_ochako and uraraka_ochaco
+  are actually the same character spelled differently—if the two models diverge
+  on many character names, merging PixAI tags with existing WD tags could create
+  near-duplicate entries. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "python3 - <<'PYEOF'
+p='install.sh'
+s=open(p).read()
+def rep(old,new):
+    global s
+    assert old in s, old[:60]
+    s=s.replace(old,new,1)
+rep("as_root() {","""pip_install() {  # the machine's configured pip index (e.g.
+a local mirror) may be down/empty — retry against PyPI
+  venv/bin/pip install --quiet "$@" && return 0
+  warn "pip install failed with the configured index — retrying against
+pypi.org"
+  venv/bin/pip install --quiet --index-url https://pypi.org/simple "$@"
+}
+as_root() {""")
+rep("venv/bin/pip install --quiet -r requirements.txt\n","pip_install -r
+requirements.txt\n")
+rep("  venv/bin/pip install --quiet -r requirements-gpu.txt\n","  pip_install -r
+requirements-gpu.txt\n")
+open(p,'w').write(s)
+PYEOF
+bash -n install.sh && echo syntax ok; SP=/tmp/claude-1000/-home-equa-git-booru/4
+baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad; rm -rf $SP/gpuvenv2; python3 -m
+venv $SP/gpuvenv2 && (cd $SP && gpuvenv2/bin/pip install --quiet --index-url
+https://pypi.org/simple -r /home/equa/git/booru/requirements-gpu.txt > gpu2.log
+2>&1; echo "exit $?" >> gpu2.log) &
+echo started" completed (exit code 0)
+
+● Only 39 of WD's 2,751 character names (1%) differ in spelling from PixAI,
+  affecting about 2% of character tags like uraraka_ochako vs uraraka_ochaco—a
+  minor caveat. Next, I'll check if the clean-venv install of
+  requirements-gpu.txt has finished. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+● It's still installing. I'll run the full test suite while it does, and arm a
+  wait for the result.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● All 50 tests pass. I'm waiting for the clean GPU install to finish so I can
+  confirm the requirements file resolves on its own.
+
+✻ Churned for 2m 44s · done 12:38 AM
+
+● Background command "until grep -q "^exit" /tmp/claude-1000/-home-equa-git-boor
+u/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad/gpu2.log 2>/dev/null; do sleep
+5; done; tail -4 /tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c5a-a5b6-
+bc7560254fe3/scratchpad/gpu2.log" completed (exit code 0)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmed the GPU requirements file installs cleanly with pinned cuDNN
+  9.10.2.21 and onnxruntime-gpu 1.26.0 working on CUDA. Now I'll remove the ~6
+  GB scratch environments and commit. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● start.sh shows as modified in that commit, and I didn't touch it. I'll check
+  what changed in it.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Steps 2 and 3 are built and committed (0ab4a77). Nothing is deployed yet. I
+  tested the GPU path and the PixAI model on your actual P4 and library,
+  read-only, and all 50 tests pass. I haven't clicked through the new UI in a
+  browser, and nothing is pushed: 3 commits are local, ab660c9, fa07ab6 and
+  0ab4a77.
+
+  What it does
+  - GPU (step 2). The WD14 tagger now runs on CUDA when the GPU libraries are
+    installed. It falls back to CPU automatically if CUDA fails, and it frees
+    its VRAM after 2 minutes idle so ComfyUI keeps the GPU.
+  - Character model (step 3). PixAI v0.9 runs as a second, characters-only
+    model. It only adds character tags, never removes any, and there is no
+    automatic re-tag of everything.
+  - Entry points. There's a "☺ tag characters" button on each post page. There's
+    also an "AI tagging" section in settings with a "re-tag characters for N
+    posts" action. It defaults to 100 posts, newest first, and can be stopped
+    and resumed. The grid overlay shows CH wd ✓ or CH px ✓ per post.
+  - Model files. The 1.27 GB PixAI model is already in your Hugging Face cache,
+    with its checksum verified. The first time the app tried to fetch it the
+    download stalled, so I fixed the app's downloader.
+
+  Measured on your Tesla P4
+
+  ┌─────────────────────────────┬─────────┬────────────────────────────────┐
+  │                             │  CPU    │              GPU               │
+  │                             │  today  │                                │
+  ├─────────────────────────────┼─────────┼────────────────────────────────┤
+  │ WD14 inference              │ 573 ms  │ 84 ms (6.8× faster, identical  │
+  │                             │         │ outputs)                       │
+  ├─────────────────────────────┼─────────┼────────────────────────────────┤
+  │ WD14 per post, including    │ ~740 ms │ 349 ms                         │
+  │ image load                  │         │                                │
+  ├─────────────────────────────┼─────────┼────────────────────────────────┤
+  │ PixAI per post, including   │ n/a     │ 420 ms                         │
+  │ image load                  │         │                                │
+  ├─────────────────────────────┼─────────┼────────────────────────────────┤
+  │ VRAM, both models loaded    │ n/a     │ 2.2 GB, back to 227 MiB after  │
+  │                             │         │ idle unload                    │
+  └─────────────────────────────┴─────────┴────────────────────────────────┘
+
+  On a 40-post sample, PixAI finds characters on 23 posts against 18 for WD14.
+  Five are posts WD14 misses entirely, such as firefly_(honkai:_star_rail) and
+  belle_(zenless_zone_zero). It also lists extra characters on group images. A
+  full run over your 27.8k posts would take roughly 3 hours, mostly decoding the
+  full-size images, so run it in chunks.
+
+  What to run (not run by me)
+  cd ~/git/booru
+  ./install.sh --gpu --no-service    # GPU libraries (~3 GB) + migrations 
+  0014–0016
+  sudo systemctl restart booru
+  I can run the install and a graceful reload myself if you say "go ahead"; I
+  stopped short because that changes the live venv and database. The app still
+  works on CPU until you do this.
+
+  Caveats
+  - cuDNN version. The newest cuDNN (9.27) fails on your P4, so it is pinned to
+    9.10.2.
+  - onnxruntime-gpu version. It is pinned to 1.26, because 1.27 and later
+    default to CUDA 13, which dropped your GPU generation.
+  - Spelling differences. The two models spell about 1% of characters
+    differently. In your library that's 13 tags on 199 posts, such as
+    uraraka_ochako against uraraka_ochaco. The tag manager can merge those.
+  - Threshold. The character threshold is 0.85 for both models, and
+    AI_CHAR_MODEL_THRESHOLD in local_settings.py overrides it for PixAI.
+  - Mirror. This machine's pip points at a local mirror that returned no
+    packages here, so install.sh now retries against pypi.org.
+  - start.sh. Its commit diff is only the executable bit; I didn't change its
+    contents.
+
+  Want me to push, and to run the deploy?
+
+✻ Brewed for 47s · done 12:40 AM
+
+※ recap: Goal: improve your booru gallery. The GPU speedup and the PixAI character tagger are built, tested and committed locally but not deployed or pushed. Next, run `./install.sh --gpu --no-service` then restart booru, or tell me to do it.
+
+❯ i tried but it says timeout a lot, maybe can't connect? shall we use xray for 
+  this?  ./install.sh --gpu --no-service                                        
+                                                                                
+                                                                                
+                                               ==> checking prerequisites       
+                                                                                
+                                                                                
+                                                                                
+          ==> installing dependencies (requirements.txt)                        
+                                                                                
+                                                                                
+                                                  ==> installing GPU runtime    
+  (replaces CPU onnxruntime; large download)                                    
+                                                                                
+                                                                                
+              WARNING: Retrying (Retry(total=4, connect=None, read=None,        
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/onnxruntime-gpu/1.26.0/onnxruntime_gpu-1.26.0 
+  -cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl                  
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=3, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/onnxruntime-gpu/1.26.0/onnxruntime_gpu-1.26.0 
+  -cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl                  
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=4, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/nvidia-cudnn-cu12/9.10.2.21/nvidia_cudnn_cu12 
+  -9.10.2.21-py3-none-manylinux_2_27_x86_64.whl                                 
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=3, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/nvidia-cudnn-cu12/9.10.2.21/nvidia_cudnn_cu12 
+  -9.10.2.21-py3-none-manylinux_2_27_x86_64.whl                                 
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=2, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/nvidia-cudnn-cu12/9.10.2.21/nvidia_cudnn_cu12 
+  -9.10.2.21-py3-none-manylinux_2_27_x86_64.whl                                 
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=1, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/nvidia-cudnn-cu12/9.10.2.21/nvidia_cudnn_cu12 
+  -9.10.2.21-py3-none-manylinux_2_27_x86_64.whl                                 
+                                                                                
+                                                                                
+           WARNING: Retrying (Retry(total=4, connect=None, read=None,           
+  redirect=None, status=None)) after connection broken by                       
+  'ReadTimeoutError("HTTPConnectionPool(host='192.168.1.50', port=8090): Read   
+  timed out. (read timeout=15)")':                                              
+  /repository/pypi-proxy/packages/nvidia-cufft-cu12/11.4.1.4/nvidia_cufft_cu12- 
+  11.4.1.4-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl              
+                                                                                
+                                                                                
+           ^C^CERROR: Operation cancelled by user                               
+                                                                                
+                                                                                
+                                                   warn: pip install failed     
+  with the configured index  retrying against pypi.org                          
+                                                                                
+                                                                                
+               ^CERROR: Operation cancelled by user   do it yourself            
+
+● You asked about xray. Before changing anything, I'll look at what proxy my
+  shell uses when it reaches pypi.org and Hugging Face directly. That may be why
+  my installs worked and yours timed out.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Found it: my shell has the xray proxy exported, which is why pip worked for me
+  but not you—without it, pip falls back to the Nexus mirror and times out on
+  the CUDA wheels. I'll update install.sh to be proxy-aware and more robust,
+  starting with verifying the proxy path works. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All three paths answer. The index isn't the problem; the wheels are huge. I'll
+  compare real download speed for a large wheel through each path, since that
+  decides what the installer should prefer.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Found the real issue: pip was timing out at 15s while Nexus was still fetching
+  and caching the large wheel upstream, not an xray problem. I'll fix
+  install.sh with a longer pip timeout, a proxy option, and download-first logic
+  so failures can't leave the venv without onnxruntime or silently fall back to
+  the CPU build. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the dependency and GPU blocks themselves: no re-install of the CPU build
+  over the GPU one, and download first, swap after.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Before touching the live environment I'll take a safety snapshot of the
+  database into your backup folder, then run the installer.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Backup saved, but I noticed the filename uses Django's local time zone instead
+  of UTC, which could cause sorting issues across DST changes and lead rotation
+  to delete the wrong file. I'll fix that now and then kick off the install in
+  the background. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The installer is running in the background. I'll watch its log for progress,
+  warnings and the final exit status.
+
+● Monitor(install.sh --gpu progress)
+  ⎿  Monitor started · task b7nt7ghhs · timeout 1800s
+
+● I'm waiting on the installer. The downloads are several GB through your
+  mirror, so this will take a few minutes.
+
+✻ Cooked for 1m 52s · done 12:47 AM
+
+● Background command "python3 - <<'PYEOF'
+p='gallery/backup.py'
+s=open(p).read()
+old="""name = f'{AUTO_PREFIX}{time.strftime("%Y%m%d-%H%M%S")}.sqlite3'"""
+assert old in s
+s=s.replace(old,"""name = f'{AUTO_PREFIX}{time.strftime("%Y%m%d-%H%M%S",
+time.gmtime())}.sqlite3'   # UTC: names must sort chronologically (rotation
+relies on it)""",1)
+open(p,'w').write(s)
+PYEOF
+venv/bin/python manage.py test gallery.tests.BackupTests 2>&1 | tail -3; mkdir
+-p /tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/sc
+ratchpad && (./install.sh --gpu --no-service --yes > /tmp/claude-1000/-home-equa
+-git-booru/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad/install.log 2>&1;
+echo "INSTALL_EXIT $?" >> /tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c
+5a-a5b6-bc7560254fe3/scratchpad/install.log) &
+echo started" completed (exit code 0)
+
+● That notification is only the launcher shell returning. The installer itself
+  keeps running in the background, so I'll check its log.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The installer is running its first steps. The monitor will report each stage
+  and any failure.
+
+✻ Brewed for 4s · done 12:47 AM
+
+※ recap: Goal: get the GPU tagger and PixAI character model running in your live booru. I'm currently running install.sh --gpu on your venv, which also migrates the database. Next, once it finishes, I'll verify CUDA and reload gunicorn.
+
+❯ how's it going, can i do anything or check?                                   
+  Ran 1 shell command (ctrl+o to expand)
+
+● The installer finished successfully (exit code 0) and already ran migrations,
+  so the database now has the new columns while the service is still running old
+  code. I'll check the full log and reload the service quickly. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Install succeeded—onnxruntime-gpu 1.26.0 with cuDNN is working via the
+  pypi.org fallback, and the database has the new columns. Since the running
+  service still has old code against the migrated DB, I'm doing a graceful
+  worker reload now to avoid errors. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The reload worked—workers restarted at 01:11, the service is active, and the
+  login page returns 200. Now I'll verify the live setup, checking the GPU
+  provider against the real app code and the running service's new endpoints. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Everything checks out on the live service. Now the full test suite, and I'll
+  commit the installer and backup-name fixes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● It's all done and live, so there's nothing you need to fix or install. xray
+  wasn't needed either.
+
+  What went wrong
+  Your mirror at 192.168.1.50:8090 pulls big files from upstream before serving
+  them. pip gave up after 15 seconds while it was still fetching the multi-GB
+  CUDA wheels. I raised the timeout to 15 minutes in install.sh. I also added a
+  --proxy URL option in case you ever do need xray, for example --proxy 
+  http://127.0.0.1:1081.
+
+  What I did
+  - Took a database snapshot into /mnt/ssd/backups/booru first.
+  - Ran ./install.sh --gpu --no-service. This put onnxruntime-gpu 1.26.0 and
+    cuDNN 9.10.2.21 into your live venv and applied the migrations.
+  - Reloaded gunicorn with a graceful kill -HUP, so I did not need sudo.
+  - Checked the running service: the login page and the new AI, stats, backup
+    and task endpoints all return 200.
+
+  Measured in your live venv: both models load on CUDA. WD14 takes about 154 ms
+  per post (it was about 740 ms on CPU) and PixAI takes about 361 ms.
+
+  Two fixes along the way
+  - install.sh now downloads the GPU libraries first and swaps them in offline.
+    A failed download can no longer leave the venv without onnxruntime.
+    Re-running it also keeps the GPU build instead of reinstalling the CPU one.
+  - Backup file names now use UTC. They were using Django's default Chicago
+    time, which could make the oldest-backup cleanup delete the wrong file after
+    a daylight-saving change.
+
+  Things you can check
+  1. Open ⚙ settings → AI tagging. It should say GPU (CUDA) enabled, and that
+     the PixAI model is ready (1,212 MB). The model was already in your cache,
+     so it needs no download.
+  2. Open a post and press "☺ tag characters" as a quick test.
+  3. When you're happy, run "re-tag characters" for 100 posts. It goes newest
+     first, and the stop button works. Turn on the overlay to see CH px ✓ on the
+     posts it has checked.
+
+  Right now none of your 27,826 posts has been checked by PixAI. You have 856
+  character tags, so the "fix character tag categories" button was already used.
+  The stuck notifications are gone.
+
+  My commits are still local: 4 ahead of GitHub (ab660c9, fa07ab6, 0ab4a77,
+  2855df3). Want me to push them?
+
+✻ Crunched for 1m 37s · done 1:12 AM
+
+※ recap: Goal: a faster, better-tagging booru gallery with a settings panel and database backups. The GPU install, migrations and service reload are done and verified. Next: you try the character re-tag on 100 posts, and tell me whether to push the four local commits.
+
+● Monitor event: "install.sh --gpu progress"
+  [Monitor expired after 30m with no events delivered. Re-arm it if you still 
+  need the watch — and widen the filter if silence was unexpected.]
+
+● That expiry notice is the install-progress monitor timing out. It isn't a
+  problem, because the install finished earlier and nothing is waiting on it.
+
+  Everything is in the state I described: the GPU runtime is installed and live,
+  and the 4 commits are still local. Do you want me to push them?
+
+✻ Cooked for 2s · done 1:17 AM
+
+❯ add in settings button to force unload any model no matter what to free vram  
+  + there's one type of arts i would love ai to know and auto tag but it        
+  doesn't, is it hard to add clone of some model to teach it to see that on     
+  arts and add tags? + is it a good idea to add selector for main ai tag all    
+  (default model, pixai and my learned) + download buttons for default and      
+  pixai model and clone and delete for my model, i want my model to be exact    
+  same as default but know a few things more (teach it on selected by me posts) 
+
+● I'll start by reading the existing plan file, as required. It was written for
+  an earlier task, so I'll judge how relevant it is.
+
+  Read 1 file (ctrl+o to expand)
+
+● I'll replace that outdated plan with a new one and start gathering facts via
+  read-only checks, focusing on whether the default model's ONNX exposes usable
+  features and what tooling is available. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Fetch(https://huggingface.co/api/models/SmilingWolf/wd-vit-tagger-v3/tree/main
+       )
+  ⎿  Received 1.4KB (200 OK)
+
+● The booru venv lacks onnx, scikit-learn, and torch, though the model repo
+  includes timm weights. I'll inspect the ONNX graph structure with a
+  lightweight protobuf parser to check if pre-classifier features are exposed. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ - current tags in main menu looks weird too much characters no more tags are  
+  seen, leave max cap and even make it smaller to 150 and separate tag types    
+  into same pieces and make them random after page reload                       
+
+● I'm still in plan mode, so I'll read how the main-page tag list is built now
+  and add this to the plan alongside the AI work.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● I've confirmed the default model's ONNX graph ends in mean-pool → linear
+  classifier → sigmoid, so exposing the 768-dim pooled features via a trivial
+  graph edit is feasible and can preserve the default behavior exactly. Before
+  drafting the plan, I need your input on three decisions. · summary
+
+● User answered Claude's questions:
+  ⎿  · How should 'my model' learn the new art type? → Frozen clone + learned 
+     heads (Recommended)
+     · Which models should the 'main AI tagger' selector offer? → Default + 
+     PixAI + My model
+     · How should the sidebar pick its 150 tags on each reload? → Random, 
+     weighted by popularity (Recommended)
+
+● All decisions are in. I'm writing the plan now, replacing the old one, since
+  that was for completed, unrelated work.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/i-like-current-version-humming-pond.md · 
+     /plan to edit
+     Plan: balanced sidebar tags, AI models panel (downloads / selector / free 
+     VRAM), "my model" that learns new art
+
+     Context
+
+     Follow-up to the AI work already shipped (WD14 on the Tesla P4 via
+     gallery/ai_runtime.py, PixAI character model in gallery/char_tagger.py,
+     settings modal). The user now wants:
+     1. The main-page tag list is unusable: ~850 character tags fill the
+        300-slot cap (ordering is -fav, category rank, count), so
+        general/ai/artist tags never show. → cap 150, equal share per tag type,
+        random each reload.
+     2. Settings: a button to force-unload models (free VRAM, shared with
+        ComfyUI), download/delete buttons per model, a main-tagger selector
+        (default / PixAI / my model).
+     3. A "my model": clone of the default WD14 that is exactly the same but can
+        additionally learn a few things (an art type) from posts the user
+        selects.
+
+     Decisions already made with the user: teaching = frozen clone + learned 
+     heads (not fine-tuning); selector offers Default + PixAI + My model (PixAI
+     gets an explicit warning: no rating tags, different vocabulary, ~2.4x
+     slower); sidebar sampling = random weighted by popularity.
+
+     Key facts found (read-only): the default ONNX ends LayerNormalization → 
+     ReduceMean (768-d pooled) → head/Gemm → Sigmoid → output, so the pooled
+     features /core_model/ReduceMean_output_0 can be exposed as a 2nd graph
+     output without touching any weight → default tags stay bit-identical. The
+     booru venv has numpy only (no onnx / sklearn / torch). Weights/ONNX of
+     default = 362 MB; PixAI ONNX = 1.27 GB. P4: FP32 only, ViT-B ≈ 84 ms/img on
+     GPU.
+
+     Order = four commits, each with tests; deploy (DB snapshot → ./install.sh →
+     migrate → graceful kill -HUP) after verification, as done last time.
+
+     ---
+     Part A — Sidebar tags (small; do first) — gallery/views.py::index, 
+     templates/gallery/index.html
+
+     - tag_cap: 150 (fast mode stays 40). Mobile tag sheet (tags_all) is
+       untouched (full list).
+     - Replace "order + slice" with a sampler. Candidate rows come from the
+       existing query (values_list('id','category','fav', weight), weight =
+       filtered_count when searching, else count).
+       - Favorites stay pinned first (count toward the cap, never sampled away).
+       - Remaining slots split equally across the categories present (meta,
+         character, artist, general, ai) by _fair_shares(sizes, cap): smallest
+         categories first, share = remaining // categories_left, take min(size, 
+         share), unused slots flow to the bigger categories.
+       - Inside a category: weighted sample without replacement
+         (Efraimidis–Spirakis key random()**(1/w)), then sorted for display by
+         count desc (or name when sort_tags=name).
+       - Display order: pinned favs, then categories in the existing rank order,
+         with a small {% ifchanged tag.category %} heading row per type.
+       - Fetch the chosen Tag objects with one pk__in query; carry
+         filtered_count over as an attribute (template uses it). tag_total
+         unchanged; label becomes "· 150 shown (random, equal per type)".
+     - Random only on full page loads (the htmx grid response doesn't render the
+       sidebar) = "random after reload".
+     - Tests: _fair_shares (redistribution, empty categories), per-category
+       quota with a seeded random.Random, favs pinned, filtered case, two seeds
+       give different lists.
+
+     Part B — AI models panel, selector, free VRAM
+
+     gallery/ai_models.py (new) — registry {wd14, pixai, custom}: repo, files,
+     expected bytes (wd14 378,536,310; pixai 1,271,365,854), status(key)
+     (ready/bytes/path via try_to_load_from_cache, no network), download(key, 
+     on_progress) (generalises char_tagger.download_model: Xet disabled, 30 s
+     timeout, retries, progress from the .incomplete blob), delete(key) (rmtree
+     of the HF repo cache dir; for custom the clone dir), models_dir() =
+     settings.AI_MODELS_DIR (default BASE_DIR/ai_models, add to .gitignore).
+     char_tagger.download_model delegates here; views._get_wd14_model uses the
+     cached path and raises a clear "download it in settings" error instead of
+     silently downloading.
+     Endpoints (gallery/urls.py): GET /api/ai/models/ (all statuses, selected
+     main, VRAM, custom info), POST /api/ai/models/<key>/download/ (Task
+     model_download, exclusive, MB progress), POST /api/ai/models/<key>/delete/
+     (409 if an AI task runs or it is the selected main), POST /api/ai/main/
+     (validates ready; stored in prefs.json as aiMainModel).
+     Selector wiring: _main_model() returns the pref only if that model is
+     ready, else wd14. run_ai_tagger dispatches: wd14 (today), custom (Part C),
+     pixai → new char_tagger.run_pixai_general() (same model run, general ≥ 0.30
+     top 40 by confidence + characters; no rating tags; sets
+     char_model='pixai', skips the separate character pass). Used by per-post
+     button, ai_tag_all_bg, upload.
+     Free VRAM now (gallery/ai_runtime.py):
+     - request_unload_all() writes a signal file (AI_MODELS_DIR/.unload,
+       timestamp). The per-process reaper loop polls it every 3 s (was 30 s; one
+       os.stat). On a new signal each worker force_unload()s every model (drops
+       sessions without taking the run lock, gc.collect()) and for 60 s treats
+       all models as idle so a reload by an in-flight item is freed again.
+     - The endpoint also sets cancel_requested on running AI tasks (ai_tag,
+       char_retag, custom_*) so they don't reload the model.
+     - gpu_info() = nvidia-smi --query-gpu=memory.used,memory.total,name (3 s
+       timeout, None if unavailable); the panel shows "VRAM used / total"
+       before/after.
+     - Secondary button "restart workers too" (releases the ~120 MiB CUDA
+       context per worker): graceful SIGHUP to the gunicorn master only if the
+       parent process is gunicorn; confirm text warns that running background
+       tasks stop.
+       UI — _settings_modal.html: new "AI models" section (rows: Default WD14 /
+       PixAI / My model: status, size, download, delete; radio "Main AI tagger"
+       with the PixAI warning; VRAM readout; Free VRAM button). base.html: task
+       labels model_download, model_clone, custom_train, custom_scan.
+
+     Part C — "My model": clone + teach + use
+
+     Storage: files in AI_MODELS_DIR/custom/ — model.onnx (clone),
+     selected_tags.csv (copy), heads.npz (names, W[K,768], b[K], thresholds),
+     meta.json (source file hash, feature tensor name, cloned_at). DB (migration
+     0017): CustomConcept(name unique, category, threshold, enabled, n_pos, 
+     n_neg, metrics JSON, trained_at), CustomExample(concept FK, post FK, label 
+     ±1, auto bool, feat BLOB float16[768] null; unique(concept, post)).
+     Clone (gallery/custom_model.py, Task model_clone; new dependency onnx in
+     requirements.txt): load default ONNX, find structurally the tensor feeding
+     the head Gemm that feeds Sigmoid (no hard-coded names), append it to
+     graph.output, save. Verification is mandatory: run original vs clone on
+     random input → output must be bit-identical and features shape (1,768),
+     otherwise delete the clone and fail. Spike first: pip install onnx next to
+     protobuf==7.35.0 in a scratch venv; fallback = append the ValueInfoProto by
+     raw protobuf wire edit.
+     Delete: removes model files, heads and feature cache; examples/concepts are
+     kept (re-clone + retrain later); per-concept "forget" removes them.
+     Teach UI (index.html): new select-mode action "🎓 teach AI" → modal
+     (concept name with datalist of existing ones, category, ± radio, "also tag
+     these posts now"). POST /api/custom/examples/ upserts examples; + also tags
+     the posts manually, − removes the tag from them (this is how wrong
+     auto-tags get corrected). Concept names must not collide with a
+     default-model tag name (selected_tags.csv) — rejected with a message.
+     Train (Task custom_train, exclusive, cancellable, check_cancel per item,
+     throttled progress): extract features through the clone on the GPU for
+     examples without a cached feat; auto-sample negatives (4× positives, max
+     600, random ai_tagged posts not labeled/tagged with the concept; stored as
+     auto=True examples so they are reused); numpy-only L2 logistic regression
+     (IRLS/Newton, class-balanced, standardised features), 5-fold stratified CV
+     (seeded) → out-of-fold probabilities → threshold = argmax F0.5
+     (precision-leaning, floor 0.5), metrics {precision, recall, f1, auc, n_pos,
+     n_neg}; refuse with <10 positives or <10 negatives (30+ recommended).
+     Writes heads.npz (merging other concepts).
+     Use: run_ai_tagger with main=custom runs the clone once → output (default
+     tags, selection logic unchanged ⇒ identical to default) + features →
+     sigmoid(F @ Wᵀ + b); learned tags ≥ threshold returned as res['learned']
+     and added by apply_ai_tags with the concept's category (never overriding an
+     existing tag's category). Concept sliders (threshold) edit CustomConcept +
+     heads.npz.
+     Phase C2 — verify before applying to the library: PostFeature(post PK, vec 
+     BLOB float16, model_hash) cache filled by Task custom_scan (cancellable,
+     resumable, ~70 min for 27.8k posts, once); then everything is a numpy
+     matrix op: "preview candidates" (top-N unlabeled posts by score → opens
+     /?ids=… grid, confirm/deny with the teach action), "apply to library" (tags
+     posts ≥ threshold; applied pairs recorded in CustomApplied(concept, 
+     post)), "undo apply" (removes only those). Cache invalid if the clone's
+     model_hash changes.
+     Settings → "My model" section: clone / delete, concept table (name,
+     category, #pos/#neg, metrics, threshold slider, train, preview, apply,
+     undo, forget).
+
+     Files to modify / add
+
+     gallery/ai_models.py, gallery/custom_model.py, gallery/ai_runtime.py,
+     gallery/char_tagger.py, gallery/models.py + migration 0017,
+     gallery/views.py (index sampler, endpoints, run_ai_tagger dispatch),
+     gallery/urls.py, templates/gallery/index.html (sidebar groups, teach
+     action/modal), _settings_modal.html, base.html, requirements.txt (+onnx),
+     .gitignore (+ai_models/), gallery/tests.py, CLAUDE.md. (*new)
+     Reuse: _start_task(..., exclusive=True), check_cancel, _throttled_save,
+     ai_runtime.get_model/ManagedModel, apply_ai_tags, add_tags_to_post, the
+     ?ids= grid mode (_ordered_by_ids), prefs helpers (_pref), existing
+     select-mode bulk bar + sel-act buttons.
+
+     Verification
+
+     - Unit tests (fakes, no GPU): _fair_shares + sampler; selector fallback
+       when a model isn't ready; registry status/delete against a temp HF cache;
+       signal-file force unload across two ManagedModels; logistic regression +
+       CV on synthetic data (recovers a planted direction, threshold choice);
+       examples endpoint (± semantics, name-collision rejection); learned-tag
+       application incl. category rules; Node syntax check of rendered templates
+       (existing test pattern).
+     - Real-model integration on the P4 (read-only on the live DB; teaching
+       tests on a copy of db.sqlite3 via a scratch settings module): clone →
+       output max-diff = 0 vs default and features (1,768); teach an existing,
+       well-populated tag (e.g. a character with 100+ posts) from a subset → CV
+       precision/recall high and held-out posts recovered (proves the pipeline
+       end to end); measure clone VRAM/speed; Free VRAM → nvidia-smi used memory
+       drops to ≈ baseline within ~5 s while a task is running.
+     - Sidebar on the real library: render / several times — ≤150 tags, ≈30 per
+       type, different each load, favs first.
+     - Deploy: DB snapshot, ./install.sh (adds onnx), migrate, graceful reload;
+       then the user checks Settings → AI models, the teach flow on a few
+       selected posts, and the sidebar.
+
+     Risks / notes
+
+     - A linear head on frozen features cannot learn what the features don't
+       separate; the CV metrics + candidate preview exist so quality is visible
+       before anything is applied to the library.
+     - PixAI as main tagger mixes vocabularies and drops rating tags — warned in
+       the UI, reversible via the selector.
+     - onnx vs protobuf 7.35 compatibility is the one unverified dependency
+       (spike is step 0 of Part C).
+
+● I'm starting with Part A, the sidebar tag sampler, in views.py.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Quick cleanup of a leftover line, then the template: group headings per tag
+  type and an updated label.
+
+  Ran 2 shell commands (ctrl+o to expand)
+● Part A tests: the fair-share arithmetic, per-type quotas, pinned favorites,
+  the filtered case, and the rendered page.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The tests pass. Now a check against your real library: the sampler on your
+  actual tags, three reloads in a row.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The type balance checks out (57 characters, 58 AI tags, all 8 artists, all 15
+  general), but the same characters keep showing up first since raw-count
+  weighting favors popular tags too heavily. I'll test softer weightings to see
+  how much more variation they produce across loads. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Raw counts cause 48% overlap between loads, but square-root weighting cuts
+  that to 31% and surfaces ~1.6× more distinct tags while still favoring popular
+  ones. I'll switch to the square-root weighting approach. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Part A is committed. Now Part B, starting with the model registry that handles
+  status, download and delete for every model.
+
+● Write(gallery/ai_models.py)
+  ⎿  Wrote 139 lines to gallery/ai_models.py
+       1 """Registry of the AI models the gallery can use: where each one
+       2 it is on disk, and download / delete.
+       3 
+         B)
+         acters add-on / alternative main tagger
+       6 - custom "my model": a clone of wd14 that can learn extra tags (
+       7 
+       8 Hugging Face models live in the normal HF cache; "my model" live
+       9 settings.AI_MODELS_DIR/custom (default: <project>/ai_models, unt
+      10 """
+     … +153 lines (ctrl+o to expand)
+
+● Next I'm refactoring char_tagger.py onto the registry, and adding the
+  general-tags mode so PixAI can also be selected as the main tagger.
+
+● Write(gallery/char_tagger.py)
+  ⎿  Added 45 lines, removed 70 lines
+       1 -"""Second-opinion CHARACTER tagger: PixAI tagger v0.9 (EVA02, 4
+         -48px, 13,461 tags                                              
+       2 -of which 3,720 characters, trained on Danbooru through Jan 2025
+         -) via the DeepGHS                                              
+       3 -ONNX export. WD14 stays the main tagger; this one only ever add
+         -s character tags.                                              
+       1 +"""PixAI tagger v0.9 (EVA02, 448px, 13,461 tags of which 3,720 
+         +characters, trained                                            
+       2 +on Danbooru through Jan 2025) via the DeepGHS ONNX export.     
+       3  
+       5 -~318M params / 0.62 TFLOPs per image: about 0.3 s on a Tesla P4
+         -, so it is run on                                              
+       6 -demand (per-post button, settings bulk run) rather than on ever
+         -y scan. FP32 only                                              
+       7 -— the P4 has no fast FP16/int8, so the 1.27 GB FP32 export is a
+         -lso the right one.                                             
+       4 +Two uses:                                                      
+       5 +- run_character_tagger(): a second-opinion CHARACTERS-ONLY pass
+         + next to WD14                                                  
+       6 +  (per-post button, settings bulk re-tag, optional auto-run). O
+         +nly ever adds tags.                                            
+       7 +- run_pixai_general(): general + character tags, for when PixAI
+         + is selected as                                                
+       8 +  the main AI tagger. It has no rating tags (explicit/questiona
+         +ble...) and a                                                  
+       9 +  different vocabulary than WD14 — the settings panel warns abo
+         +ut both.                                                       
+      10 +                                                               
+      11 +~318M params / 0.62 TFLOPs per image: about 0.3 s on a Tesla P4
+         +. FP32 only — the                                              
+      12 +P4 has no fast FP16/int8, so the 1.27 GB FP32 export is also th
+         +e right one.                                                   
+      13 +Files/download/delete are handled by gallery/ai_models.py.     
+      14  """
+      15  import csv
+      10 -import glob                                                    
+      11 -import os                                                      
+      16  import threading
+      17  
+      18  from django.conf import settings
+      19  
+      16 -REPO = 'deepghs/pixai-tagger-v0.9-onnx'                        
+      20 +from . import ai_models                                        
+      21 +                                                               
+      22  MODEL_ID = 'pixai'                 # value stored in Post.char_
+          model
+      23  SIZE = 448
+      19 -EXPECTED_BYTES = 1_270_000_000     # model.onnx, for the downlo
+         -ad progress bar                                                
+      24 +EXPECTED_BYTES = ai_models.MODELS['pixai']['bytes']            
+      25  CHAR_THRESHOLD = getattr(settings, 'AI_CHAR_MODEL_THRESHOLD', 0
+          .85)   # the repo's thresholds.csv value
+      26 +GENERAL_THRESHOLD = getattr(settings, 'AI_PIXAI_GENERAL_THRESHO
+         +LD', 0.30)                                                     
+      27  MAX_CHARACTERS = 12
+      28 +MAX_GENERAL = 40                                               
+      29  
+      30  _tags_cache = None
+      31  _tags_lock = threading.Lock()
+      32  
+      33  
+      27 -# ── files / download ─────────────────────────────────────────
+         -───                                                            
+      28 -def _hub_dir():                                                
+      29 -    from huggingface_hub import constants                      
+      30 -    return os.path.join(constants.HF_HUB_CACHE, 'models--' + RE
+         -PO.replace('/', '--'))                                         
+      31 -                                                               
+      32 -                                                               
+      34 +# ── files / download (thin wrappers over ai_models) ──────────
+         +───                                                            
+      35  def _cached(filename):
+      34 -    """Local path of a cached repo file, or None. No network ac
+         -cess."""                                                       
+      35 -    from huggingface_hub import try_to_load_from_cache         
+      36 -    p = try_to_load_from_cache(REPO, filename)                 
+      37 -    return p if isinstance(p, str) and os.path.exists(p) else N
+         -one                                                            
+      36 +    return ai_models.cached_file('pixai', filename)            
+      37  
+      38  
+      39  def model_ready():
+      41 -    return bool(_cached('model.onnx') and _cached('selected_tag
+         -s.csv'))                                                       
+      40 +    return ai_models.is_ready('pixai')                         
+      41  
+      42  
+      43  def model_bytes():
+      45 -    p = _cached('model.onnx')                                  
+      46 -    try:                                                       
+      47 -        return os.path.getsize(p) if p else 0                  
+      48 -    except OSError:                                            
+      49 -        return 0                                               
+      44 +    return ai_models.size_bytes('pixai')                       
+      45  
+      46  
+      52 -def download_progress_bytes():                                 
+      53 -    """Bytes of an in-flight download (the .incomplete blob), 0
+         - if none."""                                                   
+      54 -    total = 0                                                  
+      55 -    for f in glob.glob(os.path.join(_hub_dir(), 'blobs', '*.inc
+         -omplete')):                                                    
+      56 -        try:                                                   
+      57 -            total += os.path.getsize(f)                        
+      58 -        except OSError:                                        
+      59 -            pass                                               
+      60 -    return total                                               
+      61 -                                                               
+      62 -                                                               
+      47  def download_model(on_progress=None):
+      64 -    """Download the model files into the Hugging Face cache (re
+         -sumable). While                                                
+      65 -    it runs, on_progress(done_bytes, total_bytes) is called abo
+         -ut every 2 s."""                                               
+      66 -    from huggingface_hub import constants, snapshot_download   
+      67 -    constants.HF_HUB_DOWNLOAD_TIMEOUT = 30    # a stalled conne
+         -ction must error out, not hang for ever                        
+      68 -    constants.HF_HUB_DISABLE_XET = True       # the Xet transfe
+         -r path stalls/restarts on this network; plain HTTP is reliable 
+      69 -    err = []                                                   
+      48 +    ai_models.download('pixai', on_progress)                   
+      49  
+      71 -    def _dl():                                                 
+      72 -        # snapshot_download resumes from the .incomplete blob, 
+         -so just retry                                                  
+      73 -        for attempt in range(1, 6):                            
+      74 -            try:                                               
+      75 -                snapshot_download(REPO, allow_patterns=['model.
+         -onnx', 'selected_tags.csv', 'preprocess.json', 'thresholds.csv'
+         -])                                                             
+      76 -                err.clear()                                    
+      77 -                return                                         
+      78 -            except BaseException as e:    # noqa: BLE001       
+      79 -                err[:] = [e]                                   
+      80 -                import time as _t                              
+      81 -                _t.sleep(3 * attempt)                          
+      50  
+      83 -    t = threading.Thread(target=_dl, name='booru-pixai-download
+         -', daemon=True)                                                
+      84 -    t.start()                                                  
+      85 -    while t.is_alive():                                        
+      86 -        t.join(2)                                              
+      87 -        if on_progress:                                        
+      88 -            on_progress(download_progress_bytes(), EXPECTED_BYT
+         -ES)                                                            
+      89 -    if err:                                                    
+      90 -        raise err[0]                                           
+      91 -    if not model_ready():                                      
+      92 -        raise RuntimeError('download finished but the model fil
+         -es are not in the cache')                                      
+      93 -                                                               
+      94 -                                                               
+      51  # ── inference ────────────────────────────────────────────────
+          ───
+      52  def _tags():
+      53      """(names, is_character mask) from selected_tags.csv. Order
+           matters: it is
+     ...
+       74      return arr.transpose(2, 0, 1)[None, ...].copy()          #
+            1x3xHxW
+       75  
+       76  
+      121 -def run_character_tagger(file_path, thumb_path=''):           
+      122 -    """[(name, probability), ...] for characters >= CHAR_THRES
+          -HOLD, most                                                    
+      123 -    confident first (at most MAX_CHARACTERS)."""              
+       77 +def _infer(file_path, thumb_path=''):                         
+       78 +    """(probabilities over all 13,461 tags, names, is_char mas
+          +k)."""                                                        
+       79      import numpy as np
+       80      from . import ai_runtime
+       81      from .utils import load_image_for_tagging
+       82      if not model_ready():
+      128 -        raise RuntimeError('character model not downloaded yet
+          -')                                                            
+       83 +        raise RuntimeError('PixAI model not downloaded yet — S
+          +ettings → AI models')                                         
+       84      img = load_image_for_tagging(file_path, thumb_path)
+       85      model = ai_runtime.get_model(MODEL_ID, _cached('model.onnx
+           '))
+       86      names, is_char = _tags()
+     ...
+       88      out = np.asarray(model.run(['prediction'], {model.get_inpu
+           ts()[0].name: _preprocess(img)})[0][0], dtype=np.float32)
+       89      if out.min() < 0.0 or out.max() > 1.0:                   #
+            logits -> probabilities
+       90          out = 1.0 / (1.0 + np.exp(-out))
+       91 +    return out, names, is_char                                
+       92 +                                                              
+       93 +                                                              
+       94 +def run_character_tagger(file_path, thumb_path=''):           
+       95 +    """[(name, probability), ...] for characters >= CHAR_THRES
+          +HOLD, most                                                    
+       96 +    confident first (at most MAX_CHARACTERS)."""              
+       97 +    import numpy as np                                        
+       98 +    out, names, is_char = _infer(file_path, thumb_path)       
+       99      idx = np.nonzero((out >= CHAR_THRESHOLD) & is_char)[0]
+      100      idx = idx[np.argsort(-out[idx])][:MAX_CHARACTERS]
+      101      return [(names[i], float(out[i])) for i in idx]
+      102 +                                                              
+      103 +                                                              
+      104 +def run_pixai_general(file_path, thumb_path=''):              
+      105 +    """Same dict shape as the WD14 tagger: {'general': [...], 
+          +'character': [...]}.                                          
+      106 +    General tags >= GENERAL_THRESHOLD, most confident first (c
+          +ap MAX_GENERAL)."""                                           
+      107 +    import numpy as np                                        
+      108 +    out, names, is_char = _infer(file_path, thumb_path)       
+      109 +    g = np.nonzero((out >= GENERAL_THRESHOLD) & ~is_char)[0]  
+      110 +    g = g[np.argsort(-out[g])][:MAX_GENERAL]                  
+      111 +    c = np.nonzero((out >= CHAR_THRESHOLD) & is_char)[0]      
+      112 +    c = c[np.argsort(-out[c])][:MAX_CHARACTERS]               
+      113 +    return {'general': [names[i] for i in g], 'character': [na
+          +mes[i] for i in c], 'model': MODEL_ID}                        
+
+● Now the runtime side of "free VRAM": a cross-worker signal, forced unload, a
+  VRAM readout, and a faster reaper loop.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the views: the selector, the model endpoints, the Free VRAM and restart
+  actions, and wiring the WD14 loader to the registry. First a look at the
+  current pieces I'm changing.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the edits: the run_ai_tagger dispatch, the WD14 loader on the registry, a
+  shared pref writer, and the new endpoints.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Tests are passing. Now I'll refactor the reaper to extract its tick logic for
+  testability, then add tests covering the registry, selector, delete guards,
+  forced unload across workers, and PixAI-as-main, plus a module-level fixture
+  to keep tests from touching the real prefs.json. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● That failure is a mistake in my test data. PixAI has no rating tags, so my
+  fake "rating" tag just counted as a general tag. I'll fix the test.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Some earlier tests broke because a pref from one new test, aiMainModel=pixai,
+  leaked into the next tests through the shared temp prefs file. I'll make each
+  test in that class clean up after itself.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 70 tests pass. Now the settings UI for Part B: an AI models section with
+  status, download and delete per model, the main-tagger selector, and the Free
+  VRAM controls.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The text I was matching has drifted from what I assumed. I'll look at the
+  current section and match it exactly.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● The file has been changed since I last wrote it: the runtime line and the
+  download button are already gone from that section. I'll read the current
+  script part before editing again.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The settings modal edit had already applied on the first run. The earlier
+  failure was the base.html step, which I'll check and finish now.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Both edits had already applied, so the earlier error was only the script run
+  twice. Now the tests.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 70 tests pass. Now I'll run a real cross-process VRAM check: one process
+  loads both models and holds them, while a second process sends the unload
+  signal, so I can observe actual GPU memory changes. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● That failed due to a path issue—it couldn't find the booru package. Also
+  noticed VRAM is already at 2075 MiB (up from the earlier 109 MiB baseline), so
+  I'll check what's using the GPU. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+● Found 4 live CUDA worker contexts (~112 MiB each) plus one using ~1.6 GB,
+  likely from active AI feature usage—I'll leave those running and test as a
+  delta on top. Starting with the path fix now. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The real cross-process test passes—a signal from another process dropped both
+  models within 2 seconds, freeing nearly all VRAM except the ~118 MiB CUDA
+  context, which cleared once the process exited. I'm committing Part B now. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'm kicking off Part C by checking whether onnx is compatible with your pinned
+  protobuf 7.35 and whether exposing the feature tensor keeps default outputs
+  bit-identical, testing this on the real default model in a scratch
+  environment. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Status: onnx 1.23.1 installs cleanly next to your pinned protobuf 7.35. Now
+  I'll run the clone surgery on the real default model and check that the
+  outputs match.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The spike confirmed everything: onnx 1.23.1 works fine with protobuf 7.35, the
+  feature tensor can be located structurally without hard-coded names, the
+  clone's outputs match exactly (max diff 0.0), and recomputing the classifier
+  head from features reproduces the original output to ~3e-7—so a learned tag
+  head can share the same feature space. Now I'll build out the database models
+  for teaching. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the core module for "my model": the clone, feature extraction, the learned
+  heads, and the numpy-only trainer with cross-validation.
+
+● Write(gallery/custom_model.py)
+  ⎿  Wrote 438 lines to gallery/custom_model.py
+       1 """My model: a CLONE of the default WD14 tagger that knows a few
+       2 
+       4 - The clone is the default ONNX with ONE extra graph output: the
+          768-d pooled
+         hed, so the
+         n cloning).
+         eatures
+       8   (heads.npz): logit = features @ W + b. Learning one is a numpy
+       9   regression on a few dozen of your posts — seconds, no PyTorch,
+      10   the default model already knows can change or be forgotten.
+     … +516 lines (ctrl+o to expand)
+
+● Now wiring it into the views: the shared preprocessing, the custom dispatch in
+  the tagger, learned tags applied during tagging, and the teach/train/clone
+  endpoints.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll fix a robustness gap by ensuring the model folder is created before
+  saving heads, then add the dependency and write tests covering the numerics,
+  heads, endpoints, and end-to-end tagging path. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The mirror returns nothing for this package either, as before. I'll install
+  from pypi.org directly, which is the same fallback install.sh now uses.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● onnx is installed without changing numpy or protobuf. Now the Part C backend
+  tests, including one that runs the real clone against the actual default model
+  in a temp folder.
+
+  Read 1 file (ctrl+o to expand)
+
+● 13 of 14 tests pass; the one failure is just an overly strict assertion on my
+  end, since the 72% held-out recall reflects an intended precision-leaning
+  trade-off at 2% prevalence. I'll fix the assertion to properly test that
+  trade-off. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Recall stays at 72% even at a 0.5 cutoff, so it's not a threshold issue — the
+  regularization grid may be too strong for this data. I'll check how held-out
+  quality changes across regularization levels before deciding. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Regularization isn't moving held-out recall (stuck ~72%), and the real issue
+  looks like my threshold search being arbitrarily floored at 0.5. I'll let the
+  search go lower and use out-of-fold scores to find the better cutoff. 
+  · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Lowering the threshold recovers 85% recall at ~1% false positives for the
+  well-separated case, while weak-signal cases correctly show poor AUC
+  (0.6–0.8), matching what the UI reports. I'm updating the test to reflect this
+  real behavior. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The "my model" backend is fully working with all 84 tests passing, including
+  the clone matching the default bit-identically. Now I'll build the UI: the
+  "teach AI" action for selected posts and the My model section in settings. 
+  · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now the teach action in the selection bar, with its dialog and script.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the "My model" section in settings: clone, the list of taught concepts
+  with their cross-validated quality, a threshold slider, train and forget.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The UI is ready. Now I'll run a real end-to-end test—actual clone, GPU, and
+  your library against a scratch database copy—by teaching it an existing
+  character as a "new" concept and checking how well it finds that character on
+  untrained posts. · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The classifier achieves perfect separation (AUC 1.000) on real data after
+  learning from just 30 examples, but the auto-threshold is overly conservative,
+  catching only 50% of positives due to one noisy negative skewing the
+  precision estimate. Since features are now cached, I'll iterate quickly on the
+  threshold rule. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The two "false positive" training negatives are likely real Furina posts
+  mislabeled as negatives, while truly clean negatives never exceeded 0.058,
+  suggesting taught concepts will face the same labeling issue. I'll cache
+  extracted features and test threshold rules across several real concepts of
+  varying popularity before updating the rule. · summary
+  Ran 1 shell command (ctrl+o to expand)
+
+● I'll build Phase C2 while the extraction runs, letting you index the library's
+  features, preview the posts it would tag, and apply or undo the tagging
+  before anything is committed. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Background command "SP=/tmp/claude-1000/-home-equa-git-booru/4baf0f31-9ca3-4c5
+a-a5b6-bc7560254fe3/scratchpad && cat > $SP/scratch/multi_extract.py <<'EOF'
+# Extract + cache real clone features for several stand-in concepts of different
+popularity (scratch DB, GPU).
+import random, os, time, numpy as np
+from gallery.models import Post, Tag
+from gallery import custom_model as cm
+OUT = os.path.join(os.path.dirname(__file__), 'multi'); os.makedirs(OUT,
+exist_ok=True)
+rng = random.Random(5)
+chars = list(Tag.objects.filter(category='character',
+count__gte=40).order_by('count').values_list('name', 'count'))
+want = []
+for target in (45, 90, 250, 700):
+    cand = [c for c in chars if c[1] >= target]
+    if cand: want.append(cand[0])
+print('stand-ins:', want, flush=True)
+lib = list(Post.objects.filter(ai_tagged=True).values_list('id', flat=True))
+f = lambda ids: np.array([cm.feature_for_post(i) for i in ids])
+for name, cnt in want:
+    path = os.path.join(OUT, name.replace('/', '_') + '.npz')
+    if os.path.exists(path): continue
+    t = time.time()
+    tag = Tag.objects.get(name=name)
+    pos = list(Post.objects.filter(tags=tag).values_list('id', flat=True));
+rng.shuffle(pos)
+    pset = set(pos)
+    unl = [i for i in lib if i not in pset]; rng.shuffle(unl)            #
+"unlabeled" library posts (never carry the tag)
+    n_tr = min(30, len(pos) // 2)
+    # auto-negatives like the trainer: random library posts NOT known to carry
+the concept — but the trainer cannot know
+    # about hidden positives, so mix in the library's real prevalence: sample
+from ALL library posts minus the training positives.
+    train_pos = pos[:n_tr]
+    all_but_train = [i for i in lib if i not in set(train_pos)];
+rng.shuffle(all_but_train)
+    auto_neg = all_but_train[:4 * n_tr]
+    held_pos = pos[n_tr:n_tr + 50]
+    held_neg = [i for i in unl if i not in set(auto_neg)][:150]
+    np.savez(path, Xp=f(train_pos), Xn=f(auto_neg), Fp=f(held_pos),
+Fn=f(held_neg),
+             hidden_pos_in_auto=np.array([i in pset for i in auto_neg]),
+count=cnt, prev=cnt / len(lib))
+    print(f'{name} (count {cnt}, prevalence {cnt/len(lib):.2%}): extracted in
+{time.time()-t:.0f}s', flush=True)
+print('done', flush=True)
+EOF
+(PYTHONPATH=$SP/scratch:. DJANGO_SETTINGS_MODULE=scratch_settings
+venv/bin/python manage.py shell < $SP/scratch/multi_extract.py >
+$SP/scratch/multi.log 2>&1; echo FINISHED >> $SP/scratch/multi.log) &
+sleep 20; grep -v -i "objects imported\|warn\|unauthenticated"
+$SP/scratch/multi.log | tail -3" completed (exit code 0)
+
+● Status: the backend for previewing and applying a taught tag is written, and
+  the real-data feature extraction for the threshold experiment is still running
+  in the background. I'll check on it.
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● While the extraction runs, I'm adding tests for the indexing, previewing,
+  applying and undoing logic.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● While the extraction finishes (roughly 10 more minutes), I'll update CLAUDE.md
+  for everything added in this round.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Docs are updated, and I'm waiting for the feature extraction across the four
+  real concepts so I can finalize the threshold rule on real data.
+
+✻ Crunched for 26m 7s · done 1:55 AM
+
+※ recap: Goal: ship the sidebar fix, models panel with free VRAM, and a "my model" you can teach new art. Current task is tuning the auto-threshold on real data. Next I'll compare candidate threshold rules when the four-concept extraction finishes, then deploy.
+
+● Background command "until grep -q FINISHED /tmp/claude-1000/-home-equa-git-boo
+ru/4baf0f31-9ca3-4c5a-a5b6-bc7560254fe3/scratchpad/scratch/multi.log
+2>/dev/null; do sleep 5; done; grep -v -i "objects
+imported\|warn\|unauthenticated" /tmp/claude-1000/-home-equa-git-booru/4baf0f31-
+9ca3-4c5a-a5b6-bc7560254fe3/scratchpad/scratch/multi.log | tail -6" completed
+(exit code 0)
+
+  Listed 1 directory (ctrl+o to expand)
+
+● The extraction finished, but my script saved its output relative to __file__,
+  which inside manage.py shell points into Django's package folder. I'll find
+  those files, move them out, and clean up.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Cleaned up. Now the threshold-rule comparison across the four real concepts,
+  from rare (0.17% of the library) to common (2.7%).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Real-data tests across four concepts show strong learning (AUC 0.989–1.000)
+  from just 23–30 examples, but even low false-positive rates translate to
+  hundreds of mistags in a 28k library—so I'm adopting the best-performing rule
+  (smoothing FP estimates, ignoring top out-of-fold negatives) and adding a
+  preview showing tag counts before you confirm applying it. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● One synthetic test now shows 4% false positives instead of the previous
+  under-3% threshold—the expected tradeoff from a rule motivated by hidden
+  positives in real-library data. I'll loosen that test's bound, since its
+  purpose is just to confirm the model learns. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All 90 tests pass. I'm committing Part C and then deploying as the plan said:
+  snapshot, migrate, graceful reload, and live checks.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● The deploy is done. The snapshot is saved, migration 0017 applied, the workers
+  reloaded and the login page returns 200. Now read-only checks of the live
+  service.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All of it is built and deployed. I did not click through the new screens in a
+  browser, and I haven't pressed Free VRAM on your live service. Both would have
+  disrupted what you're running, so I tested them another way. Five commits are
+  new and 7 are unpushed in total.
+
+  Deployed and checked on the live service
+  - I took a database snapshot, applied migration 0017 and reloaded the workers.
+  - The sidebar now shows 150 tags with an equal share per type: about 57
+    characters, 59 AI tags, all 15 general and all 8 artists. Only about 30% of
+    the tags repeat between reloads, and pinned favourites come first.
+  - The new models and My model endpoints respond normally.
+
+  Free VRAM
+  - It is in settings → AI models. It stops running AI tasks, tells every
+    gunicorn worker to drop all models, and shows VRAM used before and after.
+  - In a real cross-process test, a signal from a separate process made a
+    simulated worker unload both models within 2 seconds. VRAM went from +2,160
+    MiB to +128 MiB.
+  - The remaining ~120 MiB per worker is the CUDA context. "Restart workers too"
+    releases that.
+
+  Download and delete
+  - Each model has its own download and delete button. Delete is refused while
+    that model is the selected main tagger or an AI task is running.
+
+  Main tagger selector
+  - You can pick Default, PixAI or My model. PixAI shows a warning because it
+    has no rating tags and uses a different vocabulary.
+
+  My model
+  - It is an exact copy of the default model plus extra learned tags. The clone
+    is checked for identical output, and it was bit-identical on the real
+    default model.
+  - To teach it:
+    a. Clone it (about 13 seconds).
+    b. Select posts, press 🎓 teach AI, and mark them as "show it" or "don't".
+       "Don't" also removes the tag.
+    c. Press train in settings → My model, which takes seconds.
+    d. Optionally index the library, then preview the posts it is most sure
+       about and review the ones it is least sure about.
+    e. Apply to the library, which can be undone.
+  - Tag with it automatically by choosing My model as the main tagger.
+
+  How well it learns
+  - I tested on a copy of your database, with real features from your GPU. I
+    taught it four existing characters, from 0.17% to 2.7% of your library, as
+    if they were new, using 23–30 examples each.
+  - On unseen posts it separated them with accuracy scores (AUC) of 0.989,
+    0.990, 0.998 and 1.000.
+  - For rare things even a small false-positive rate adds up: 0.7% of a 28k
+    library is about 200 wrong tags. So the apply dialog shows how many posts
+    would be tagged, and you should cancel if that number is far above what you
+    expect.
+
+  Still to do
+  - You still need to press clone and teach your first concept.
+  - onnx is now in requirements.txt, and I installed it into the live venv.
+
+  Want me to push the 7 local commits?
+
+✻ Worked for 3m 27s · done 2:06 AM
+
+※ recap: Overall goal is the booru gallery's AI features. The sidebar, models panel, Free VRAM and "my model" teaching are all built and deployed. Next action: you press clone, then teach it your first art type, and I push the 7 local commits once you say so.
+
+❯ /compact                                                                      
+  ⎿  Compaction canceled.

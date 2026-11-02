@@ -15,6 +15,8 @@
     width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
     padding: .45rem .55rem; font-family: var(--mono); font-size: .82rem; outline: none; box-sizing: border-box; }
   .cr-layout textarea { resize: vertical; }
+  #cr-desc.cr-unplanned { background: color-mix(in srgb, #e9ad42 18%, var(--bg3)); border-color: #b88936; }
+  #cr-desc-state { color: #d7a44b; font-family: var(--mono); font-size: .68rem; margin-top: .3rem; }
   .cr-layout textarea:focus, .cr-layout input:focus, .cr-layout select:focus { border-color: var(--accent); }
   .cr-layout label.ae-l { display: block; font-family: var(--mono); font-size: .66rem; color: var(--text-dim); margin: .7rem 0 .2rem; }
   .cr-card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); padding: .8rem; margin-bottom: .8rem; }
@@ -81,6 +83,22 @@
   #cr-saved .sv .nm small { color: var(--text-dim); font-family: var(--mono); font-size: .64rem; }
   #cr-saved .sv button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: .85rem; padding: 0 .2rem; }
   #cr-saved .ae-chip { flex: none; }
+  .cr-sv-folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: .4rem; margin: .5rem 0; }
+  .cr-sv-folder { aspect-ratio: 1; min-width: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: .3rem; padding: .5rem; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg2); color: var(--text); cursor: pointer; font: inherit; font-size: .72rem; }
+  .cr-sv-folder.on { border-color: var(--accent); background: var(--accent-dim, var(--bg2)); }
+  .cr-sv-folder .icon { font-size: 1.5rem; }
+  .cr-sv-folder .name { width: 100%; overflow-wrap: anywhere; text-align: center; }
+  .cr-sv-folder small { color: var(--text-dim); }
+  .cr-sv-toolbar { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-bottom: .4rem; }
+  #cr-saved .sv select { width: auto; max-width: 8rem; font-size: .68rem; padding: .25rem; }
+  .cr-sv-popover { position: fixed; z-index: 100; width: min(520px, calc(100vw - 24px));
+    max-height: min(440px, 65vh); overflow-y: auto; box-sizing: border-box; padding: .65rem;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 12px 36px rgba(0,0,0,.45); }
+  .cr-sv-popover[hidden] { display: none; }
+  .cr-sv-popover-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; }
+  @media (max-width: 500px) { #cr-saved .sv { flex-wrap: wrap; } #cr-saved .sv .nm { min-width: 45%; } }
   .cr-h2 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 0 0 .5rem; }
 </style>
 {% include "gallery/_lora_picker_assets.html" %}
@@ -101,9 +119,10 @@
         <label class="ae-l" for="cr-desc" style="margin:0;flex:1;">description (any language)</label>
         <button type="button" class="btn" style="font-size:.7rem;padding:.15rem .5rem;" onclick="crSavedToggle()" title="saved descriptions: save the current one, toggle saved ones in and out">&#128209; saved <span id="cr-saved-n"></span></button>
       </div>
-      <div id="cr-saved" style="display:none;"></div>
+      <div id="cr-saved" onmouseenter="clearTimeout(crSavedCloseTimer)" onmouseleave="crSavedScheduleClose()" onkeydown="if(event.key==='Escape') crSavedClose()"></div>
       <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a maid outfit (holding a tray), smiling in a cafe"
                 onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
+      <div id="cr-desc-state" hidden>description changed — plan needed</div>
 
       <label class="ae-l">source picture — optional · paint on it to remove / change only that part</label>
       <div class="cr-drop" id="cr-drop">
@@ -131,7 +150,7 @@
       </div>
 
       <div class="cr-actions">
-        <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="the AI writes the prompt and picks LoRAs (for the painted area only, if something is painted) — check them, then generate">&#10024; plan</button>
+        <button class="btn" id="cr-plan-btn" onclick="crPlan()" title="the AI writes the prompt; existing LoRAs and trigger words stay as selected (for the painted area only, if something is painted)">&#10024; plan</button>
         <button class="btn" id="cr-remove-btn" onclick="crRemove()" disabled title="paint over something on the source picture first; it is removed in one click (filled from its surroundings)">&#129533; remove painted</button>
         <button class="btn primary" id="cr-run-btn" onclick="crGo()" title="plans first if needed (the painted area only, if something is painted), then makes the picture">&#9889; generate</button>
         <button class="btn" style="flex:0;min-width:0;" onclick="crClearForm()" title="empty the description, prompt and LoRAs (the source picture and painting stay; settings stay)">&#10005;</button>
@@ -210,7 +229,7 @@ const crEl = id => document.getElementById(id);
 const CR_INIT_SRC = {% if src %}{photo_id: {{ src.id }}, thumb: "{{ src.thumb|escapejs }}", url: "{{ src.url|escapejs }}"}{% else %}null{% endif %};
 let crPlanned = false, crSource = null, crShown = null;
 const crPick = makeLoraPicker('cr', {detect: async () => {
-  const d = await crPost('/api/comfy/plan/', crBody(true));     // re-plan = fresh detection + group picks
+  const d = await crPost('/api/comfy/plan/', {...crBody(true), detect_loras: true});
   if (d.ok) crApplyPlan(d, true);
   return null;
 }});
@@ -274,19 +293,28 @@ async function crPost(url, body) {
   return d;
 }
 /* plan answer → prompt boxes, shape, LoRA rows (picked groups) + suggestion chips */
-function crApplyPlan(d, lorasOnly) {
+function crDescriptionState() {
+  const dirty = !!crEl('cr-desc').value.trim() && !crPlanned;
+  crEl('cr-desc').classList.toggle('cr-unplanned', dirty);
+  crEl('cr-desc-state').hidden = !dirty;
+}
+function crApplyPlan(d, lorasOnly, plannedDescription) {
+  const promptOnly = !lorasOnly && crPick.list.length > 0;
   if (!lorasOnly) {
     crEl('cr-pos').value = d.positive; crEl('cr-neg').value = d.negative;
-    if (d.orientation) crEl('cr-orient').value = d.orientation;
+    if (!promptOnly && d.orientation) crEl('cr-orient').value = d.orientation;
   }
-  const keep = new Map(crPick.list.map(l => [l.name, l.strength]));
-  crPick.list = [];
-  for (const it of d.selected || []) crPick.add(it, null, keep.get(it.name), it.sel_groups, it.why);
-  crPick.suggest(d.suggested || []);
+  if (!promptOnly) {
+    const keep = new Map(crPick.list.map(l => [l.name, l.strength]));
+    crPick.list = [];
+    for (const it of d.selected || []) crPick.add(it, null, keep.get(it.name), it.sel_groups, it.why);
+    crPick.suggest(d.suggested || []);
+  }
   crEl('cr-note').textContent = (d.source === 'llm' ? d.model + ' (' + d.seconds + ' s): ' : '') + (d.note || '')
     + ((d.characters || []).length ? ' · characters: ' + d.characters.join(', ') : '')
     + ((d.forced || []).length ? ' · forced: ' + d.forced.join(', ') : '');
-  crPlanned = true;
+  if (!lorasOnly) crPlanned = crEl('cr-desc').value.trim() === (plannedDescription ?? crEl('cr-desc').value.trim());
+  crDescriptionState();
   crSaveDraft();
 }
 async function crPlan() {
@@ -302,7 +330,7 @@ async function crPlan() {
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()}});
     const d = await r.json();
     if (!d.ok) { crStatus('⚠ ' + (d.error || 'error'), true); return false; }
-    crApplyPlan(d); crSaveDraft();
+    crApplyPlan(d, false, b.description); crSaveDraft();
     crStatus(d.source === 'llm' ? 'planned — check the prompt and LoRAs, then generate' : '⚠ ' + d.note, d.source !== 'llm');
     return true;
   } catch (e) { crStatus(e.name === 'AbortError' ? 'stopped' : '⚠ request failed', e.name !== 'AbortError'); return false; }
@@ -484,6 +512,7 @@ async function crRestore(d, keepSource) {
   crPick.clear();
   await crPick.restore(g.loras || []);
   crPlanned = !!g.positive;
+  crDescriptionState();
   crEl('cr-note').textContent = '';
   crSaveDraft();
   crStatus(`inputs of post #${d.id} restored — new seed unless you type one`);
@@ -527,12 +556,14 @@ function crLoadDraft(keepSource) {
   for (const l of d.loras || []) crPick.add(l, null, l.strength, l.sel, l.why);
   crEl('cr-note').textContent = d.note || '';
   crPlanned = !!d.planned && !!d.pos;
+  crDescriptionState();
   return true;
 }
 function crClearForm() {
   ['cr-desc', 'cr-pos', 'cr-neg', 'cr-seed'].forEach(id => crEl(id).value = '');
   crEl('cr-note').textContent = '';
   crPick.clear(); crPlanned = false;          // the source picture and its painting stay (✕ / clear in the picture's toolbar)
+  crDescriptionState();
   crSaveDraft(); crStatus('text, prompt and LoRAs cleared — the source picture and painting stay');
 }
 /* ── 🖌 remove: paint a mask over the source (canvas = the picture's size, max 1600 px) ── */
@@ -648,59 +679,168 @@ async function crRemove() {
   finally { crButtons(); }
 }
 
-/* ── saved descriptions (server pref createPrompts: [{id, name, text}], in the DB backups):
-   save the current description under a name, toggle one in / out of the description,
-   edit, delete ── */
-let crSaved = [], crSavedEdit = null;
+/* Saved descriptions retain their existing ids/text; optional folder ids refer to
+   createPromptFolders. Both preferences are included in database backups. */
+let crSaved = [], crSavedFolders = [], crSavedFolder = '', crSavedEdit = null;
+let crSavedPopoverOpen = false, crSavedCloseTimer = null, crSavedAnchor = null;
 async function crSavedLoad() {
-  try { const d = await (await fetch('/api/prefs/')).json(); crSaved = Array.isArray(d.prefs.createPrompts) ? d.prefs.createPrompts : []; } catch (e) {}
+  try {
+    const d = await (await fetch('/api/prefs/')).json();
+    crSaved = Array.isArray(d.prefs.createPrompts) ? d.prefs.createPrompts : [];
+    crSavedFolders = Array.isArray(d.prefs.createPromptFolders) ? d.prefs.createPromptFolders : [];
+  } catch (e) { toast('could not load saved descriptions', 'err'); }
   crSavedRender();
 }
-function crSavedStore() { crSavedRender(); return apiPost('/api/pref/set/', {key: 'createPrompts', value: crSaved}); }
+async function crSavedStore(foldersOnly = false) {
+  crSavedRender();
+  const key = foldersOnly ? 'createPromptFolders' : 'createPrompts';
+  const value = foldersOnly ? crSavedFolders : crSaved;
+  try {
+    const d = await crPost('/api/pref/set/', {key, value});
+    if (!d.ok) throw new Error(d.error || 'request failed');
+    return true;
+  } catch (e) { toast('could not save descriptions: ' + e.message, 'err'); return false; }
+}
 function crSavedToggle() { const p = crEl('cr-saved'); p.style.display = p.style.display === 'none' ? '' : 'none'; crSavedRender(); }
+function crSavedFolderOf(it) { return crSavedFolders.some(f => f.id === it.folder) ? it.folder : ''; }
+function crSavedFolderOptions(selected) {
+  return [{id: '', name: 'unfiled'}, ...crSavedFolders].map(f =>
+    `<option value="${aeEsc(f.id)}"${f.id === selected ? ' selected' : ''}>${aeEsc(f.name)}</option>`).join('');
+}
+function crSavedOpenFolder(id, tile) {
+  clearTimeout(crSavedCloseTimer);
+  if (crSavedEdit) return;
+  crSavedFolder = id; crSavedPopoverOpen = true;
+  if (tile) crSavedAnchor = tile.getBoundingClientRect();
+  crSavedPanelRender();
+}
+function crSavedScheduleClose() {
+  clearTimeout(crSavedCloseTimer);
+  crSavedCloseTimer = setTimeout(() => {
+    if (!crEl('cr-sv-popover').contains(document.activeElement)) crSavedClose();
+  }, 250);
+}
+function crSavedClose() {
+  if (crSavedEdit) return;
+  crSavedPopoverOpen = false;
+  crEl('cr-sv-popover').hidden = true;
+}
+function crSavedPositionPanel() {
+  const panel = crEl('cr-sv-popover');
+  if (!crSavedAnchor || panel.hidden) return;
+  const left = Math.max(12, Math.min(crSavedAnchor.left, window.innerWidth - panel.offsetWidth - 12));
+  const top = Math.max(12, Math.min(crSavedAnchor.bottom + 6, window.innerHeight - panel.offsetHeight - 12));
+  panel.style.left = left + 'px'; panel.style.top = top + 'px';
+}
+async function crSavedNewFolder() {
+  const name = prompt('folder name');
+  if (!name || !name.trim()) return;
+  const existing = crSavedFolders.find(f => f.name.toLowerCase() === name.trim().toLowerCase());
+  if (existing) { toast('a folder with that name already exists', 'err'); return; }
+  const folder = {id: 'f-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8), name: name.trim()};
+  crSavedFolders.push(folder);
+  if (await crSavedStore(true)) { crSavedFolder = folder.id; crSavedRender(); }
+  else { crSavedFolders = crSavedFolders.filter(f => f.id !== folder.id); crSavedRender(); }
+}
+async function crSavedMove(i, folder) {
+  const old = crSaved[i].folder;
+  crSaved[i].folder = folder;
+  if (!await crSavedStore()) { crSaved[i].folder = old; crSavedRender(); }
+}
 const crSavedNorm = t => t.trim().replace(/^[,\s]+|[,\s]+$/g, '');
 function crSavedIn(text) { return crEl('cr-desc').value.includes(crSavedNorm(text)); }
+function crSavedLoras() {
+  return crPick.list.map(l => ({name: l.name, title: l.title, kind: l.kind, preview: l.preview,
+    strength: l.strength, groups: [...l.groups], words: [...l.sel].sort((a, b) => a - b).map(g => l.groups[g])}));
+}
 function crSavedUse(i) {                       // toggle: append it, or take it out again
-  const d = crEl('cr-desc'), t = crSavedNorm(crSaved[i].text);
+  const item = crSaved[i], saved = item.loras || [];
+  const d = crEl('cr-desc'), t = crSavedNorm(item.text);
   if (!t) return;
-  if (d.value.includes(t)) d.value = d.value.replace(t, '').replace(/,\s*,/g, ',').replace(/^[,\s]+|[,\s]+$/g, '');
-  else d.value = d.value.trim() ? d.value.trim().replace(/[,\s]+$/, '') + ', ' + t : t;
+  if (d.value.includes(t)) {
+    d.value = d.value.replace(t, '').replace(/,\s*,/g, ',').replace(/^[,\s]+|[,\s]+$/g, '');
+    const shared = new Set(crSaved.filter((it, n) => n !== i && crSavedIn(it.text)).flatMap(it => (it.loras || []).map(l => l.name)));
+    crPick.list = crPick.list.filter(l => !saved.some(s => s.name === l.name && !shared.has(l.name)
+      && s.strength === l.strength && JSON.stringify([...(s.words || [])].sort()) ===
+      JSON.stringify([...l.sel].map(g => l.groups[g]).sort())));
+    crPick.render();
+  } else {
+    const names = new Set([...crPick.list.map(l => l.name), ...saved.map(l => l.name)]);
+    if (names.size > crPick.max) { toast('this template would exceed the ' + crPick.max + ' LoRA limit', 'err'); return; }
+    crPick.list = crPick.list.filter(l => !saved.some(s => s.name === l.name));
+    for (const l of saved) crPick.add(l, l.words || [], l.strength);
+    d.value = d.value.trim() ? d.value.trim().replace(/[,\s]+$/, '') + ', ' + t : t;
+  }
   d.dispatchEvent(new Event('input', {bubbles: true}));
   crSavedRender();
 }
 function crSavedAdd() {
   const text = crEl('cr-desc').value.trim();
   if (!text) { crStatus('type a description first, then save it', true); return; }
-  crSavedEdit = {id: null, name: text.split(/[,.]/)[0].slice(0, 40), text};
+  crSavedEdit = {id: null, name: text.split(/[,.]/)[0].slice(0, 40), text,
+                 folder: crSavedFolder === '*' ? '' : crSavedFolder};
+  crSavedPopoverOpen = true;
+  crSavedAnchor = crEl('cr-saved').getBoundingClientRect();
   crSavedRender();
 }
-function crSavedStartEdit(i) { crSavedEdit = {...crSaved[i]}; crSavedRender(); }
-function crSavedCommit() {
+function crSavedStartEdit(i) { crSavedEdit = {...crSaved[i]}; crSavedPopoverOpen = true; crSavedRender(); }
+async function crSavedCommit() {
   const name = crEl('cr-sv-name').value.trim(), text = crEl('cr-sv-text').value.trim();
+  const folder = crEl('cr-sv-folder').value;
   if (!name || !text) { toast('name and text please', 'err'); return; }
-  if (crSavedEdit.id) { const it = crSaved.find(x => x.id === crSavedEdit.id); if (it) Object.assign(it, {name, text}); }
-  else crSaved.unshift({id: Date.now().toString(36), name, text});
-  crSavedEdit = null; crSavedStore(); toast('saved');
+  const before = crSaved.map(it => ({...it}));
+  const loras = crSavedLoras();
+  if (crSavedEdit.id) { const it = crSaved.find(x => x.id === crSavedEdit.id); if (it) Object.assign(it, {name, text, folder, loras}); }
+  else crSaved.unshift({id: Date.now().toString(36), name, text, folder, loras});
+  const edit = crSavedEdit;
+  crSavedEdit = null;
+  if (await crSavedStore()) { crSavedFolder = folder; crSavedRender(); toast('saved'); }
+  else { crSaved = before; crSavedEdit = {...edit, name, text, folder}; crSavedRender(); }
 }
-function crSavedDelete(i) {
+async function crSavedDelete(i) {
   if (!confirm(`delete "${crSaved[i].name}"?`)) return;
-  crSaved.splice(i, 1); crSavedStore();
+  const before = crSaved.slice();
+  crSaved.splice(i, 1);
+  if (!await crSavedStore()) { crSaved = before; crSavedRender(); }
 }
 function crSavedRender() {
   crEl('cr-saved-n').textContent = crSaved.length ? '(' + crSaved.length + ')' : '';
   const p = crEl('cr-saved');
   if (p.style.display === 'none') return;
+  const folders = [{id: '', name: 'unfiled', icon: '&#128193;'},
+                   ...crSavedFolders.map(f => ({...f, icon: '&#128193;'}))];
+  const grid = `<div class="cr-sv-folders">${folders.map(f => `<button type="button" class="cr-sv-folder"
+      ${crSavedEdit ? 'disabled' : ''} onmouseenter="crSavedOpenFolder(this.dataset.folder, this)" onfocus="crSavedOpenFolder(this.dataset.folder, this)"
+      onclick="crSavedOpenFolder(this.dataset.folder, this)" aria-haspopup="dialog" aria-controls="cr-sv-popover" data-folder="${aeEsc(f.id)}">
+      <span class="icon">${f.icon}</span><span class="name">${aeEsc(f.name)}</span>
+      <small>${crSaved.filter(it => f.id === '*' || crSavedFolderOf(it) === f.id).length} saved</small></button>`).join('')}</div>`;
+  p.innerHTML = grid + (crSavedEdit ? '' : `<div class="cr-sv-toolbar"><button class="btn" style="font-size:.72rem;" onclick="crSavedAdd()">&#65291; save the current description</button>
+        <button type="button" class="btn" style="font-size:.72rem;" onclick="crSavedNewFolder()">&#65291; new folder</button></div>`)
+    + '<div id="cr-sv-popover" class="cr-sv-popover" role="dialog" aria-label="folder templates" hidden onmouseenter="clearTimeout(crSavedCloseTimer)" onmouseleave="crSavedScheduleClose()"></div>';
+  crSavedPanelRender();
+}
+function crSavedPanelRender() {
+  const panel = crEl('cr-sv-popover');
+  panel.hidden = !crSavedPopoverOpen;
+  if (panel.hidden) return;
+  const name = crSavedFolders.find(f => f.id === crSavedFolder)?.name || 'unfiled';
   const form = crSavedEdit ? `<div style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.4rem;">
       <input type="text" id="cr-sv-name" placeholder="name" value="${aeEsc(crSavedEdit.name)}">
       <textarea id="cr-sv-text" rows="2">${aeEsc(crSavedEdit.text)}</textarea>
+      <label class="ae-l" for="cr-sv-folder">save in folder</label>
+      <select id="cr-sv-folder">${crSavedFolderOptions(crSavedFolderOf(crSavedEdit))}</select>
+      <div class="cr-sub" style="margin:.3rem 0;">Saving also captures the current ${crPick.list.length} LoRA(s), strengths and selected trigger groups.</div>
       <div style="display:flex;gap:.4rem;"><button class="btn primary" onclick="crSavedCommit()">${crSavedEdit.id ? 'save changes' : 'save'}</button>
         <button class="btn" onclick="crSavedEdit=null;crSavedRender()">cancel</button></div></div>` : '';
-  p.innerHTML = form + (crSavedEdit ? '' : `<div style="margin-bottom:.3rem;"><button class="btn" style="font-size:.72rem;" onclick="crSavedAdd()">&#65291; save the current description</button></div>`)
-    + (crSaved.map((it, i) => `<div class="sv">
+  panel.innerHTML = `<div class="cr-sv-popover-head"><strong>${aeEsc(name)}</strong>
+      <button type="button" class="btn" onclick="crSavedClose()" ${crSavedEdit ? 'disabled' : ''} aria-label="close folder templates">&#10005;</button></div>` + form
+    + (crSavedEdit ? '' : (crSaved.map((it, i) => ({it, i})).filter(({it}) => crSavedFolderOf(it) === crSavedFolder).map(({it, i}) => `<div class="sv">
         <button class="ae-chip${crSavedIn(it.text) ? ' on' : ''}" onclick="crSavedUse(${i})" title="${crSavedIn(it.text) ? 'take it out of' : 'add it to'} the description">${crSavedIn(it.text) ? 'on' : 'off'}</button>
-        <span class="nm" onclick="crSavedUse(${i})" title="${aeEsc(it.text)}">${aeEsc(it.name)}<br><small>${aeEsc(it.text.slice(0, 80))}</small></span>
+        <span class="nm" onclick="crSavedUse(${i})" title="${aeEsc(it.text)}">${aeEsc(it.name)}<br><small>${aeEsc(it.text.slice(0, 80))}${it.loras?.length ? ' · ' + it.loras.length + ' LoRA(s), ' + it.loras.reduce((n, l) => n + (l.words || []).length, 0) + ' selected trigger group(s)' : ''}</small></span>
+        <select aria-label="move ${aeEsc(it.name)} to folder" title="move to folder" onchange="crSavedMove(${i}, this.value)"${crSavedEdit ? ' disabled' : ''}>${crSavedFolderOptions(crSavedFolderOf(it))}</select>
         <button onclick="crSavedStartEdit(${i})" title="edit">&#9998;</button>
-        <button onclick="crSavedDelete(${i})" title="delete">&#128465;</button></div>`).join('') || '<div class="cr-sub" style="margin:0;">nothing saved yet</div>');
+        <button onclick="crSavedDelete(${i})" title="delete">&#128465;</button></div>`).join('') || '<div class="cr-sub" style="margin:0;">no descriptions in this folder yet</div>'));
+  crSavedPositionPanel();
 }
 
 function crSaveUi() {
@@ -716,8 +856,11 @@ async function crInit() {
     if (u.maxTemp !== undefined && u.maxTemp !== '') crEl('cr-maxtemp').value = u.maxTemp;
   } catch (e) {}
   ['cr-size', 'cr-count'].forEach(id => crEl(id).addEventListener('change', crSaveUi));
-  crEl('cr-desc').addEventListener('input', () => { crPlanned = false; if (crEl('cr-saved').style.display !== 'none' && !crSavedEdit) crSavedRender(); });
+  crEl('cr-desc').addEventListener('input', () => { crPlanned = false; crDescriptionState(); if (crEl('cr-saved').style.display !== 'none' && !crSavedEdit) crSavedRender(); });
   crSavedLoad();
+  document.addEventListener('pointerdown', e => { if (!crEl('cr-saved').contains(e.target)) crSavedClose(); });
+  window.addEventListener('resize', crSavedPositionPanel);
+  document.addEventListener('scroll', e => { if (!crEl('cr-sv-popover').contains(e.target)) crSavedClose(); }, true);
   document.querySelector('.cr-left').addEventListener('input', crSaveDraft);
   document.querySelector('.cr-left').addEventListener('change', crSaveDraft);
   document.querySelector('.cr-left').addEventListener('click', () => setTimeout(crSaveDraft, 50));   // LoRA chips / ✕
