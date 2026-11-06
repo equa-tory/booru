@@ -288,6 +288,7 @@ The user describes a picture (any language). Answer with:
 - "orientation": "portrait", "landscape" or "square" (people standing or a single character: portrait; scenery or several people side by side: landscape).
 - "importance": for the tags that matter most, {"tag": <a tag from "tags">, "level": 2-4}: 4 = the core of the request (what the user asked for), 3 = clearly asked, 2 = useful detail. Tags you only added to fill the picture are left out (level 1).
 - "note": one short sentence describing the picture.
+When several named characters are requested, keep every appearance, outfit and action attached to the character it describes. Never transfer a detail from one character to another; include the requested details for each character in "tags".
 When a source picture is given, its tags describe it now; "tags" must describe the FINAL picture (keep what the user does not change).
 When the request turns a person into a named character (or another person), DROP that person's old hair, eye and clothing tags: the character brings its own look; keep the pose, background and the rest.
 Examples:

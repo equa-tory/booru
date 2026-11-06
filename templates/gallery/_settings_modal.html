@@ -136,8 +136,8 @@
       <h3>tag rules <span style="text-transform:none;letter-spacing:0;font-weight:400;">· when a tag is added, also add others</span></h3>
       <div class="bk-list" id="tr-list" style="max-height:16rem;"></div>
       <div class="set-grid" style="margin-top:.4rem;">
-        <div class="set-field" style="position:relative;"><label for="tr-when" title="a tag name, or a pattern: * = anything, e.g. *_(genshin_impact) = every Genshin character">when this tag is added (* = anything)</label>
-          <input type="text" id="tr-when" spellcheck="false" autocomplete="off" placeholder="hatsune_miku   or   *_(genshin_impact)">
+        <div class="set-field" style="position:relative;"><label for="tr-when" title="one or more tag names or patterns; comma or ~ means OR; * is a wildcard">when any of these tags is added (comma or ~ = OR)</label>
+          <input type="text" id="tr-when" spellcheck="false" autocomplete="off" placeholder="character1, character2   or   character1 ~ character2">
           <div class="tr-sug" id="tr-when-sug" style="display:none;"></div></div>
         <div class="set-field" style="position:relative;"><label for="tr-add">also add these tags (comma separated)</label>
           <input type="text" id="tr-add" spellcheck="false" autocomplete="off" placeholder="vocaloid, my_favourites">
@@ -145,7 +145,7 @@
       </div>
       <div class="set-actions"><button class="btn primary" onclick="addTagRule()">add rule</button>
         <button class="btn" onclick="applyTagRules()" title="run every rule over the posts already in the library (background job)">apply to existing posts</button></div>
-      <div class="set-note">New tags follow the rules automatically: tags you add, AI tagging, the character model. Rules can chain. Added tags keep their own category (a brand-new one becomes general). Older posts get them with "apply" on a rule, or "apply to existing posts" for all rules.</div>
+      <div class="set-note">New tags follow the rules automatically: tags you add, AI tagging, the character model. Enter several "when" tags separated by commas or ~ to add the same tags when any one matches (for example, <code>character1, character2</code> → <code>persona</code>). * patterns and rule chains work too. Added tags keep their own category (a brand-new one becomes general). Older posts get them with "apply" on a rule, or "apply to existing posts" for all rules.</div>
     </div>
 
     <div class="set-sec">
@@ -213,7 +213,7 @@ function openSettings() {
   loadCustom();
   loadQuickLinks();
   loadTagRules();
-  tagRuleSuggest('tr-when', false); tagRuleSuggest('tr-add', true);
+  tagRuleSuggest('tr-when', true); tagRuleSuggest('tr-add', true);
   loadNetPath();
   loadComfy();
 }
@@ -346,9 +346,9 @@ function tagRuleSuggest(inputId, multi) {
   if (!inp || inp._sug) return;
   inp._sug = true;
   let t = null, seq = 0;
-  const part = () => multi ? inp.value.split(',').pop().trim() : inp.value.trim();
+  const part = () => multi ? inp.value.split(/[,~]/).pop().trim() : inp.value.trim();
   const pick = name => {
-    if (multi) { const parts = inp.value.split(','); parts[parts.length - 1] = ' ' + name; inp.value = parts.join(',').replace(/^\s+/, '') + ', '; }
+    if (multi) { const parts = inp.value.split(/[,~]/); parts[parts.length - 1] = ' ' + name; inp.value = parts.join(',').replace(/^\s+/, '') + ', '; }
     else inp.value = name;
     box.style.display = 'none'; inp.focus();
   };

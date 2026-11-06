@@ -2880,15 +2880,20 @@ def tag_rules_api(request):
                 return _err('no such rule')
         if isinstance(data.get('add'), dict):
             r = data['add']
-            when = re.sub(r'\s+', '_', str(r.get('when') or '').strip().lower())
+            when_parts = _u.tag_rule_patterns(r.get('when'))
+            when = ', '.join(dict.fromkeys(when_parts))
             add = r.get('add') or ''
             add = [re.sub(r'\s+', '_', a.strip().lower()) for a in (add if isinstance(add, list) else str(add).split(','))]
-            add = [a for a in dict.fromkeys(add) if a and a != when][:20]
-            if not when or not add:
-                return _err('a rule needs a "when" tag and at least one tag to add')
+            add = [a for a in dict.fromkeys(add) if a and a not in when_parts][:20]
+            if not when_parts:
+                return _err('enter at least one tag in "when"')
+            if len(when_parts) > 100 or len(when) > 4000:
+                return _err('a rule can match up to 100 tags (4,000 characters)')
+            if not add:
+                return _err('enter at least one tag to add')
             if len(rules) >= TAG_RULES_MAX:
                 return _err(f'at most {TAG_RULES_MAX} rules')
-            rules.append({'when': when[:200], 'add': add})
+            rules.append({'when': when, 'add': add})
         _set_pref('tagRules', rules)
         _u.tag_rules(fresh=True)
     return JsonResponse({'ok': True, 'rules': rules})
@@ -2898,7 +2903,6 @@ def tag_rules_api(request):
 def tag_rules_apply(request):
     """Apply the rules to the posts already in the library (Task `tag_rules`): every rule, or one
     (`{index}`); only posts that carry a matching tag, only the tags they lack; counts once."""
-    from fnmatch import fnmatchcase
     from . import utils as _u
     one = _json_body(request).get('index')
     rules_now = _u.tag_rules(fresh=True)
@@ -2911,7 +2915,7 @@ def tag_rules_apply(request):
     def work(task):
         rules = rules_now
         names = list(Tag.objects.values_list('name', flat=True))
-        hit = {n for r in rules for n in names if fnmatchcase(n, str(r['when']))}
+        hit = {n for r in rules for n in names if _u.tag_rule_matches(n, r['when'])}
         posts = list(Post.objects.filter(tags__name__in=hit).distinct().values_list('id', flat=True))
         task.total = len(posts); task.save(update_fields=['total'])
         added = 0

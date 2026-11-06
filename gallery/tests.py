@@ -3021,6 +3021,8 @@ const window = {innerWidth: 1000, innerHeight: 800};
 const crPick = {list: [], max: 6, render() {}, add(it, words, strength) {
   this.list.push({...it, strength, sel: new Set(it.groups.map((g, i) => words.includes(g) ? i : -1).filter(i => i >= 0))});
 }};
+const LP = {};
+const makeLoraPicker = prefix => LP[prefix] = {...crPick, list: []};
 const aeEsc = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const toast = () => {}, crStatus = () => {};
 let folderName = 'Characters <friends>', fail = false;

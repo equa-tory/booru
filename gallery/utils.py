@@ -716,6 +716,19 @@ def recount_tags(tag_ids=None):
 _rules_cache = {'t': 0.0, 'rules': []}
 
 
+def tag_rule_patterns(when):
+    """A rule's when field accepts comma- or tilde-separated OR patterns."""
+    import re
+    return [re.sub(r'\s+', '_', part.strip().lower())
+            for part in re.split(r'[,~]', str(when or '')) if part.strip()]
+
+
+def tag_rule_matches(name, when):
+    from fnmatch import fnmatchcase
+    return any(fnmatchcase(str(name).strip().lower().replace(' ', '_'), pat)
+               for pat in tag_rule_patterns(when))
+
+
 def tag_rules(fresh=False):
     """The user's tag rules (pref `tagRules`): [{'when': name or glob, 'add': [names]}],
     cached 5 s per process (add_tags_to_post runs for every scanned / tagged post)."""
@@ -730,16 +743,14 @@ def tag_rules(fresh=False):
 
 def implied_tags(names, rules=None, depth=3):
     """Tags the rules add for `names`: {category: [names]} (chains followed `depth` levels, a
-    tag never re-adds itself). `when` is a tag name or a glob: `*_(genshin_impact)`."""
-    from fnmatch import fnmatchcase
+    tag never re-adds itself). `when` accepts tags/globs separated by comma or `~` (OR)."""
     rules = tag_rules() if rules is None else rules
     have = {str(n).strip().lower().replace(' ', '_') for n in names}
     out, frontier = {}, set(have)
     for _ in range(depth):
         new = set()
         for r in rules:
-            pat = str(r['when']).strip().lower().replace(' ', '_')
-            if any(fnmatchcase(n, pat) for n in frontier):
+            if any(tag_rule_matches(n, r['when']) for n in frontier):
                 for a in r['add']:
                     a = str(a).strip().lower().replace(' ', '_')
                     if a and a not in have:

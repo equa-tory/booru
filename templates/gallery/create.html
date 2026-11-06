@@ -11,6 +11,12 @@
   .cr-layout h1 { font-size: 1.25rem; margin-bottom: .2rem; }
   .cr-sub { color: var(--text-dim); font-size: .78rem; margin-bottom: .8rem; line-height: 1.45; }
   .cr-sub code { font-family: var(--mono); background: var(--bg3); padding: 0 .25rem; border-radius: 3px; }
+  .cr-char-builder { margin-top: .55rem; }
+  .cr-char-builder[hidden] { display: none; }
+  .cr-char-row { display: grid; grid-template-columns: minmax(8rem, .8fr) minmax(12rem, 1.5fr) auto; gap: .4rem; align-items: start; margin: .4rem 0; }
+  .cr-char-row input { min-width: 0; }
+  .cr-char-row .btn { padding: .35rem .5rem; }
+  @media (max-width: 600px) { .cr-char-row { grid-template-columns: 1fr auto; } .cr-char-row input:last-of-type { grid-column: 1; } }
   .cr-layout textarea, .cr-layout input[type=text], .cr-layout select {
     width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
     padding: .45rem .55rem; font-family: var(--mono); font-size: .82rem; outline: none; box-sizing: border-box; }
@@ -97,6 +103,7 @@
     max-height: min(440px, 65vh); overflow-y: auto; box-sizing: border-box; padding: .65rem;
     background: var(--bg2); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 12px 36px rgba(0,0,0,.45); }
   .cr-sv-popover[hidden] { display: none; }
+  #sv-lora-detect { display: none; }
   .cr-sv-popover-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; }
   @media (max-width: 500px) { #cr-saved .sv { flex-wrap: wrap; } #cr-saved .sv .nm { min-width: 45%; } }
   .cr-h2 { font-family: var(--mono); font-size: .7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 0 0 .5rem; }
@@ -122,6 +129,21 @@
       <div id="cr-saved" onmouseenter="clearTimeout(crSavedCloseTimer)" onmouseleave="crSavedScheduleClose()" onkeydown="if(event.key==='Escape') crSavedClose()"></div>
       <textarea id="cr-desc" rows="3" placeholder="e.g. hayasaka ai in a maid outfit (holding a tray), smiling in a cafe"
                 onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();crGo();}"></textarea>
+      <div style="display:flex;align-items:center;gap:.45rem;margin-top:.45rem;">
+        <button type="button" class="btn" style="font-size:.7rem;padding:.2rem .55rem;" onclick="crToggleCharacterBuilder()">&#128100; build a multi-character description</button>
+        <span class="cr-sub" style="margin:0;">keep each character's details together</span>
+      </div>
+      <div id="cr-char-builder" class="cr-char-builder" hidden>
+        <div class="cr-sub">Name each character and put their own look, clothes, and action in that row. Add the shared setting below, then use the composed description and press <b>plan</b> to get LoRA suggestions.</div>
+        <div id="cr-char-rows"></div>
+        <label class="ae-l" for="cr-char-scene">shared scene / interaction</label>
+        <textarea id="cr-char-scene" rows="2" placeholder="e.g. standing together in a classroom, one picture, friendly conversation"></textarea>
+        <div class="cr-actions" style="margin-top:.35rem;">
+          <button type="button" class="btn" onclick="crAddCharacterRow()">+ character</button>
+          <button type="button" class="btn primary" onclick="crComposeCharacterDescription()">use this description</button>
+        </div>
+        <div class="cr-sub" style="margin:.3rem 0 0;">This creates one prompt for the whole picture. For strict placement or very precise character-to-detail control, use a source image and paint/inpaint each area separately.</div>
+      </div>
       <div id="cr-desc-state" hidden>description changed — plan needed</div>
 
       <label class="ae-l">source picture — optional · paint on it to remove / change only that part</label>
@@ -535,6 +557,7 @@ function crSaveDraft() {
     try {
       localStorage.setItem(CR_DRAFT, JSON.stringify({
         desc: crEl('cr-desc').value, pos: crEl('cr-pos').value, neg: crEl('cr-neg').value,
+        characters: crCharacterData(), scene: crEl('cr-char-scene').value,
         orient: crEl('cr-orient').value, seed: crEl('cr-seed').value, den: crEl('cr-den').value,
         model: crEl('cr-model').value, planned: crPlanned, source: crSource,
         loras: crPick.list.map(l => ({name: l.name, title: l.title, kind: l.kind, preview: l.preview, groups: l.groups,
@@ -548,6 +571,8 @@ function crLoadDraft(keepSource) {
   try { d = JSON.parse(localStorage.getItem(CR_DRAFT) || 'null'); } catch (e) {}
   if (!d) return false;
   crEl('cr-desc').value = d.desc || ''; crEl('cr-pos').value = d.pos || ''; crEl('cr-neg').value = d.neg || '';
+  if (Array.isArray(d.characters) && d.characters.length) crRenderCharacterRows(d.characters);
+  crEl('cr-char-scene').value = d.scene || '';
   if (d.orient) crEl('cr-orient').value = d.orient;
   crEl('cr-seed').value = d.seed || '';
   if (d.den) { crEl('cr-den').value = d.den; crEl('cr-den-val').textContent = (+d.den).toFixed(2); }
@@ -565,6 +590,45 @@ function crClearForm() {
   crPick.clear(); crPlanned = false;          // the source picture and its painting stay (✕ / clear in the picture's toolbar)
   crDescriptionState();
   crSaveDraft(); crStatus('text, prompt and LoRAs cleared — the source picture and painting stay');
+}
+/* Build a clear, per-character description before the planner turns it into tags. */
+function crToggleCharacterBuilder() {
+  const box = crEl('cr-char-builder');
+  box.hidden = !box.hidden;
+  if (!box.hidden && !crEl('cr-char-rows').children.length) crRenderCharacterRows([{}, {}]);
+}
+function crRenderCharacterRows(rows) {
+  const box = crEl('cr-char-rows'); box.textContent = '';
+  (rows || []).slice(0, 4).forEach((item, i) => {
+    const row = document.createElement('div'); row.className = 'cr-char-row';
+    const name = document.createElement('input'); name.type = 'text'; name.placeholder = `character ${i + 1} (e.g. hayasaka ai)`;
+    name.value = item.name || ''; name.setAttribute('aria-label', `character ${i + 1} name`);
+    const detail = document.createElement('input'); detail.type = 'text'; detail.placeholder = 'their look, outfit, pose, or action';
+    detail.value = item.detail || ''; detail.setAttribute('aria-label', `character ${i + 1} details`);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn'; remove.textContent = '×'; remove.title = 'remove character';
+    remove.onclick = () => { const next = crCharacterData(); next.splice(i, 1); crRenderCharacterRows(next); crSaveDraft(); };
+    row.append(name, detail, remove); box.appendChild(row);
+  });
+}
+function crCharacterData() {
+  return [...crEl('cr-char-rows').querySelectorAll('.cr-char-row')].map(row => {
+    const inputs = row.querySelectorAll('input'); return {name: inputs[0].value.trim(), detail: inputs[1].value.trim()};
+  });
+}
+function crAddCharacterRow() {
+  const rows = crCharacterData();
+  if (rows.length >= 4) { toast('up to 4 characters per picture', 'err'); return; }
+  rows.push({}); crRenderCharacterRows(rows); crEl('cr-char-rows').lastElementChild.querySelector('input').focus(); crSaveDraft();
+}
+function crComposeCharacterDescription() {
+  const people = crCharacterData().filter(p => p.name || p.detail);
+  if (!people.length) { crStatus('add at least one character name or description', true); return; }
+  const lines = people.map(p => p.name && p.detail ? `${p.name}: ${p.detail}` : (p.name || p.detail));
+  const scene = crEl('cr-char-scene').value.trim();
+  const text = `One picture with ${lines.join('; ')}.${scene ? ' Shared scene or interaction: ' + scene + '.' : ''} Keep each character visually distinct and attach each look, outfit, and action to the named character.`;
+  crEl('cr-desc').value = text;
+  crEl('cr-desc').dispatchEvent(new Event('input', {bubbles: true}));
+  crStatus('description composed — press plan to review the prompt and character LoRA suggestions');
 }
 /* ── 🖌 remove: paint a mask over the source (canvas = the picture's size, max 1600 px) ── */
 let crPaintSrc = null, crErasing = false;
@@ -749,8 +813,8 @@ async function crSavedMove(i, folder) {
 }
 const crSavedNorm = t => t.trim().replace(/^[,\s]+|[,\s]+$/g, '');
 function crSavedIn(text) { return crEl('cr-desc').value.includes(crSavedNorm(text)); }
-function crSavedLoras() {
-  return crPick.list.map(l => ({name: l.name, title: l.title, kind: l.kind, preview: l.preview,
+function crSavedLoras(picker = crPick) {
+  return picker.list.map(l => ({name: l.name, title: l.title, kind: l.kind, preview: l.preview,
     strength: l.strength, groups: [...l.groups], words: [...l.sel].sort((a, b) => a - b).map(g => l.groups[g])}));
 }
 function crSavedUse(i) {                       // toggle: append it, or take it out again
@@ -778,24 +842,31 @@ function crSavedAdd() {
   const text = crEl('cr-desc').value.trim();
   if (!text) { crStatus('type a description first, then save it', true); return; }
   crSavedEdit = {id: null, name: text.split(/[,.]/)[0].slice(0, 40), text,
-                 folder: crSavedFolder === '*' ? '' : crSavedFolder};
+                 folder: crSavedFolder === '*' ? '' : crSavedFolder, loras: crSavedLoras()};
   crSavedPopoverOpen = true;
   crSavedAnchor = crEl('cr-saved').getBoundingClientRect();
   crSavedRender();
 }
 function crSavedStartEdit(i) { crSavedEdit = {...crSaved[i]}; crSavedPopoverOpen = true; crSavedRender(); }
+function crSavedFillLoras(loras) {
+  const picker = LP.sv;
+  picker.list = [];
+  for (const l of loras || []) picker.add({...l, groups: l.groups || l.words || []}, l.words || [], l.strength);
+  picker.render();
+  crSavedPositionPanel();
+}
 async function crSavedCommit() {
   const name = crEl('cr-sv-name').value.trim(), text = crEl('cr-sv-text').value.trim();
   const folder = crEl('cr-sv-folder').value;
   if (!name || !text) { toast('name and text please', 'err'); return; }
   const before = crSaved.map(it => ({...it}));
-  const loras = crSavedLoras();
+  const loras = LP.sv ? crSavedLoras(LP.sv) : (crSavedEdit.loras || []);
   if (crSavedEdit.id) { const it = crSaved.find(x => x.id === crSavedEdit.id); if (it) Object.assign(it, {name, text, folder, loras}); }
   else crSaved.unshift({id: Date.now().toString(36), name, text, folder, loras});
   const edit = crSavedEdit;
   crSavedEdit = null;
   if (await crSavedStore()) { crSavedFolder = folder; crSavedRender(); toast('saved'); }
-  else { crSaved = before; crSavedEdit = {...edit, name, text, folder}; crSavedRender(); }
+  else { crSaved = before; crSavedEdit = {...edit, name, text, folder, loras}; crSavedRender(); }
 }
 async function crSavedDelete(i) {
   if (!confirm(`delete "${crSaved[i].name}"?`)) return;
@@ -829,7 +900,9 @@ function crSavedPanelRender() {
       <textarea id="cr-sv-text" rows="2">${aeEsc(crSavedEdit.text)}</textarea>
       <label class="ae-l" for="cr-sv-folder">save in folder</label>
       <select id="cr-sv-folder">${crSavedFolderOptions(crSavedFolderOf(crSavedEdit))}</select>
-      <div class="cr-sub" style="margin:.3rem 0;">Saving also captures the current ${crPick.list.length} LoRA(s), strengths and selected trigger groups.</div>
+      <div class="cr-sub" style="margin:.3rem 0;">Template LoRAs — choose strengths and trigger groups below. Saving keeps these selections.</div>
+      {% include "gallery/_lora_picker.html" with p="sv" %}
+      <button type="button" class="btn" onclick="crSavedFillLoras(crSavedLoras())">copy LoRAs from current page</button>
       <div style="display:flex;gap:.4rem;"><button class="btn primary" onclick="crSavedCommit()">${crSavedEdit.id ? 'save changes' : 'save'}</button>
         <button class="btn" onclick="crSavedEdit=null;crSavedRender()">cancel</button></div></div>` : '';
   panel.innerHTML = `<div class="cr-sv-popover-head"><strong>${aeEsc(name)}</strong>
@@ -840,6 +913,11 @@ function crSavedPanelRender() {
         <select aria-label="move ${aeEsc(it.name)} to folder" title="move to folder" onchange="crSavedMove(${i}, this.value)"${crSavedEdit ? ' disabled' : ''}>${crSavedFolderOptions(crSavedFolderOf(it))}</select>
         <button onclick="crSavedStartEdit(${i})" title="edit">&#9998;</button>
         <button onclick="crSavedDelete(${i})" title="delete">&#128465;</button></div>`).join('') || '<div class="cr-sub" style="margin:0;">no descriptions in this folder yet</div>'));
+  if (crSavedEdit) {
+    if (LP.sv) clearTimeout(LP.sv._t);
+    makeLoraPicker('sv');
+    crSavedFillLoras(crSavedEdit.loras || []);
+  }
   crSavedPositionPanel();
 }
 
